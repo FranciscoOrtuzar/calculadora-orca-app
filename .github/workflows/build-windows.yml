@@ -24,6 +24,7 @@ jobs:
           pip install pyinstaller
 
       - name: Build EXE with PyInstaller
+        shell: cmd
         run: |
           pyinstaller --noconfirm --onefile --name PricingApp ^
             --add-data "app.py;." ^
