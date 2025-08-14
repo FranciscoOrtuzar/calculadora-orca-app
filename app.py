@@ -1,330 +1,415 @@
-import os
+# app.py
 import io
 import json
-import math
-from datetime import datetime
-
-import pandas as pd
+from datetime import date
 import streamlit as st
+import pandas as pd
+import numpy as np
 
-# =============================
-# 🧭 Configuración básica
-# =============================
-st.set_page_config(page_title="Herramienta de Pricing", page_icon="💸", layout="wide")
+# ===================== Config básica =====================
+ST_TITLE = "Calculadora de Márgenes (MVP)"
+REQ_SHEETS = {
+    "FACT_COSTOS_POND": "Tabla con costos unitarios ponderados por SKU (Oct-Jun).",
+    "FACT_PRECIOS": "Precios mensuales: SKU, Año, Mes, PrecioVentaUSD.",
+    "DIM_SKU": "Dimensión de SKU (opcional, para filtrar por Marca/Especie/Cliente)."
+}
+MESES_ORD = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+MES2NUM = {m:i+1 for i,m in enumerate(MESES_ORD)}
 
-# ---------- Utilidades ----------
-@st.cache_data
-def read_uploaded_file(file) -> dict:
-    # Acepta .xlsx (hojas Ingredients, Recipes) o .csv sueltos
-    if file.name.lower().endswith(".xlsx"):
-        xls = pd.ExcelFile(file)
-        sheets = {}
-        for sheet in xls.sheet_names:
-            sheets[sheet] = pd.read_excel(xls, sheet_name=sheet)
-        return sheets
-    elif file.name.lower().endswith(".csv"):
-        df = pd.read_csv(file)
-        return {"Data": df}
+# ===================== Utilidades =====================
+def to_number_safe(x, comma_decimal=True):
+    """Convierte '1.234,56' o '1,234.56' o '3,071' -> float. '-' o vacío -> NaN."""
+    if pd.isna(x): return np.nan
+    s = str(x).strip().replace("\xa0"," ")
+    if s in {"", "-", "—"}: return np.nan
+    s = s.replace(" ", "")
+    if comma_decimal:
+        # Si parece '1.234,56' o '3,071'
+        if "," in s and (s.count(".") <= 1):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
     else:
-        raise ValueError("Formato no soportado. Usa .xlsx o .csv")
+        s = s.replace(",", "")
+    return pd.to_numeric(s, errors="coerce")
 
-@st.cache_data
-def sample_data():
-    # Datos de ejemplo mínimos para correr sin archivos externos
-    ingredients = pd.DataFrame(
-        [
-            {"ingredient_id": "ING-01", "name": "Filete Pescado A", "unit": "kg", "unit_cost": 3.20, "yield_pct": 0.92,
-             "packaging_cost": 0.20, "qc_cost": 0.05},
-            {"ingredient_id": "ING-02", "name": "Rebozador", "unit": "kg", "unit_cost": 0.80, "yield_pct": 0.98,
-             "packaging_cost": 0.03, "qc_cost": 0.01},
-            {"ingredient_id": "ING-03", "name": "Aceite", "unit": "L", "unit_cost": 1.10, "yield_pct": 0.99,
-             "packaging_cost": 0.00, "qc_cost": 0.00},
-        ]
-    )
-    recipes = pd.DataFrame(
-        [
-            {"product_code": "PRD-001", "product_name": "Merluza Apanada 1kg", "ingredient_id": "ING-01", "qty": 0.70},
-            {"product_code": "PRD-001", "product_name": "Merluza Apanada 1kg", "ingredient_id": "ING-02", "qty": 0.25},
-            {"product_code": "PRD-001", "product_name": "Merluza Apanada 1kg", "ingredient_id": "ING-03", "qty": 0.05},
-        ]
-    )
-    # Costos globales (conceptos no específicos al ingrediente)
-    globals_df = pd.DataFrame([
-        {"concept": "labor_processing_per_kg", "value": 0.35},
-        {"concept": "overhead_direct_per_kg", "value": 0.18},
-        {"concept": "overhead_indirect_alloc_per_kg", "value": 0.22},
-        {"concept": "freight_to_port_per_kg", "value": 0.25},
-        {"concept": "export_fees_per_kg", "value": 0.07},
-        {"concept": "insurance_financing_pct", "value": 0.012},
-        {"concept": "commission_rebates_pct", "value": 0.02},
-        {"concept": "fx_rate_usd_clp", "value": 950.0},
-        {"concept": "wastage_extra_pct", "value": 0.01},
-    ])
-    return ingredients, recipes, globals_df
+def month_to_num(m):
+    return MES2NUM.get(str(m).strip().title(), np.nan)
 
-# ---------- Estado ----------
-if "scenarios" not in st.session_state:
-    st.session_state.scenarios = {}
+def ensure_str(df, col):
+    df[col] = df[col].astype(str).str.strip()
+    return df
 
-# =============================
-# 🧱 Sidebar: carga y parámetros
-# =============================
-st.sidebar.header("Configuración & Datos")
+def bytes_key(file):
+    """Genera una clave reproducible para cachear por contenido del archivo subido."""
+    if file is None:
+        return None
+    pos = file.tell()
+    data = file.read()
+    file.seek(pos)
+    return hash(data)
 
-mode = st.sidebar.radio(
-    "Fuente de datos",
-    ["Datos de ejemplo", "Subir archivo (.xlsx/.csv)"]
-)
+# ===================== Carga y validación =====================
+@st.cache_data(show_spinner=False)
+def read_workbook(uploaded_bytes: bytes):
+    """Lee el Excel completo en dict de DataFrames (todas las hojas)"""
+    bio = io.BytesIO(uploaded_bytes)
+    xls = pd.ExcelFile(bio, engine="openpyxl")
+    sheets = {name: xls.parse(name, dtype=str) for name in xls.sheet_names}
+    return sheets
 
-if mode == "Subir archivo (.xlsx/.csv)":
-    upl = st.sidebar.file_uploader("Cargar archivo de datos", type=["xlsx", "csv"], accept_multiple_files=False)
-    if upl:
-        try:
-            sheets = read_uploaded_file(upl)
-            # Intento estándar: Ingredients y Recipes
-            ingredients = sheets.get("Ingredients") or sheets.get("ingredients")
-            recipes = sheets.get("Recipes") or sheets.get("recipes")
-            globals_df = sheets.get("Globals") or sheets.get("globals")
-            if ingredients is None or recipes is None:
-                st.sidebar.warning("No se encontraron hojas 'Ingredients' y 'Recipes'. Usando datos de ejemplo.")
-                ingredients, recipes, globals_df = sample_data()
-            elif globals_df is None:
-                st.sidebar.info("No se encontró hoja 'Globals'. Se usarán valores por defecto.")
-                _, _, default_globals = sample_data()
-                globals_df = default_globals
-        except Exception as e:
-            st.sidebar.error(f"Error leyendo archivo: {e}")
-            ingredients, recipes, globals_df = sample_data()
+def validate_required_sheets(sheets: dict):
+    missing = [s for s in REQ_SHEETS if s not in sheets]
+    return missing
+
+# ===================== Procesamiento =====================
+def build_tbl_costos_pond(df_costos: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Devuelve:
+      - resumen_df: columnas ['SKU','DirectoUSDkg','IndirectoUSDkg','TotalUSDkg']
+      - detalle_df: 'SKU' + TODAS las columnas de costos originales (numéricas) para mostrar en 'Expandir'
+    """
+    df = df_costos.copy()
+    df.columns = [c.strip() for c in df.columns]
+    if "SKU" not in df.columns:
+        raise ValueError("En 'FACT_COSTOS_POND' no se encontró columna 'SKU'.")
+    df["SKU"] = df["SKU"].astype(str).str.strip()
+
+    # Guardamos un duplicado para DETALLE y convertimos a numéricos (excepto SKU)
+    det = df.copy()
+    for c in det.columns:
+        if c == "SKU": 
+            continue
+        det[c] = det[c].apply(to_number_safe)
+
+    # Detecta totales si existen
+    col_total_dir = next((c for c in det.columns if "costo directo" in c.lower()), None)
+    col_total_ind = next((c for c in det.columns if "costo indirecto" in c.lower()), None)
+    col_total_all = next((c for c in det.columns if "costo total" in c.lower()), None)
+
+    resumen = det[["SKU"]].copy()
+
+    if col_total_all and col_total_dir and col_total_ind:
+        resumen["TotalUSDkg"]    = det[col_total_all]
+        resumen["DirectoUSDkg"]  = det[col_total_dir]
+        resumen["IndirectoUSDkg"]= det[col_total_ind]
     else:
-        ingredients, recipes, globals_df = sample_data()
+        dcols = [c for c in det.columns
+                 if c != "SKU" and
+                 ("indirectos" not in c.lower()) and ("total" not in c.lower()) and ("indirecta" not in c.lower()) and ("totales" not in c.lower())]
+        icols = [c for c in det.columns if ("indirectos" in c.lower()) or ("indirecta" in c.lower())]
+
+        resumen["DirectoUSDkg"] = det[dcols].sum(axis=1, min_count=1) if dcols else np.nan
+        resumen["IndirectoUSDkg"] = det[icols].sum(axis=1, min_count=1) if icols else 0.0
+        resumen["TotalUSDkg"] = resumen["DirectoUSDkg"].fillna(0) + resumen["IndirectoUSDkg"].fillna(0)
+
+    # Orden amigable
+    resumen = resumen[["SKU","DirectoUSDkg","IndirectoUSDkg","TotalUSDkg"]]
+
+    # DETALLE: dejamos SKU + todas las columnas de costo (numéricas) tal cual para mostrar en la UI
+    detalle = det.copy()
+
+    return resumen, detalle
+
+def build_fact_precios(df_p: pd.DataFrame) -> pd.DataFrame:
+    """
+    Espera FACT_PRECIOS con: SKU, Año, Mes, PrecioVentaUSD
+    Devuelve precios limpios + FechaClave (YYYYMM)
+    """
+    needed = {"SKU","Año","Mes","PrecioVentaUSD"}
+    if not needed.issubset(set(df_p.columns)):
+        raise ValueError(f"FACT_PRECIOS debe contener {needed}. Columnas: {df_p.columns.tolist()}")
+
+    p = df_p.copy()
+    p.columns = [c.strip() for c in p.columns]
+    p = ensure_str(p, "SKU")
+    p["Año"] = p["Año"].apply(lambda x: int(str(x).strip()))
+    p["MesNum"] = p["Mes"].apply(month_to_num).astype("Int64")
+    p["PrecioVentaUSD"] = p["PrecioVentaUSD"].apply(to_number_safe)
+    p = p.dropna(subset=["PrecioVentaUSD"])
+    p["FechaClave"] = p["Año"]*100 + p["MesNum"].astype(int)
+    return p
+
+def build_dim_sku(df_dim: pd.DataFrame) -> pd.DataFrame:
+    """
+    Espera columnas en español:
+      - SKU (obligatoria)
+      - Condicion, Descripcion, Marca, Especie, Cliente ID (opcionales)
+    Devuelve una tabla única por SKU con esas columnas limpias (str).
+    """
+    dim = df_dim.copy()
+    dim.columns = [c.strip() for c in dim.columns]
+    if "SKU" not in dim.columns:
+        raise ValueError("En 'DIM_SKU' no se encontró columna 'SKU'.")
+
+    # Asegura columnas esperadas (si faltan, las crea vacías)
+    expected = ["SKU", "Condicion", "Descripcion", "Marca", "Especie", "Cliente"]
+    for c in expected:
+        if c not in dim.columns:
+            dim[c] = np.nan
+
+    # Limpieza básica
+    for c in expected:
+        dim[c] = dim[c].astype(str).str.strip()
+
+    # Si hay columnas duplicadas por SKU, nos quedamos con la primera aparición
+    dim = dim[expected].drop_duplicates(subset=["SKU"], keep="first").reset_index(drop=True)
+    return dim
+
+def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None) -> pd.DataFrame:
+    """
+    Devuelve por SKU: PriceUSDkg (último precio) y LastDateKey.
+    mode="global": último DateKey para cada SKU (independiente de rango).
+    mode="to_date": último ≤ ref_datekey.
+    """
+    p = precios.sort_values(["SKU","FechaClave"]).reset_index(drop=True)
+    if mode == "to_date":
+        if ref_datekey is None:
+            raise ValueError("ref_datekey es requerido con mode='to_date'.")
+        p = p[p["FechaClave"] <= ref_datekey]
+    idx = p.groupby("SKU")["FechaClave"].idxmax()
+    latest = p.loc[idx, ["SKU","PrecioVentaUSD","FechaClave"]].rename(
+        columns={"PrecioVentaUSD":"PrecioVentaUSDkg"})
+    return latest.reset_index(drop=True)
+
+@st.cache_data(show_spinner=True)
+def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: int|None):
+    """Pipeline completo a partir del Excel subido."""
+    sheets = read_workbook(uploaded_bytes)
+    # Validación de hojas requeridas
+    missing = validate_required_sheets(sheets)
+    if missing:
+        raise ValueError(f"Faltan hojas requeridas: {missing}")
+
+    # 1) Costos ponderados
+    costos_resumen, costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
+
+    # 2) Precios + último precio por SKU
+    precios = build_fact_precios(sheets["FACT_PRECIOS"])
+    if ultimo_precio_modo == "global":
+        latest = compute_latest_price(precios, mode="global")
+    else:
+        latest = compute_latest_price(precios, mode="to_date", ref_datekey=ref_ym)
+
+    # 3) DIM_SKU
+    dim = build_dim_sku(sheets["DIM_SKU"])
+
+    # 4) Unión (resumen + último precio + atributos DIM)
+    mart = costos_resumen.merge(latest, on="SKU", how="left")
+    mart = mart.merge(dim, on="SKU", how="right")
+
+    detalle = costos_detalle.merge(latest, on="SKU", how="left")
+    detalle = detalle.merge(dim, on="SKU", how="right")
+
+    # 4) Métricas de margen unitario
+    mart["MargenUSDkg"] = mart["PrecioVentaUSDkg"] - mart["TotalUSDkg"].abs() if "TotalUSDkg" != 0 else np.nan
+    mart["MargenDirectoUSDkg"] = mart["PrecioVentaUSDkg"] - mart["DirectoUSDkg"].abs() if "DirectoUSDkg" != 0 else np.nan
+    mart["MargenPct"] = np.where(
+        mart["PrecioVentaUSDkg"].abs() > 1e-12,
+        mart["MargenUSDkg"] / mart["PrecioVentaUSDkg"],
+        np.nan
+    )
+    mart["MargenDirectoPct"] = np.where(
+        mart["PrecioVentaUSDkg"].abs() > 1e-12,
+        mart["MargenDirectoUSDkg"] / mart["PrecioVentaUSDkg"],
+        np.nan
+    )
+
+
+    # Orden amigable
+    mart = mart.sort_values("SKU", ascending=True).reset_index(drop=True)
+    return mart, detalle
+
+def apply_simulation(df: pd.DataFrame, price_up=0.0, direct_up=0.0, indirect_up=0.0):
+    """
+    Aplica multiplicadores de simulación por grupo (globales).
+    Retorna un DataFrame con columnas *_Sim y deltas.
+    """
+    sim = df.copy()
+    sim["PrecioVentaUSDkg_Sim"]   = df["PrecioVentaUSDkg"]   * (1 + price_up/100.0)
+    sim["DirectoUSDkg_Sim"]  = df["DirectoUSDkg"]  * (1 + direct_up/100.0)
+    sim["IndirectoUSDkg_Sim"]= df["IndirectoUSDkg"]* (1 + indirect_up/100.0)
+    sim["TotalUSDkg_Sim"]   = sim["DirectoUSDkg_Sim"] + sim["IndirectoUSDkg_Sim"]
+    sim["MargenUSDkg_Sim"]  = sim["PrecioVentaUSDkg_Sim"] - sim["TotalUSDkg_Sim"]
+    sim["MargenPct_Sim"] = np.where(
+        sim["PrecioVentaUSDkg_Sim"].abs() > 1e-12,
+        sim["MargenUSDkg_Sim"] / sim["PrecioVentaUSDkg_Sim"],
+        np.nan
+    )
+    # deltas
+    sim["Δpp_MargenPct"] = (sim["MargenPct_Sim"] - sim["MargenPct"])*100
+    sim["Δ_"] = sim["MargenUSDkg_Sim"] - sim["MargenUSDkg"]
+    return sim
+
+def to_excel_download(df: pd.DataFrame, filename="export.xlsx"):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        df.to_excel(xw, index=False, sheet_name="data")
+    st.download_button("⬇️ Descargar Excel", data=buf.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ===================== UI =====================
+st.set_page_config(page_title=ST_TITLE, layout="wide")
+st.title(ST_TITLE)
+
+with st.sidebar:
+    st.header("1) Subir archivo maestro (.xlsx)")
+    up = st.file_uploader("Selecciona tu Excel con hojas: " + ", ".join(REQ_SHEETS.keys()),
+                          type=["xlsx"], accept_multiple_files=False)
+    st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
+
+    st.header("2) Parámetros de precio vigente")
+    modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True)
+    ref_ym = None
+    if modo == "to_date":
+        # Selecciona una fecha (Año-Mes) para construir YYYYMM
+        ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1))
+        ref_ym = ref_date.year*100 + ref_date.month
+
+    st.header("3) Simulación (multiplicadores %)")
+    price_up = st.number_input("Precio: % Δ", value=0.0, step=0.5, format="%.2f")
+    direct_up = st.number_input("Costos Directos: % Δ", value=0.0, step=0.5, format="%.2f")
+    indirect_up = st.number_input("Costos Indirectos: % Δ", value=0.0, step=0.5, format="%.2f")
+
+    st.markdown("---")
+    st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
+
+if up is None:
+    st.info("Sube tu archivo para comenzar.")
+    st.stop()
+
+# Procesamiento (cacheado por bytes del archivo + params)
+file_bytes = up.read()
+try:
+    mart, detalle = build_mart(file_bytes, ultimo_precio_modo=modo, ref_ym=ref_ym)
+except Exception as e:
+    st.error(f"Error procesando el archivo: {e}")
+    st.stop()
+
+# -------- Filtros sin orden (cascada dinámica) --------
+# -------- Filtros sin orden (cascada dinámica) --------
+st.subheader("Filtros")
+
+# Posibles nombres (alias) por campo lógico
+FIELD_ALIASES = {
+    "Marca": ["Marca"],
+    "Cliente": ["Cliente", "Cliente ID", "Customer", "ClienteID"],
+    "Especie": ["Especie", "Species"],
+    "Condicion": ["Condicion", "Condición", "Condition"],
+    "SKU": ["SKU"]
+}
+
+# Resolver alias -> columna real presente en mart
+def resolve_columns(df, aliases_map):
+    resolved = {}
+    cols_lower = {c.lower(): c for c in df.columns}
+    for logical, options in aliases_map.items():
+        found = None
+        for opt in options:
+            c = cols_lower.get(opt.lower())
+            if c is not None:
+                found = c
+                break
+        if found:
+            resolved[logical] = found
+    return resolved
+
+RESOLVED = resolve_columns(mart, FIELD_ALIASES)
+
+# Lista final de filtros (solo los que existen en la data)
+FILTER_FIELDS = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED]
+
+def _norm_series(s: pd.Series):
+    return s.fillna("(Vacío)").astype(str).str.strip()
+
+def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
+    out = df.copy()
+    for logical, sel in selections.items():
+        if logical == skip_key or not sel:
+            continue
+        real_col = RESOLVED[logical]
+        # Mapea el placeholder "(Vacío)" a vacío real
+        valid = [x if x != "(Vacío)" else "" for x in sel]
+        out = out[out[real_col].fillna("").astype(str).str.strip().isin(valid)]
+    return out
+
+# Estado de selecciones
+if "filters" not in st.session_state:
+    st.session_state.filters = {k: [] for k in FILTER_FIELDS}
 else:
-    ingredients, recipes, globals_df = sample_data()
+    # Si cambió el set de filtros por alias/resolución, sincroniza
+    st.session_state.filters = {k: st.session_state.filters.get(k, []) for k in FILTER_FIELDS}
 
-st.sidebar.subheader("Parámetros globales")
-fx_rate = st.sidebar.number_input("Tipo de cambio (CLP por USD)", min_value=1.0, value=float(globals_df.loc[globals_df["concept"]=="fx_rate_usd_clp", "value"].iloc[0]), step=1.0)
-insurance_fin_pct = st.sidebar.number_input("% Seguro/Financiamiento (sobre costo)", min_value=0.0, value=float(globals_df.loc[globals_df["concept"]=="insurance_financing_pct", "value"].iloc[0]), step=0.001, format="%.3f")
-commission_pct = st.sidebar.number_input("% Comisiones/Rebates (sobre precio)", min_value=0.0, value=float(globals_df.loc[globals_df["concept"]=="commission_rebates_pct", "value"].iloc[0]), step=0.001, format="%.3f")
-wastage_pct = st.sidebar.number_input("% Merma adicional (sobre insumos)", min_value=0.0, value=float(globals_df.loc[globals_df["concept"]=="wastage_extra_pct", "value"].iloc[0]), step=0.001, format="%.3f")
+cols = st.columns(len(FILTER_FIELDS) if FILTER_FIELDS else 1)
 
-# =============================
-# 🧪 Selección de producto / receta
-# =============================
-st.title("💸 Herramienta de Pricing — MVP Streamlit")
-st.caption("Calcula precio sugerido a partir de costos (11 conceptos), margen y metas de ingreso.")
+# Multiselects con opciones dependientes del resto, en cualquier orden
+for i, logical in enumerate(FILTER_FIELDS):
+    with cols[i]:
+        real_col = RESOLVED[logical]
+        df_except = _apply_filters(mart, st.session_state.filters, skip_key=logical)
+        opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
+        current = [x for x in st.session_state.filters.get(logical, []) if x in opts]
+        sel = st.multiselect(logical, options=opts, default=current, key=f"ms_{logical}")
+        st.session_state.filters[logical] = sel
 
-left, right = st.columns([1, 1])
+# Aplica todos los filtros
+df_filtrado = _apply_filters(mart, st.session_state.filters).copy()
 
-# Lista de productos a partir de recipes
-products = recipes[["product_code", "product_name"]].drop_duplicates().sort_values("product_code")
-with left:
-    st.subheader("1) Selección de producto")
-    prod = st.selectbox(
-        "Producto",
-        options=[f"{r.product_code} — {r.product_name}" for _, r in products.iterrows()]
-    )
-    selected_code = prod.split(" — ")[0]
-
-    st.markdown("**Composición (puedes editar cantidades):**")
-    base_recipe = recipes[recipes["product_code"] == selected_code].merge(ingredients, on="ingredient_id", how="left")
-    base_recipe = base_recipe[["ingredient_id", "name", "qty", "unit", "unit_cost", "yield_pct", "packaging_cost", "qc_cost"]].copy()
-
-    edit_df = st.data_editor(
-        base_recipe,
-        num_rows="dynamic",
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "qty": st.column_config.NumberColumn("Cantidad (unidad receta)", min_value=0.0, step=0.01),
-            "unit_cost": st.column_config.NumberColumn("Costo unitario (USD/Unidad)", min_value=0.0, step=0.01),
-            "yield_pct": st.column_config.NumberColumn("Rendimiento (0-1)", min_value=0.0, max_value=1.0, step=0.01),
-            "packaging_cost": st.column_config.NumberColumn("Empaque (USD/kg)", min_value=0.0, step=0.01),
-            "qc_cost": st.column_config.NumberColumn("Calidad/Cert (USD/kg)", min_value=0.0, step=0.01),
-        },
-        key="editor_recipe",
-    )
-
-with right:
-    st.subheader("2) Parámetros comerciales")
-    pricing_mode = st.radio(
-        "Modo de pricing",
-        ["Objetivo Margen (%)", "Precio objetivo (USD)"]
-    )
-    margin_pct = None
-    target_price = None
-
-    if pricing_mode == "Objetivo Margen (%)":
-        margin_pct = st.number_input("Margen objetivo (%)", min_value=0.0, max_value=95.0, value=20.0, step=0.5)
-    else:
-        target_price = st.number_input("Precio de venta objetivo (USD)", min_value=0.0, value=5.00, step=0.05)
-
-    st.divider()
-    st.subheader("3) Volumen y unidad")
-    units = st.number_input("Volumen (unidades)", min_value=1, value=1000, step=100)
-    unit_label = st.text_input("Unidad de venta (ej: bolsa 1kg, caja 10x1kg)", value="bolsa 1kg")
-
-# =============================
-# 🧮 Cálculo de costos (11 conceptos)
-# =============================
-# Definición de 11 conceptos de costo (en USD por unidad de venta):
-# 1) Materias primas (ajustadas por rendimiento + merma)
-# 2) Mano de obra de proceso
-# 3) Empaque
-# 4) Control de calidad / certificaciones
-# 5) Overhead directo (energía/agua/mantenimiento)
-# 6) Overhead indirecto asignado
-# 7) Flete interno a puerto
-# 8) Tasas/fees de exportación
-# 9) Seguro/financiamiento (pct sobre costo)
-# 10) Merma adicional (pct sobre MP)
-# 11) Comisiones/Rebates (pct sobre precio) — se aplica después sobre el precio sugerido
-
-# Tomamos parámetros globales por kg (o por unidad de venta equivalente). En un MVP, usamos valores fijos.
-# Puedes mover estos valores a la hoja Globals del Excel.
-_g = {c: v for c, v in zip(globals_df["concept"], globals_df["value"])}
-
-labor_processing = _g.get("labor_processing_per_kg", 0.35)
-direct_overhead = _g.get("overhead_direct_per_kg", 0.18)
-indirect_overhead = _g.get("overhead_indirect_alloc_per_kg", 0.22)
-freight_to_port = _g.get("freight_to_port_per_kg", 0.25)
-export_fees = _g.get("export_fees_per_kg", 0.07)
-
-# Materias primas: sumatoria qty * unit_cost, ajustando por rendimiento
-def compute_raw_material_cost(df: pd.DataFrame) -> float:
-    df = df.copy()
-    # Ajustamos por rendimiento efectivo (si rinde 0.92, el costo efectivo sube 1/0.92)
-    df["effective_cost"] = df.apply(lambda r: (r["qty"] * r["unit_cost"]) / max(r["yield_pct"], 1e-9), axis=1)
-    raw_cost = df["effective_cost"].sum()
-    return float(raw_cost)
-
-raw_material_cost = compute_raw_material_cost(edit_df)
-extra_wastage = raw_material_cost * wastage_pct  # (10) Merma adicional
-
-packaging_cost = float((edit_df["packaging_cost"] * edit_df["qty"]).sum())  # (3)
-qc_cost = float((edit_df["qc_cost"] * edit_df["qty"]).sum())  # (4)
-
-# Costos planos por unidad de venta
-labor_cost = labor_processing  # (2)
-direct_oh_cost = direct_overhead  # (5)
-indirect_oh_cost = indirect_overhead  # (6)
-freight_cost = freight_to_port  # (7)
-export_cost = export_fees  # (8)
-
-# Costo base antes de seguro/financiamiento y comisiones
-cost_before_fin = (
-    raw_material_cost + extra_wastage + packaging_cost + qc_cost +
-    labor_cost + direct_oh_cost + indirect_oh_cost + freight_cost + export_cost
-)
-
-insurance_fin_cost = cost_before_fin * insurance_fin_pct  # (9)
-
-# Costo total por unidad de venta (USD)
-unit_total_cost_usd = cost_before_fin + insurance_fin_cost
-
-# Precio sugerido según modo
-if pricing_mode == "Objetivo Margen (%)":
-    # Precio = Costo / (1 - margen - comisiones)
-    # Primero estimamos precio sin comisión para calcular comisión sobre precio final
-    # Iteramos una vez: P = C / (1 - m - c)
-    m = (margin_pct or 0.0) / 100.0
-    c = commission_pct
-    if m + c >= 0.95:
-        st.warning("La suma margen+comisión es muy alta. Ajusta parámetros.")
-    suggested_price_usd = unit_total_cost_usd / max(1e-9, (1.0 - m - c))
-    achieved_margin_pct = (1 - unit_total_cost_usd / max(1e-9, suggested_price_usd)) * 100.0
+# Orden por SKU si existe y sin índice
+sku_col = RESOLVED.get("SKU")
+if sku_col in df_filtrado.columns:
+    df_filtrado = df_filtrado.sort_values([sku_col]).reset_index(drop=True)
 else:
-    suggested_price_usd = target_price or 0.0
-    achieved_margin_pct = (1 - unit_total_cost_usd / max(1e-9, suggested_price_usd)) * 100.0
+    df_filtrado = df_filtrado.reset_index(drop=True)
 
-commission_value = suggested_price_usd * commission_pct  # (11)
-
-# Totales por volumen
-total_cost_batch_usd = unit_total_cost_usd * units
-total_revenue_batch_usd = suggested_price_usd * units
-
-# =============================
-# 📊 Salidas
-# =============================
-st.divider()
-st.subheader("Resultados")
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Costo unitario (USD)", f"{unit_total_cost_usd:,.2f}")
-col2.metric("Precio sugerido (USD)", f"{suggested_price_usd:,.2f}")
-col3.metric("Margen logrado (%)", f"{achieved_margin_pct:,.1f}")
-col4.metric("Comisión (USD/unidad)", f"{commission_value:,.2f}")
-
-# Tabla de desglose (11 conceptos)
-concept_rows = [
-    ("1) Materias primas (ajust. rendimiento)", raw_material_cost),
-    ("2) Mano de obra de proceso", labor_cost),
-    ("3) Empaque", packaging_cost),
-    ("4) Calidad/Certificaciones", qc_cost),
-    ("5) Overhead directo", direct_oh_cost),
-    ("6) Overhead indirecto", indirect_oh_cost),
-    ("7) Flete interno a puerto", freight_cost),
-    ("8) Tasas/fees de exportación", export_cost),
-    ("9) Seguro/financiamiento", insurance_fin_cost),
-    ("10) Merma adicional", extra_wastage),
-]
-
-breakdown = pd.DataFrame(concept_rows, columns=["Concepto", "USD por unidad"]).assign(
-    **{"% del costo": lambda d: 100 * d["USD por unidad"] / max(1e-9, unit_total_cost_usd)}
+# -------- Mostrar resultados --------
+st.subheader("Márgenes actuales (unitarios)")
+base_cols = ["SKU","Descripcion","Marca","Cliente","Especie","Condicion","PrecioVentaUSDkg","DirectoUSDkg","IndirectoUSDkg","TotalUSDkg","MargenDirectoUSDkg","MargenDirectoPct","MargenUSDkg","MargenPct"]
+view_base = df_filtrado[base_cols].copy()
+view_base.set_index("SKU", inplace=True)
+view_base = view_base.sort_index()
+st.dataframe(
+    view_base.style.format({
+        "SKU":"{}", "Descripcion":"{}", "Marca":"{}", "Cliente":"{}", "Especie":"{}", "Condicion":"{}",
+        "PrecioVentaUSDkg":"{:.3f}",
+        "DirectoUSDkg":"{:.3f}",
+        "IndirectoUSDkg":"{:.3f}",
+        "TotalUSDkg":"{:.3f}",
+        "MargenDirectoUSDkg":"{:.3f}",
+        "MargenDirectoPct":"{:.1%}",
+        "MargenUSDkg":"{:.3f}",
+        "MargenPct":"{:.1%}"
+    }),
+    use_container_width=True, height=420
 )
+# --- Toggle: ver detalle de costos respetando los filtros vigentes ---
+expand = st.toggle("🔎 Expandir costos por SKU (temporada)", value=False)
 
-st.markdown("**Desglose de costo (USD/unidad):**")
-st.dataframe(breakdown, use_container_width=True, hide_index=True)
+if expand:
+    # 1) Toma los SKUs actualmente visibles (ya filtrados arriba)
+    skus_filtrados = df_filtrado["SKU"].astype(str).unique().tolist()
 
-st.markdown("**Totales del lote:**")
-colA, colB = st.columns(2)
-with colA:
-    st.write(f"Costo total (USD): **{total_cost_batch_usd:,.0f}**")
-    st.write(f"Ingresos estimados (USD): **{total_revenue_batch_usd:,.0f}**")
-with colB:
-    st.write(f"Tipo de cambio (CLP/USD): **{fx_rate:,.0f}**")
-    st.write(f"Costo unitario (CLP): **{unit_total_cost_usd * fx_rate:,.0f}**")
-    st.write(f"Precio sugerido (CLP): **{suggested_price_usd * fx_rate:,.0f}**")
+    # 2) Filtra el detalle por esos SKUs
+    det = detalle[detalle["SKU"].astype(str).isin(skus_filtrados)].copy()
 
-# =============================
-# 💾 Exportar / escenarios
-# =============================
-st.divider()
-st.subheader("Exportar & Escenarios")
+    # 3) Mueve atributos DIM a la derecha
+    dim_candidatas = ["Descripcion","Marca","Cliente","Especie","Condicion"]
+    dim_cols = [c for c in dim_candidatas if c in det.columns]
+    last_cols = [c for c in det.columns if c not in dim_cols]
+    det = det[dim_cols + last_cols]
 
-scenario_name = st.text_input("Nombre del escenario", value=f"Escenario {datetime.now().strftime('%Y-%m-%d %H:%M')}" )
-if st.button("💾 Guardar escenario en memoria"):
-    st.session_state.scenarios[scenario_name] = {
-        "product": prod,
-        "units": units,
-        "unit_label": unit_label,
-        "pricing_mode": pricing_mode,
-        "margin_pct": margin_pct,
-        "target_price": target_price,
-        "fx_rate": fx_rate,
-        "insurance_fin_pct": insurance_fin_pct,
-        "commission_pct": commission_pct,
-        "wastage_pct": wastage_pct,
-        "breakdown": breakdown.to_dict(orient="records"),
-        "unit_cost_usd": unit_total_cost_usd,
-        "price_usd": suggested_price_usd,
-        "achieved_margin_pct": achieved_margin_pct,
+    # 4) Orden y formato
+    det = det.sort_values(["SKU"]).reset_index(drop=True)
+    view_base_det = det.copy()
+    view_base_det.set_index("SKU", inplace=True)
+
+    fmt_cols = {
+        c: "{:.3f}" for c in det.columns
+        if c not in (["SKU"] + dim_cols) and np.issubdtype(det[c].dtype, np.number)
     }
-    st.success("Escenario guardado en sesión.")
 
-if st.session_state.scenarios:
-    st.write("Escenarios guardados (sesión actual):")
-    st.json(st.session_state.scenarios)
+    st.subheader("Detalle de costos por SKU (temporada)")
+    st.dataframe(view_base_det.style.format(fmt_cols), use_container_width=True, height=700)
 
-# Descargar reporte simple en CSV
-out_buf = io.StringIO()
-export_df = breakdown.copy()
-export_df.loc[len(export_df)] = ["Precio sugerido (USD)", suggested_price_usd, None]
-export_df.loc[len(export_df)] = ["Costo total por unidad (USD)", unit_total_cost_usd, None]
-export_df.to_csv(out_buf, index=False)
-st.download_button(
-    label="⬇️ Descargar desglose CSV",
-    data=out_buf.getvalue(),
-    file_name=f"pricing_breakdown_{selected_code}.csv",
-    mime="text/csv"
-)
-
-st.caption("MVP: parámetros globales y fórmulas simplificadas. En producción, mover a hoja 'Globals' y versiones por país/cliente.")
+    # 5) Descargar
+    to_excel_download(det, "costos_detalle_temporada.xlsx")

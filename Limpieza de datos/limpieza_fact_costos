@@ -1,0 +1,195 @@
+import pandas as pd
+import numpy as np
+import unicodedata
+import re
+
+# === Configura aquí ===
+INPUT = "/Users/franciscoortuzar/Desktop/Or-Ca Consulting/Datos de prueba.xlsx"
+OUTPUT = "FACT_COSTOS.xlsx"
+
+# Meses y año mapeado
+MESES = ["Octubre","Noviembre","Diciembre","Enero","Febrero","Marzo","Abril","Mayo","Junio"]
+MAP_ANIO = {"Octubre":2024,"Noviembre":2024,"Diciembre":2024,
+            "Enero":2025,"Febrero":2025,"Marzo":2025,"Abril":2025,"Mayo":2025,"Junio":2025}
+
+# Costo global opcional (si None, intenta autodetectar en el Excel)
+GUARDA_GLOBAL = None   # ejemplo: "0,121" o 0.121
+
+# Tipos que queremos (map rápido, tolerante a variantes)
+COSTO_MAP = {
+    "costo mmpp con granel": "Costo_MMPP",
+    "costo mmpp": "Costo_MMPP",
+    "costo materia prima": "Costo_MMPP",
+    "mano de obra (indirecta)": "ManoObra Indirecta",
+    "mano de obra (directa) no anclado aun": "ManoObra Total",
+    "materiales directos cajas y bolsas": "Materiales Directos",
+    "materiales todos": "Materiales Totales",
+    "calidad y laboratorio": "CalidadLab",
+    "mantencion y maquinaria": "MantencionMaquinaria",
+    "mantenimiento y maquinaria": "MantencionMaquinaria",
+    "servicios generales": "ServiciosGenerales",
+    "utilities": "Utilities",
+    "fletes": "Fletes",
+    "comex": "Comex",
+    "guarda producto terminado": "GuardaPT",
+    "guarda prodructo terminado": "GuardaPT",
+}
+EXCLUIR_SUB = ["margen", "%"]  # cualquier columna cuyo texto tenga esto, se ignora
+
+# ========== utilidades ==========
+def norm(s: str) -> str:
+    if s is None: return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s).encode("ascii","ignore").decode("ascii")
+    return s.strip()
+
+def norm_lower(s: str) -> str:
+    return norm(s).lower()
+
+def mes_base(x) -> str:
+    return str(x).split(".", 1)[0].strip()
+
+def to_number_safe(x):
+    if pd.isna(x): return np.nan
+    s = str(x).strip()
+    if s in {"", "-", "—"}: return np.nan
+    s = s.replace("\xa0"," ").replace(" ", "")
+    if "," in s and "." not in s:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return pd.to_numeric(s, errors="coerce")
+
+def autodetect_guarda_global(xlsx_path: str):
+    try:
+        raw = pd.read_excel(xlsx_path, header=None, dtype=str, engine="openpyxl")
+    except Exception:
+        return None
+    pat = re.compile(r"gasto\s*guarda.*usd\s*/?\s*kg\s*vendido", re.I)
+    num_pat = re.compile(r"[-+]?\d+[.,]?\d*")
+    for i in range(min(400, len(raw))):
+        line = "  ".join(str(x) for x in raw.iloc[i].tolist())
+        if pat.search(norm_lower(line)):
+            for rr in (i, i+1, i+2):
+                if rr >= len(raw): break
+                m = num_pat.search("  ".join(str(x) for x in raw.iloc[rr].tolist()))
+                if m:
+                    val = to_number_safe(m.group(0))
+                    if pd.notna(val):
+                        return abs(float(val))
+    return None
+
+def try_read_multi(input_path: str):
+    """
+    Intenta leer MultiIndex con:
+      [4,6] -> fila 5 = tipos ; fila 7 = meses   (lo que quieres)
+      [5,6] -> por si las dudas
+    """
+    for hdr in ([4,6], [5,6]):
+        try:
+            df = pd.read_excel(input_path, dtype=str, header=hdr, engine="openpyxl")
+            if isinstance(df.columns, pd.MultiIndex) and df.columns.nlevels == 2:
+                return df
+        except Exception:
+            pass
+    raise ValueError("No pude leer encabezado multinivel con [fila 5, fila 7]. Revisa el layout.")
+
+def detect_base_cols(df_multi: pd.DataFrame):
+    wanted = {"SKU","Condicion","Descripcion","Marca","Cliente","Especie"}
+    base = {}
+    for col in df_multi.columns:
+        # col es una tupla (nivel0, nivel1)
+        l0, l1 = str(col[0]), str(col[1])
+        if norm(l1) in wanted:
+            base[norm(l1)] = col
+    if "SKU" not in base:
+        raise ValueError("No se encontró 'SKU' en el encabezado (fila 7).")
+    return base
+
+def map_tipo_costo(nombre_tipo: str) -> str | None:
+    n = norm_lower(nombre_tipo)
+    if "materiales direct" in n:
+        return None
+    for key, val in COSTO_MAP.items():
+        if key in n:
+            return val
+    return None
+
+# ========== pipeline ==========
+# 1) leer encabezado 2 niveles: fila 5 (tipos) + fila 7 (meses)
+dfm = try_read_multi(INPUT)
+
+# 2) columnas base
+base_map = detect_base_cols(dfm)
+base_df = dfm[list(base_map.values())].copy()
+base_df.columns = list(base_map.keys())  # a plano: 'SKU','Condicion',...
+
+# 3) columnas de meses: nivel-1 ∈ MESES (y nivel-0 = nombre del tipo)
+month_cols = [c for c in dfm.columns if c[1] in MESES]
+
+# filtra subheaders no deseados (margen, %)
+def bad_col(col):
+    joined = f"{col[0]} {col[1]}"
+    jn = norm_lower(joined)
+    return any(k in jn for k in EXCLUIR_SUB)
+month_cols = [c for c in month_cols if not bad_col(c)]
+
+if not month_cols:
+    raise ValueError("No se detectaron columnas de meses bajo los tipos. Verifica que la fila 7 tenga los meses.")
+
+# 4) armar FACT_COSTOS por cada (tipo, mes)
+fact_rows = []
+for col in month_cols:
+    tipo_nombre = str(col[0])
+    mes = str(col[1])
+    tipo_canon = map_tipo_costo(tipo_nombre)
+    if tipo_canon is None:
+        continue  # tipo no deseado o no mapeado
+
+    serie = dfm[col].apply(to_number_safe)
+
+    tmp = pd.DataFrame({
+        "SKU": base_df["SKU"].astype(str).str.strip(),
+        "Año": MAP_ANIO.get(mes, np.nan),
+        "Mes": mes,
+        "TipoCosto": tipo_canon,
+        "ValorUSD/Kg": serie
+    })
+    if tmp["TipoCosto"].str.contains("Costo_MMPP").any():
+        tmp["ValorUSD/Kg"] = tmp["ValorUSD/Kg"] * -1  # si es con granel, es negativo
+        if tmp["ValorUSD/Kg"].isna().all():
+            continue  # si no hay valores, no lo agregamos
+    tmp = tmp[tmp["ValorUSD/Kg"] != 0]
+    if not tmp.empty:
+        fact_rows.append(tmp)
+
+if not fact_rows:
+    raise ValueError("Se encontraron meses pero ningún tipo de costo válido (según reglas). Revisa nombres/filas.")
+
+fact = pd.concat(fact_rows, ignore_index=True)
+fact = fact.dropna(subset=["ValorUSD/Kg"])
+
+# 5) Guarda global
+if GUARDA_GLOBAL is None:
+    guarda_val = autodetect_guarda_global(INPUT)
+else:
+    guarda_val = to_number_safe(GUARDA_GLOBAL)
+
+if guarda_val and not pd.isna(guarda_val) and float(guarda_val) != 0:
+    combos = fact[["SKU","Año","Mes"]].drop_duplicates()
+    extra = combos.copy()
+    extra["TipoCosto"] = "GuardaMMPP_Global"
+    extra["ValorUSD/Kg"] = (float(guarda_val))*-1
+    fact = pd.concat([fact, extra], ignore_index=True)
+
+# 6) ordenar y exportar
+fact = fact.dropna(subset=["SKU","Año","Mes"])
+fact["Año"] = fact["Año"].astype(int)
+fact["Mes"] = pd.Categorical(fact["Mes"], categories=MESES, ordered=True)
+fact = fact.sort_values(["SKU","Año","Mes","TipoCosto"]).reset_index(drop=True)
+
+fact.to_excel(OUTPUT, index=False)
+print(f"Listo -> {OUTPUT}  filas: {len(fact)}")
