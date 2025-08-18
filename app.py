@@ -123,9 +123,9 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
         elif lc == "guarda_mmpp":
             rename_map[c] = "Guarda MMPP"
         elif lc == "mmpp_fruta":
-            rename_map[c] = "MMPP (Fruta)"
+            rename_map[c] = "MMPP (Fruta) (USD/kg)"
         elif lc == "mmpp_p.granel":
-            rename_map[c] = "MMPP (Proceso Granel)"
+            rename_map[c] = "MMPP (Proceso Granel) (USD/kg)"
         elif lc == "mmpp_total":
             rename_map[c] = "MMPP Total (USD/kg)"
         elif lc == "dir retail":
@@ -140,7 +140,8 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
 
-    resumen = df[["SKU", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "MMPP (Fruta)", "MMPP (Proceso Granel)", "MMPP Total (USD/kg)", "Costos Totales (USD/kg)"]].copy()
+    resumen = df[["SKU", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "MMPP (Fruta) (USD/kg)", "MMPP (Proceso Granel) (USD/kg)", "Guarda MMPP", "Costos Totales (USD/kg)"]].copy()
+    resumen["Gastos Totales (USD/kg)"] = resumen["Retail Costos Directos (USD/kg)"].astype(float) + resumen["Retail Costos Indirectos (USD/kg)"].astype(float) + resumen["Guarda MMPP"].astype(float) + resumen["MMPP (Proceso Granel) (USD/kg)"].astype(float)
 
     # 5) Convertir valores a numéricos en columnas de costos
     for c in df.columns:
@@ -251,8 +252,11 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: int|None)
         "PrecioVenta (USD/kg)",
         "Retail Costos Directos (USD/kg)",
         "Retail Costos Indirectos (USD/kg)",
-        "MMPP (Fruta)", "MMPP (Proceso Granel)", "MMPP Total (USD/kg)",
-        "Costos Totales (USD/kg)"
+        "MMPP (Fruta) (USD/kg)", "MMPP (Proceso Granel) (USD/kg)", "MMPP Total (USD/kg)",
+        "Costos Totales (USD/kg)",
+        "Gastos Totales (USD/kg)",
+        "Guarda MMPP",
+
     ]
     for c in num_cols:
         if c in mart.columns:
@@ -261,16 +265,16 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: int|None)
             detalle[c] = pd.to_numeric(detalle[c], errors="coerce")
 
     # 4) Métricas de margen unitario
-    mart["Margen (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Costos Totales (USD/kg)"].abs() if "Costos Totales (USD/kg)" != 0 else np.nan
-    mart["MargenDirecto (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Retail Costos Directos (USD/kg)"].abs() - mart["MMPP Total (USD/kg)"].abs() if "Retail Costos Directos (USD/kg)" != 0 or "MMPP Total (USD/kg)" != 0 else np.nan
-    mart["MargenPct"] = np.where(
+    mart["EBITDA (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Costos Totales (USD/kg)"].abs() if "Costos Totales (USD/kg)" != 0 else np.nan
+    mart["EBITDA Pct"] = np.where(
         mart["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        mart["Margen (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
+        mart["EBITDA (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
         np.nan
     )
-    mart["MargenDirectoPct"] = np.where(
-        mart["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        mart["MargenDirecto (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
+    detalle["EBITDA (USD/kg)"] = detalle["PrecioVenta (USD/kg)"] - detalle["Costos Totales (USD/kg)"].abs() if "Costos Totales (USD/kg)" != 0 else np.nan
+    detalle["EBITDA Pct"] = np.where(
+        detalle["PrecioVenta (USD/kg)"].abs() > 1e-12,
+        detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"],
         np.nan
     )
 
@@ -289,11 +293,15 @@ def apply_simulation(df: pd.DataFrame, price_up=0.0, direct_up=0.0, indirect_up=
     sim["Retail Costos Directos (USD/kg)_Sim"]  = df["Retail Costos Directos (USD/kg)"]  * (1 + direct_up/100.0)
     sim["MMPP Total (USD/kg)_Sim"]= df["MMPP Total (USD/kg)"]* (1 + indirect_up/100.0)
     sim["Costos Totales (USD/kg)_Sim"]   = sim["Retail Costos Directos (USD/kg)_Sim"] + sim["MMPP Total (USD/kg)_Sim"]
-    sim["Margen (USD/kg)_Sim"]  = sim["PrecioVenta (USD/kg)_Sim"] - sim["Costos Totales (USD/kg)_Sim"]
-    sim["MargenDirecto (USD/kg)_Sim"]  = sim["PrecioVenta (USD/kg)_Sim"] - sim["Retail Costos Directos (USD/kg)_Sim"] - sim["MMPP Total (USD/kg)_Sim"]
+    sim["EBITDA (USD/kg)_Sim"]  = sim["PrecioVenta (USD/kg)_Sim"] - sim["Costos Totales (USD/kg)_Sim"]
+    sim["EBITDA Pct_Sim"]  = np.where(
+        sim["PrecioVenta (USD/kg)_Sim"].abs() > 1e-12,
+        sim["EBITDA (USD/kg)_Sim"] / sim["PrecioVenta (USD/kg)_Sim"],
+        np.nan
+    )
     sim["MargenPct_Sim"] = np.where(
         sim["PrecioVenta (USD/kg)_Sim"].abs() > 1e-12,
-        sim["Margen (USD/kg)_Sim"] / sim["PrecioVenta (USD/kg)_Sim"],
+        sim["EBITDA (USD/kg)_Sim"] / sim["PrecioVenta (USD/kg)_Sim"],
         np.nan
     )
     # deltas
@@ -423,7 +431,8 @@ else:
 
 # -------- Mostrar resultados --------
 st.subheader("Márgenes actuales (unitarios)")
-base_cols = ["SKU","Descripcion","Marca","Cliente","Especie","Condicion","PrecioVenta (USD/kg)","Retail Costos Directos (USD/kg)","MMPP Total (USD/kg)","Costos Totales (USD/kg)","MargenDirecto (USD/kg)","MargenDirectoPct","Margen (USD/kg)","MargenPct"]
+base_cols = ["SKU","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","MMPP (Proceso Granel) (USD/kg)",
+"Guarda MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
 view_base = df_filtrado[base_cols].copy()
 view_base.set_index("SKU", inplace=True)
 view_base = view_base.sort_index()
@@ -432,12 +441,14 @@ st.dataframe(
         "SKU":"{}", "Descripcion":"{}", "Marca":"{}", "Cliente":"{}", "Especie":"{}", "Condicion":"{}",
         "PrecioVenta (USD/kg)":"{:.3f}",
         "Retail Costos Directos (USD/kg)":"{:.3f}",
-        "MMPP Total (USD/kg)":"{:.3f}",
+        "Retail Costos Indirectos (USD/kg)":"{:.3f}",
+        "MMPP (Proceso Granel) (USD/kg)":"{:.3f}",
+        "Guarda MMPP":"{:.3f}",
+        "Gastos Totales (USD/kg)":"{:.3f}",
+        "MMPP (Fruta) (USD/kg)":"{:.3f}",
         "Costos Totales (USD/kg)":"{:.3f}",
-        "MargenDirectoUSDkg":"{:.3f}",
-        "MargenDirectoPct":"{:.1%}",
-        "MargenUSDkg":"{:.3f}",
-        "MargenPct":"{:.1%}"
+        "EBITDA (USD/kg)":"{:.3f}",
+        "EBITDA Pct":"{:.1%}"
     }),
     use_container_width=True, height=420
 )
@@ -463,9 +474,10 @@ if expand:
     view_base_det.set_index("SKU", inplace=True)
 
     fmt_cols = {
-        c: "{:.3f}" for c in det.columns
-        if c not in (["SKU"] + dim_cols) and np.issubdtype(det[c].dtype, np.number)
-    }
+    c: "{:.1%}" if c == "EBITDA Pct" else "{:.3f}"
+    for c in det.columns
+    if c not in (["SKU"] + dim_cols)
+}
 
     st.subheader("Detalle de costos por SKU (temporada)")
     st.dataframe(view_base_det.style.format(fmt_cols), use_container_width=True, height=700)
