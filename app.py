@@ -2,12 +2,14 @@
 import io
 import json
 from datetime import date
+import unicodedata
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 import numpy as np
 
 # ===================== Config básica =====================
-ST_TITLE = "Calculadora de Márgenes (MVP)"
+ST_TITLE = "Datos Históricos de Precios y Costos Octubre 2024 - Junio 2025 (MVP)"
 REQ_SHEETS = {
     "FACT_COSTOS_POND": "Tabla con costos unitarios ponderados por SKU (Oct-Jun).",
     "FACT_PRECIOS": "Precios mensuales: SKU, Año, Mes, PrecioVentaUSD.",
@@ -50,6 +52,14 @@ def bytes_key(file):
     file.seek(pos)
     return hash(data)
 
+def _norm_text(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return " ".join(s.strip().split())
+
+
 # ===================== Carga y validación =====================
 @st.cache_data(show_spinner=False)
 def read_workbook(uploaded_bytes: bytes):
@@ -65,52 +75,84 @@ def validate_required_sheets(sheets: dict):
 
 # ===================== Procesamiento =====================
 def build_tbl_costos_pond(df_costos: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Intenta leer una hoja cruda de costos y normalizarla a un DF con 'SKU' y columnas numéricas.
+    Retorna None si no logra detectar una hoja válida.
     """
-    Devuelve:
-      - resumen_df: columnas ['SKU','DirectoUSDkg','IndirectoUSDkg','TotalUSDkg']
-      - detalle_df: 'SKU' + TODAS las columnas de costos originales (numéricas) para mostrar en 'Expandir'
-    """
-    df = df_costos.copy()
-    df.columns = [c.strip() for c in df.columns]
-    if "SKU" not in df.columns:
-        raise ValueError("En 'FACT_COSTOS_POND' no se encontró columna 'SKU'.")
+    df0 = df_costos.copy()
+    df0.columns = [_norm_text(c) for c in df0.columns]
+
+    # 3) Detectar columna SKU
+    col_sku = None
+    for c in df0.columns:
+        if _norm_text(c).lower().startswith("sku"):
+            col_sku = c
+            break
+    if col_sku is None:
+        raise ValueError("No se encontró columna SKU en la hoja de costos.")
+
+    # 4) Renombrar columnas conocidas a etiquetas limpias
+    rename_map = {}
+    for c in df0.columns:
+        lc = _norm_text(c).lower()
+        if lc == "mo_directa":
+            rename_map[c] = "MO Directa"
+        elif lc == "mo_indirecta":
+            rename_map[c] = "MO Indirecta"
+        elif lc == "mo_total":
+            rename_map[c] = "MO Total"
+        elif lc == "materiales_cajas_y_bolsas":
+            rename_map[c] = "Materiales Cajas y Bolsas"
+        elif lc == "materiales_indirectos":
+            rename_map[c] = "Materiales Indirectos"
+        elif lc == "materiales_total":
+            rename_map[c] = "Materiales Total"
+        elif lc == "calidad":
+            rename_map[c] = "Calidad"
+        elif lc == "mantencion":
+            rename_map[c] = "Mantención"
+        elif lc == "sgenerales":
+            rename_map[c] = "Servicios Generales"
+        elif lc == "utilities":
+            rename_map[c] = "Utilities"
+        elif lc == "fletes":
+            rename_map[c] = "Fletes"
+        elif lc == "comex":
+            rename_map[c] = "Comex"
+        elif lc == "guarda_pt":
+            rename_map[c] = "Guarda Producto Terminado"
+        elif lc == "guarda_mmpp":
+            rename_map[c] = "Guarda MMPP"
+        elif lc == "mmpp_fruta":
+            rename_map[c] = "MMPP (Fruta)"
+        elif lc == "mmpp_p.granel":
+            rename_map[c] = "MMPP (Proceso Granel)"
+        elif lc == "mmpp_total":
+            rename_map[c] = "MMPP Total (USD/kg)"
+        elif lc == "dir retail":
+            rename_map[c] = "Retail Costos Directos (USD/kg)"
+        elif lc == "ind retail":
+            rename_map[c] = "Retail Costos Indirectos (USD/kg)"
+        elif lc == "total":
+            rename_map[c] = "Costos Totales (USD/kg)"
+
+    df = df0.rename(columns=rename_map).copy()
+    df = df.rename(columns={col_sku: "SKU"})
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
-    # Guardamos un duplicado para DETALLE y convertimos a numéricos (excepto SKU)
-    det = df.copy()
-    for c in det.columns:
-        if c == "SKU": 
+
+    resumen = df[["SKU", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "MMPP (Fruta)", "MMPP (Proceso Granel)", "MMPP Total (USD/kg)", "Costos Totales (USD/kg)"]].copy()
+
+    # 5) Convertir valores a numéricos en columnas de costos
+    for c in df.columns:
+        if c == "SKU":
             continue
-        det[c] = det[c].apply(to_number_safe)
+        df[c] = df[c].apply(to_number_safe)
 
-    # Detecta totales si existen
-    col_total_dir = next((c for c in det.columns if "costo directo" in c.lower()), None)
-    col_total_ind = next((c for c in det.columns if "costo indirecto" in c.lower()), None)
-    col_total_all = next((c for c in det.columns if "costo total" in c.lower()), None)
+    # 6) Quedarse con SKU + columnas de costos detectadas (si no hay mapeo, mantener todas numéricas)
+    cost_cols = [c for c in df.columns if c != "SKU" and c != "Condicion" and c != "Marca" and c != "Descripcion"]
+    out = df[["SKU"] + cost_cols].dropna(subset=["SKU"]).reset_index(drop=True)
 
-    resumen = det[["SKU"]].copy()
-
-    if col_total_all and col_total_dir and col_total_ind:
-        resumen["TotalUSDkg"]    = det[col_total_all]
-        resumen["DirectoUSDkg"]  = det[col_total_dir]
-        resumen["IndirectoUSDkg"]= det[col_total_ind]
-    else:
-        dcols = [c for c in det.columns
-                 if c != "SKU" and
-                 ("indirectos" not in c.lower()) and ("total" not in c.lower()) and ("indirecta" not in c.lower()) and ("totales" not in c.lower())]
-        icols = [c for c in det.columns if ("indirectos" in c.lower()) or ("indirecta" in c.lower())]
-
-        resumen["DirectoUSDkg"] = det[dcols].sum(axis=1, min_count=1) if dcols else np.nan
-        resumen["IndirectoUSDkg"] = det[icols].sum(axis=1, min_count=1) if icols else 0.0
-        resumen["TotalUSDkg"] = resumen["DirectoUSDkg"].fillna(0) + resumen["IndirectoUSDkg"].fillna(0)
-
-    # Orden amigable
-    resumen = resumen[["SKU","DirectoUSDkg","IndirectoUSDkg","TotalUSDkg"]]
-
-    # DETALLE: dejamos SKU + todas las columnas de costo (numéricas) tal cual para mostrar en la UI
-    detalle = det.copy()
-
-    return resumen, detalle
+    return out, resumen
 
 def build_fact_precios(df_p: pd.DataFrame) -> pd.DataFrame:
     """
@@ -170,20 +212,20 @@ def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None)
         p = p[p["FechaClave"] <= ref_datekey]
     idx = p.groupby("SKU")["FechaClave"].idxmax()
     latest = p.loc[idx, ["SKU","PrecioVentaUSD","FechaClave"]].rename(
-        columns={"PrecioVentaUSD":"PrecioVentaUSDkg"})
+        columns={"PrecioVentaUSD":"PrecioVenta (USD/kg)"})
     return latest.reset_index(drop=True)
 
 @st.cache_data(show_spinner=True)
 def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: int|None):
     """Pipeline completo a partir del Excel subido."""
     sheets = read_workbook(uploaded_bytes)
-    # Validación de hojas requeridas
+    # Validación y fallback: si falta FACT_COSTOS_POND, intentar construirla desde hoja cruda o archivo local
     missing = validate_required_sheets(sheets)
     if missing:
         raise ValueError(f"Faltan hojas requeridas: {missing}")
 
     # 1) Costos ponderados
-    costos_resumen, costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
+    costos_detalle, costos_resumen = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
 
     # 2) Precios + último precio por SKU
     precios = build_fact_precios(sheets["FACT_PRECIOS"])
@@ -201,18 +243,34 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: int|None)
 
     detalle = costos_detalle.merge(latest, on="SKU", how="left")
     detalle = detalle.merge(dim, on="SKU", how="right")
+    detalle = detalle.drop(columns=["FechaClave"])
+
+
+    # ---- CONVERSIÓN A NUMÉRICO ANTES DE USAR .abs() ----
+    num_cols = [
+        "PrecioVenta (USD/kg)",
+        "Retail Costos Directos (USD/kg)",
+        "Retail Costos Indirectos (USD/kg)",
+        "MMPP (Fruta)", "MMPP (Proceso Granel)", "MMPP Total (USD/kg)",
+        "Costos Totales (USD/kg)"
+    ]
+    for c in num_cols:
+        if c in mart.columns:
+            mart[c] = pd.to_numeric(mart[c], errors="coerce")
+        if c in detalle.columns:
+            detalle[c] = pd.to_numeric(detalle[c], errors="coerce")
 
     # 4) Métricas de margen unitario
-    mart["MargenUSDkg"] = mart["PrecioVentaUSDkg"] - mart["TotalUSDkg"].abs() if "TotalUSDkg" != 0 else np.nan
-    mart["MargenDirectoUSDkg"] = mart["PrecioVentaUSDkg"] - mart["DirectoUSDkg"].abs() if "DirectoUSDkg" != 0 else np.nan
+    mart["Margen (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Costos Totales (USD/kg)"].abs() if "Costos Totales (USD/kg)" != 0 else np.nan
+    mart["MargenDirecto (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Retail Costos Directos (USD/kg)"].abs() - mart["MMPP Total (USD/kg)"].abs() if "Retail Costos Directos (USD/kg)" != 0 or "MMPP Total (USD/kg)" != 0 else np.nan
     mart["MargenPct"] = np.where(
-        mart["PrecioVentaUSDkg"].abs() > 1e-12,
-        mart["MargenUSDkg"] / mart["PrecioVentaUSDkg"],
+        mart["PrecioVenta (USD/kg)"].abs() > 1e-12,
+        mart["Margen (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
         np.nan
     )
     mart["MargenDirectoPct"] = np.where(
-        mart["PrecioVentaUSDkg"].abs() > 1e-12,
-        mart["MargenDirectoUSDkg"] / mart["PrecioVentaUSDkg"],
+        mart["PrecioVenta (USD/kg)"].abs() > 1e-12,
+        mart["MargenDirecto (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
         np.nan
     )
 
@@ -227,19 +285,20 @@ def apply_simulation(df: pd.DataFrame, price_up=0.0, direct_up=0.0, indirect_up=
     Retorna un DataFrame con columnas *_Sim y deltas.
     """
     sim = df.copy()
-    sim["PrecioVentaUSDkg_Sim"]   = df["PrecioVentaUSDkg"]   * (1 + price_up/100.0)
-    sim["DirectoUSDkg_Sim"]  = df["DirectoUSDkg"]  * (1 + direct_up/100.0)
-    sim["IndirectoUSDkg_Sim"]= df["IndirectoUSDkg"]* (1 + indirect_up/100.0)
-    sim["TotalUSDkg_Sim"]   = sim["DirectoUSDkg_Sim"] + sim["IndirectoUSDkg_Sim"]
-    sim["MargenUSDkg_Sim"]  = sim["PrecioVentaUSDkg_Sim"] - sim["TotalUSDkg_Sim"]
+    sim["PrecioVenta (USD/kg)_Sim"]   = df["PrecioVenta (USD/kg)"]   * (1 + price_up/100.0)
+    sim["Retail Costos Directos (USD/kg)_Sim"]  = df["Retail Costos Directos (USD/kg)"]  * (1 + direct_up/100.0)
+    sim["MMPP Total (USD/kg)_Sim"]= df["MMPP Total (USD/kg)"]* (1 + indirect_up/100.0)
+    sim["Costos Totales (USD/kg)_Sim"]   = sim["Retail Costos Directos (USD/kg)_Sim"] + sim["MMPP Total (USD/kg)_Sim"]
+    sim["Margen (USD/kg)_Sim"]  = sim["PrecioVenta (USD/kg)_Sim"] - sim["Costos Totales (USD/kg)_Sim"]
+    sim["MargenDirecto (USD/kg)_Sim"]  = sim["PrecioVenta (USD/kg)_Sim"] - sim["Retail Costos Directos (USD/kg)_Sim"] - sim["MMPP Total (USD/kg)_Sim"]
     sim["MargenPct_Sim"] = np.where(
-        sim["PrecioVentaUSDkg_Sim"].abs() > 1e-12,
-        sim["MargenUSDkg_Sim"] / sim["PrecioVentaUSDkg_Sim"],
+        sim["PrecioVenta (USD/kg)_Sim"].abs() > 1e-12,
+        sim["Margen (USD/kg)_Sim"] / sim["PrecioVenta (USD/kg)_Sim"],
         np.nan
     )
     # deltas
     sim["Δpp_MargenPct"] = (sim["MargenPct_Sim"] - sim["MargenPct"])*100
-    sim["Δ_"] = sim["MargenUSDkg_Sim"] - sim["MargenUSDkg"]
+    sim["Δ_"] = sim["Margen (USD/kg)_Sim"] - sim["Margen (USD/kg)"]
     return sim
 
 def to_excel_download(df: pd.DataFrame, filename="export.xlsx"):
@@ -364,17 +423,17 @@ else:
 
 # -------- Mostrar resultados --------
 st.subheader("Márgenes actuales (unitarios)")
-base_cols = ["SKU","Descripcion","Marca","Cliente","Especie","Condicion","PrecioVentaUSDkg","DirectoUSDkg","IndirectoUSDkg","TotalUSDkg","MargenDirectoUSDkg","MargenDirectoPct","MargenUSDkg","MargenPct"]
+base_cols = ["SKU","Descripcion","Marca","Cliente","Especie","Condicion","PrecioVenta (USD/kg)","Retail Costos Directos (USD/kg)","MMPP Total (USD/kg)","Costos Totales (USD/kg)","MargenDirecto (USD/kg)","MargenDirectoPct","Margen (USD/kg)","MargenPct"]
 view_base = df_filtrado[base_cols].copy()
 view_base.set_index("SKU", inplace=True)
 view_base = view_base.sort_index()
 st.dataframe(
     view_base.style.format({
         "SKU":"{}", "Descripcion":"{}", "Marca":"{}", "Cliente":"{}", "Especie":"{}", "Condicion":"{}",
-        "PrecioVentaUSDkg":"{:.3f}",
-        "DirectoUSDkg":"{:.3f}",
-        "IndirectoUSDkg":"{:.3f}",
-        "TotalUSDkg":"{:.3f}",
+        "PrecioVenta (USD/kg)":"{:.3f}",
+        "Retail Costos Directos (USD/kg)":"{:.3f}",
+        "MMPP Total (USD/kg)":"{:.3f}",
+        "Costos Totales (USD/kg)":"{:.3f}",
         "MargenDirectoUSDkg":"{:.3f}",
         "MargenDirectoPct":"{:.1%}",
         "MargenUSDkg":"{:.3f}",
