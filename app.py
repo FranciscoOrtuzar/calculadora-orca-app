@@ -333,10 +333,10 @@ with st.sidebar:
         ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1))
         ref_ym = ref_date.year*100 + ref_date.month
 
-    st.header("3) Simulación (multiplicadores %)")
-    price_up = st.number_input("Precio: % Δ", value=0.0, step=0.5, format="%.2f")
-    direct_up = st.number_input("Costos Directos: % Δ", value=0.0, step=0.5, format="%.2f")
-    indirect_up = st.number_input("Costos Indirectos: % Δ", value=0.0, step=0.5, format="%.2f")
+    #st.header("3) Simulación (multiplicadores %)")
+    #price_up = st.number_input("Precio: % Δ", value=0.0, step=0.5, format="%.2f")
+    #direct_up = st.number_input("Costos Directos: % Δ", value=0.0, step=0.5, format="%.2f")
+    #indirect_up = st.number_input("Costos Indirectos: % Δ", value=0.0, step=0.5, format="%.2f")
 
     st.markdown("---")
     st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
