@@ -135,7 +135,7 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         elif lc == "materiales_total":
             rename_map[c] = "Materiales Total"
         elif lc == "calidad":
-            rename_map[c] = "Calidad"
+            rename_map[c] = "Laboratorio"
         elif lc == "mantencion":
             rename_map[c] = "Mantención"
         elif lc == "sgenerales":
@@ -143,7 +143,7 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         elif lc == "utilities":
             rename_map[c] = "Utilities"
         elif lc == "fletes":
-            rename_map[c] = "Fletes"
+            rename_map[c] = "Fletes Internos"
         elif lc == "comex":
             rename_map[c] = "Comex"
         elif lc == "guarda_pt":
@@ -152,8 +152,8 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
             rename_map[c] = "Guarda MMPP"
         elif lc == "mmpp_fruta":
             rename_map[c] = "MMPP (Fruta) (USD/kg)"
-        elif lc == "mmpp_p.granel":
-            rename_map[c] = "MMPP (Proceso Granel) (USD/kg)"
+        elif lc == "proceso granel":
+            rename_map[c] = "Proceso Granel (USD/kg)"
         elif lc == "mmpp_total":
             rename_map[c] = "MMPP Total (USD/kg)"
         elif lc == "dir retail":
@@ -168,22 +168,16 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
     # Calcular gastos totales solo si todas las columnas existen
-    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Guarda MMPP", "MMPP (Proceso Granel) (USD/kg)"]
+    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Guarda MMPP", "Proceso Granel (USD/kg)"]
     if all(col in df.columns for col in gastos_cols):
         df["Gastos Totales (USD/kg)"] = (
             df["Retail Costos Directos (USD/kg)"].astype(float) + 
             df["Retail Costos Indirectos (USD/kg)"].astype(float) + 
             df["Guarda MMPP"].astype(float) + 
-            df["MMPP (Proceso Granel) (USD/kg)"].astype(float)
+            df["Proceso Granel (USD/kg)"].astype(float)
         )
     else:
         df["Gastos Totales (USD/kg)"] = np.nan
-
-    # Crear resumen con columnas específicas
-    resumen = df[["SKU", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", 
-                  "MMPP (Fruta) (USD/kg)", "MMPP (Proceso Granel) (USD/kg)", "Guarda MMPP","Gastos Totales (USD/kg)",
-                  "Costos Totales (USD/kg)"]].copy()
-
 
     # Convertir valores a numéricos
     for c in df.columns:
@@ -194,7 +188,7 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
     cost_cols = [c for c in df.columns if c != "SKU" and c not in ["Condicion", "Marca", "Descripcion"]]
     out = df[["SKU"] + cost_cols].dropna(subset=["SKU"]).reset_index(drop=True)
 
-    return out, resumen
+    return out
 
 def build_fact_precios(df_p: pd.DataFrame) -> pd.DataFrame:
     """
@@ -252,7 +246,7 @@ def build_dim_sku(df_dim: pd.DataFrame) -> pd.DataFrame:
 
 def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None) -> pd.DataFrame:
     """
-    Calcula el último precio por SKU.
+    Calcula el último precio por SKU-Cliente.
     
     Args:
         precios: DataFrame con precios
@@ -260,23 +254,23 @@ def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None)
         ref_datekey: Fecha de referencia para modo "to_date"
         
     Returns:
-        DataFrame con último precio por SKU
+        DataFrame con último precio por SKU-Cliente
     """
-    p = precios.sort_values(["SKU","FechaClave"]).reset_index(drop=True)
+    p = precios.sort_values(["SKU-Cliente","FechaClave"]).reset_index(drop=True)
     if mode == "to_date":
         if ref_datekey is None:
             raise ValueError("ref_datekey es requerido con mode='to_date'.")
         p = p[p["FechaClave"] <= ref_datekey]
-    idx = p.groupby("SKU")["FechaClave"].idxmax()
-    latest = p.loc[idx, ["SKU","PrecioVentaUSD","FechaClave"]].rename(
+    idx = p.groupby("SKU-Cliente")["FechaClave"].idxmax()
+    latest = p.loc[idx, ["SKU-Cliente","PrecioVentaUSD","FechaClave"]].rename(
         columns={"PrecioVentaUSD":"PrecioVenta (USD/kg)"})
     return latest.reset_index(drop=True)
 
 # ===================== Construcción del mart =====================
 @st.cache_data(show_spinner=True)
-def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int]) -> pd.DataFrame:
     """
-    Pipeline completo para construir el mart de datos.
+    Pipeline completo para construir el detalle de datos.
     
     Args:
         uploaded_bytes: Bytes del archivo Excel subido
@@ -284,7 +278,7 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[
         ref_ym: Año-mes de referencia (YYYYMM)
         
     Returns:
-        Tuple con (mart_df, detalle_df)
+        DataFrame con detalle de datos
     """
     sheets = read_workbook(uploaded_bytes)
     
@@ -294,7 +288,7 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[
         raise ValueError(f"Faltan hojas requeridas: {missing}")
 
     # 1) Costos ponderados
-    costos_detalle, costos_resumen = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
+    costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
 
     # 2) Precios + último precio por SKU
     precios = build_fact_precios(sheets["FACT_PRECIOS"])
@@ -307,52 +301,135 @@ def build_mart(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[
     dim = build_dim_sku(sheets["DIM_SKU"])
 
     # 4) Unión de tablas
-    mart = costos_resumen.merge(latest, on="SKU", how="left")
-    detalle = costos_detalle.merge(latest, on="SKU", how="left")
+    detalle = costos_detalle.merge(dim, on="SKU", how="right")
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
-    if "SKU-Cliente" in mart.columns and "SKU-Cliente" in dim.columns:
-        mart = mart.merge(dim, on="SKU-Cliente", how="right")
-        detalle = detalle.merge(dim, on="SKU-Cliente", how="right")
+    if "SKU-Cliente" in dim.columns:
+        detalle = detalle.merge(latest, on="SKU-Cliente", how="right")
     else:
-        mart = mart.merge(dim, on="SKU", how="left")
-        detalle = detalle.merge(dim, on="SKU", how="left")
+        detalle = detalle.merge(latest, on="SKU", how="right")
     detalle = detalle.drop(columns=["FechaClave"])
 
     # 5) Conversión a numérico y cálculo de métricas
-    num_cols = [
-        "PrecioVenta (USD/kg)",
-        "Retail Costos Directos (USD/kg)",
-        "Retail Costos Indirectos (USD/kg)",
-        "MMPP (Fruta) (USD/kg)", "MMPP (Proceso Granel) (USD/kg)", "MMPP Total (USD/kg)",
-        "Costos Totales (USD/kg)",
-        "Gastos Totales (USD/kg)",
-        "Guarda MMPP",
+    numeric_columns = detalle.select_dtypes(include=[np.number]).columns
+    for col in numeric_columns:
+        detalle[col] = pd.to_numeric(detalle[col], errors='coerce').fillna(0.0)
+    
+    # FORZAR SIGNOS CORRECTOS
+    # Los costos siempre deben ser negativos
+    
+    cost_columns = [col for col in detalle.columns if "USD/kg" in col and "Precio" not in col]
+    for col in cost_columns:
+        if col in detalle.columns:
+            # Convertir valores a negativos (costos siempre negativos)
+            detalle[col] = -abs(detalle[col])
+    
+    # También corregir columnas de costos sin USD/kg
+    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
+                         "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
+                         "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
+    for col in other_cost_columns:
+        if col in detalle.columns:
+            # Convertir valores a negativos (costos siempre negativos)
+            detalle[col] = -abs(detalle[col])
+    
+    # El precio de venta siempre debe ser positivo
+    if "PrecioVenta (USD/kg)" in detalle.columns:
+        detalle["PrecioVenta (USD/kg)"] = abs(detalle["PrecioVenta (USD/kg)"])
+    
+    # 1. Recalcular MMPP Total si están los componentes
+    mmpp_components = [
+        "MMPP (Fruta) (USD/kg)",
+        "Proceso Granel (USD/kg)"
     ]
     
-    for c in num_cols:
-        if c in mart.columns:
-            mart[c] = pd.to_numeric(mart[c], errors="coerce")
-        if c in detalle.columns:
-            detalle[c] = pd.to_numeric(detalle[c], errors="coerce")
+    if all(col in detalle.columns for col in mmpp_components):
+        detalle["MMPP Total (USD/kg)"] = detalle[mmpp_components].sum(axis=1)
+    
+    # 2. Recalcular MO Total si están los componentes
+    mo_components = [
+        "MO Directa",
+        "MO Indirecta"
+    ]
+    
+    if all(col in detalle.columns for col in mo_components):
+        detalle["MO Total"] = detalle[mo_components].sum(axis=1)
+    
+    # 3. Recalcular Materiales Total si están los componentes
+    materiales_components = [
+        "Materiales Cajas y Bolsas",
+        "Materiales Indirectos"
+    ]
+    
+    if all(col in detalle.columns for col in materiales_components):
+        detalle["Materiales Total"] = detalle[materiales_components].sum(axis=1)
 
-    # 6) Cálculo de EBITDA
-    mart["EBITDA (USD/kg)"] = mart["PrecioVenta (USD/kg)"] - mart["Costos Totales (USD/kg)"].abs()
-    mart["EBITDA Pct"] = np.where(
-        mart["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        mart["EBITDA (USD/kg)"] / mart["PrecioVenta (USD/kg)"],
-        np.nan
-    )
+    # 4.1 Recalcular Retail Costos Directos (USD/kg) si están los componentes
+    retail_costs_direct_components = [
+        "MO Directa",
+        "Materiales Cajas y Bolsas",
+        "Laboratorio",
+        "Mantención",
+        "Servicios Generales",
+        "Utilities",
+        "Fletes Internos",
+        "Comex",
+        "Guarda PT",
+    ]
+    
+    if all(col in detalle.columns for col in retail_costs_direct_components):
+        detalle["Retail Costos Directos (USD/kg)"] = detalle[retail_costs_direct_components].sum(axis=1)
+    
+    # 4.2 Recalcular Retail Costos Indirectos (USD/kg) si están los componentes
+    retail_costs_indirect_components = [
+        "MO Indirecta",
+        "Materiales Indirectos",
+    ]
+    if all(col in detalle.columns for col in retail_costs_indirect_components):
+        detalle["Retail Costos Indirectos (USD/kg)"] = detalle[retail_costs_indirect_components].sum(axis=1)
+    
+    # 4. Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
+    gastos_components = [
+        "Guarda MMPP",
+        "Proceso Granel (USD/kg)",
+        "Retail Costos Indirectos (USD/kg)",
+        "Retail Costos Directos (USD/kg)"
+    ]
+    
+    # Solo incluir componentes que existan en el DataFrame
+    available_gastos = [col for col in gastos_components if col in detalle.columns]
+    if available_gastos:
+        detalle["Gastos Totales (USD/kg)"] = detalle[available_gastos].sum(axis=1)
+    
+    # 5. Recalcular Costos Totales (MMPP + Gastos)
+    costos_components = []
+    
+    # Agregar MMPP Total si existe
+    if "MMPP (Fruta) (USD/kg)" in detalle.columns:
+        costos_components.append("MMPP (Fruta) (USD/kg)")
+
+    # Agregar Gastos Totales si existe
+    if "Gastos Totales (USD/kg)" in detalle.columns:
+        costos_components.append("Gastos Totales (USD/kg)")
+    
+    # Calcular costos totales
+    if costos_components:
+        detalle["Costos Totales (USD/kg)"] = detalle[costos_components].sum(axis=1)
     
     detalle["EBITDA (USD/kg)"] = detalle["PrecioVenta (USD/kg)"] - detalle["Costos Totales (USD/kg)"].abs()
     detalle["EBITDA Pct"] = np.where(
         detalle["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"],
+        (detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"]) * 100,  # ✅ Multiplicar por 100 para porcentaje
         np.nan
     )
 
     # 7) Orden final
-    mart = mart.sort_values("SKU", ascending=True).reset_index(drop=True)
-    return mart, detalle
+    detalle["SKU"] = detalle["SKU"].astype(int)
+    # Ordenar por SKU-Cliente que es el identificador único real
+    if "SKU-Cliente" in detalle.columns:
+        detalle = detalle.sort_values("SKU-Cliente", ascending=True).reset_index(drop=True)
+    else:
+        detalle = detalle.sort_values("SKU", ascending=True).reset_index(drop=True)
+    return detalle
 
 # ===================== Documentación para nuevas fuentes =====================
 """
@@ -361,7 +438,7 @@ INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
 1. FACT_COSTOS_POND:
    - Agregar nueva hoja al Excel con columnas: SKU + costos por componente
    - Modificar build_tbl_costos_pond() para incluir nuevos mapeos de columnas
-   - Actualizar num_cols en build_mart() si hay nuevas columnas numéricas
+   - Actualizar num_cols en build_detalle() si hay nuevas columnas numéricas
 
 2. DIM_SKU:
    - Agregar nueva hoja con columnas: SKU + atributos dimensionales
@@ -373,6 +450,6 @@ INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
    - Modificar build_fact_precios() si cambia la estructura
 
 4. Nuevas métricas:
-   - Agregar cálculos en build_mart() después de la conversión numérica
+   - Agregar cálculos en build_detalle() después de la conversión numérica
    - Incluir en num_cols si son columnas numéricas
 """

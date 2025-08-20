@@ -10,194 +10,377 @@ from typing import Dict, List, Tuple, Optional
 import altair as alt
 from pathlib import Path
 import io
+from datetime import datetime
 
-# ===================== Funciones de simulación =====================
-def apply_simulation(df: pd.DataFrame, price_up: float = 0.0, 
-                    retail_direct_up: float = 0.0, retail_indirect_up: float = 0.0,
-                    mmpp_up: float = 0.0, guarda_up: float = 0.0) -> pd.DataFrame:
+# ===================== Funciones de Filtrado =====================
+def apply_filters(df: pd.DataFrame, cliente: List[str] = None, marca: List[str] = None, 
+                 especie: List[str] = None, condicion: List[str] = None) -> pd.DataFrame:
     """
-    Aplica multiplicadores de simulación por grupo (globales).
-    
-    Args:
-        df: DataFrame base con datos originales
-        price_up: Variación porcentual en precio de venta
-        retail_direct_up: Variación porcentual en costos retail directos
-        retail_indirect_up: Variación porcentual en costos retail indirectos
-        mmpp_up: Variación porcentual en costos MMPP
-        guarda_up: Variación porcentual en costos de guarda
-        
-    Returns:
-        DataFrame con columnas *_Sim y deltas
-    """
-    sim = df.copy()
-    
-    # Verificar qué columnas están disponibles
-    available_cols = set(df.columns)
-    
-    # Aplicar variaciones a precios
-    if "PrecioVenta (USD/kg)" in available_cols:
-        sim["PrecioVenta (USD/kg)_Sim"] = df["PrecioVenta (USD/kg)"] * (1 + price_up/100.0)
-    else:
-        st.warning("⚠️ Columna 'PrecioVenta (USD/kg)' no encontrada")
-        return df
-    
-    # Aplicar variaciones a costos retail
-    if "Retail Costos Directos (USD/kg)" in available_cols:
-        sim["Retail Costos Directos (USD/kg)_Sim"] = df["Retail Costos Directos (USD/kg)"] * (1 + retail_direct_up/100.0)
-    else:
-        sim["Retail Costos Directos (USD/kg)_Sim"] = 0.0
-        
-    if "Retail Costos Indirectos (USD/kg)" in available_cols:
-        sim["Retail Costos Indirectos (USD/kg)_Sim"] = df["Retail Costos Indirectos (USD/kg)"] * (1 + retail_indirect_up/100.0)
-    else:
-        sim["Retail Costos Indirectos (USD/kg)_Sim"] = 0.0
-    
-    # Aplicar variaciones a costos MMPP
-    mmpp_total = 0.0
-    
-    if "MMPP (Fruta) (USD/kg)" in available_cols:
-        sim["MMPP (Fruta) (USD/kg)_Sim"] = df["MMPP (Fruta) (USD/kg)"] * (1 + mmpp_up/100.0)
-        mmpp_total += sim["MMPP (Fruta) (USD/kg)_Sim"]
-    else:
-        sim["MMPP (Fruta) (USD/kg)_Sim"] = 0.0
-        
-    if "MMPP (Proceso Granel) (USD/kg)" in available_cols:
-        sim["MMPP (Proceso Granel) (USD/kg)_Sim"] = df["MMPP (Proceso Granel) (USD/kg)"] * (1 + mmpp_up/100.0)
-        mmpp_total += sim["MMPP (Proceso Granel) (USD/kg)_Sim"]
-    else:
-        sim["MMPP (Proceso Granel) (USD/kg)_Sim"] = 0.0
-    
-    # Calcular MMPP Total si no existe
-    if "MMPP Total (USD/kg)" in available_cols:
-        sim["MMPP Total (USD/kg)_Sim"] = df["MMPP Total (USD/kg)"] * (1 + mmpp_up/100.0)
-    else:
-        sim["MMPP Total (USD/kg)_Sim"] = mmpp_total
-    
-    # Aplicar variaciones a costos de guarda
-    if "Guarda MMPP" in available_cols:
-        sim["Guarda MMPP_Sim"] = df["Guarda MMPP"] * (1 + guarda_up/100.0)
-    else:
-        sim["Guarda MMPP_Sim"] = 0.0
-    
-    # Calcular costos totales simulados
-    sim["Costos Totales (USD/kg)_Sim"] = (
-        sim["Retail Costos Directos (USD/kg)_Sim"] + 
-        sim["Retail Costos Indirectos (USD/kg)_Sim"] + 
-        sim["MMPP Total (USD/kg)_Sim"] + 
-        sim["Guarda MMPP_Sim"]
-    )
-    
-    # Calcular gastos totales simulados
-    sim["Gastos Totales (USD/kg)_Sim"] = (
-        sim["Retail Costos Directos (USD/kg)_Sim"] + 
-        sim["Retail Costos Indirectos (USD/kg)_Sim"] + 
-        sim["Guarda MMPP_Sim"] + 
-        sim["MMPP (Proceso Granel) (USD/kg)_Sim"]
-    )
-    
-    # Calcular EBITDA simulado
-    sim["EBITDA (USD/kg)_Sim"] = sim["PrecioVenta (USD/kg)_Sim"] - sim["Costos Totales (USD/kg)_Sim"]
-    sim["EBITDA Pct_Sim"] = np.where(
-        sim["PrecioVenta (USD/kg)_Sim"].abs() > 1e-12,
-        sim["EBITDA (USD/kg)_Sim"] / sim["PrecioVenta (USD/kg)_Sim"],
-        np.nan
-    )
-    
-    # Calcular deltas solo si las columnas originales existen
-    if "EBITDA (USD/kg)" in available_cols:
-        sim["Δ_EBITDA (USD/kg)"] = sim["EBITDA (USD/kg)_Sim"] - sim["EBITDA (USD/kg)"]
-    else:
-        sim["Δ_EBITDA (USD/kg)"] = 0.0
-        
-    if "EBITDA Pct" in available_cols:
-        sim["Δ_EBITDA Pct"] = (sim["EBITDA Pct_Sim"] - sim["EBITDA Pct"]) * 100
-    else:
-        sim["Δ_EBITDA Pct"] = 0.0
-    
-    return sim
-
-def apply_row_specific_overrides(df: pd.DataFrame, overrides: Dict[str, Dict[str, float]]) -> pd.DataFrame:
-    """
-    Aplica overrides específicos por fila (SKU).
+    Aplica filtros a la base de datos.
     
     Args:
         df: DataFrame base
-        overrides: Dict con SKU como clave y dict de columnas:valor como valor
+        cliente: Lista de clientes a incluir
+        marca: Lista de marcas a incluir
+        especie: Lista de especies a incluir
+        condicion: Lista de condiciones a incluir
         
     Returns:
-        DataFrame con overrides aplicados
+        DataFrame filtrado
     """
-    df_override = df.copy()
+    df_filtered = df.copy()
     
-    for sku, column_overrides in overrides.items():
-        if sku in df_override.index:
-            for column, value in column_overrides.items():
-                if column in df_override.columns:
-                    df_override.loc[sku, column] = value
+    # Aplicar filtros solo si están especificados y no están vacíos
+    if cliente and len(cliente) > 0 and "Todos" not in cliente:
+        df_filtered = df_filtered[df_filtered["Cliente"].isin(cliente)]
     
-    return df_override
+    if marca and len(marca) > 0 and "Todos" not in marca:
+        df_filtered = df_filtered[df_filtered["Marca"].isin(marca)]
+    
+    if especie and len(especie) > 0 and "Todos" not in especie:
+        df_filtered = df_filtered[df_filtered["Especie"].isin(especie)]
+    
+    if condicion and len(condicion) > 0 and "Todos" not in condicion:
+        df_filtered = df_filtered[df_filtered["Condicion"].isin(condicion)]
+    
+    return df_filtered
 
+def get_filter_options(df: pd.DataFrame) -> Dict[str, List[str]]:
+    """
+    Obtiene opciones de filtro con valores únicos de cada columna.
+    
+    Args:
+        df: DataFrame base
+        
+    Returns:
+        Diccionario con columna -> lista de valores únicos
+    """
+    filter_columns = ["Cliente", "Marca", "Especie", "Condicion"]
+    options = {}
+    
+    for col in filter_columns:
+        if col in df.columns:
+            values = df[col].dropna().unique().tolist()
+            values = sorted([str(v) for v in values if str(v).strip()])
+            options[col] = ["Todos"] + values
+        else:
+            options[col] = ["Todos"]
+    
+    return options
+
+# ===================== Funciones de Overrides =====================
+def apply_global_overrides(df: pd.DataFrame, pct_costo: float, enabled: bool) -> pd.DataFrame:
+    """
+    Aplica cambios porcentuales globales a los costos.
+    
+    Args:
+        df: DataFrame base
+        pct_costo: Porcentaje de cambio (-100 a +1000)
+        enabled: Si se debe aplicar el override
+        
+    Returns:
+        DataFrame con costos modificados
+    """
+    if not enabled or abs(pct_costo) < 0.01:
+        return df.copy()
+    
+    df_modified = df.copy()
+    
+    # Aplicar cambio porcentual a costos - usar columnas que realmente existen
+    cost_columns = []
+    
+    # Buscar columnas de costos disponibles
+    if "Costos Totales (USD/kg)" in df_modified.columns:
+        cost_columns.append("Costos Totales (USD/kg)")
+    if "Retail Costos Directos (USD/kg)" in df_modified.columns:
+        cost_columns.append("Retail Costos Directos (USD/kg)")
+    if "Retail Costos Indirectos (USD/kg)" in df_modified.columns:
+        cost_columns.append("Retail Costos Indirectos (USD/kg)")
+    if "MMPP Total (USD/kg)" in df_modified.columns:
+        cost_columns.append("MMPP Total (USD/kg)")
+    if "Guarda MMPP" in df_modified.columns:
+        cost_columns.append("Guarda MMPP")
+    
+    # Si no hay columnas de costos específicas, usar las que contengan "USD/kg"
+    if not cost_columns:
+        cost_columns = [col for col in df_modified.columns if "USD/kg" in col and "Precio" not in col]
+    
+    # Aplicar cambios a las columnas de costos encontradas
+    for col in cost_columns:
+        if col in df_modified.columns:
+            df_modified[f"{col}_Original"] = df_modified[col]
+            df_modified[col] = df_modified[col] * (1 + pct_costo / 100)
+    
+    # Recalcular EBITDA si es posible
+    if "PrecioVenta (USD/kg)" in df_modified.columns and "Costos Totales (USD/kg)" in df_modified.columns:
+        df_modified["EBITDA (USD/kg)"] = df_modified["PrecioVenta (USD/kg)"] - df_modified["Costos Totales (USD/kg)"]
+        
+        # Recalcular EBITDA Pct
+        df_modified["EBITDA Pct"] = np.where(
+            df_modified["PrecioVenta (USD/kg)"].abs() > 1e-12,
+            (df_modified["EBITDA (USD/kg)"] / df_modified["PrecioVenta (USD/kg)"]) * 100,
+            0.0
+        )
+    
+    return df_modified
+
+def apply_upload_overrides(df: pd.DataFrame, uploaded_df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """
+    Aplica overrides desde archivo subido.
+    
+    Args:
+        df: DataFrame base
+        uploaded_df: DataFrame con SKU y CostoNuevo
+        
+    Returns:
+        Tuple con (DataFrame modificado, número de SKUs actualizados)
+    """
+    if uploaded_df is None or uploaded_df.empty:
+        return df.copy(), 0
+    
+    # Validar columnas requeridas
+    required_cols = ["SKU", "CostoNuevo"]
+    if not all(col in uploaded_df.columns for col in required_cols):
+        st.error("❌ El archivo debe contener las columnas: SKU, CostoNuevo")
+        return df.copy(), 0
+    
+    df_modified = df.copy()
+    updated_count = 0
+    
+    # Buscar columna de costos principales para actualizar
+    cost_column = None
+    if "Costos Totales (USD/kg)" in df_modified.columns:
+        cost_column = "Costos Totales (USD/kg)"
+    elif "CostoUSD_kg" in df_modified.columns:
+        cost_column = "CostoUSD_kg"
+    else:
+        # Buscar cualquier columna de costos
+        cost_columns = [col for col in df_modified.columns if "USD/kg" in col and "Precio" not in col]
+        if cost_columns:
+            cost_column = cost_columns[0]
+    
+    if not cost_column:
+        st.error("❌ No se encontró columna de costos para actualizar")
+        return df.copy(), 0
+    
+    # Crear columna de respaldo si no existe
+    if f"{cost_column}_Original" not in df_modified.columns:
+        df_modified[f"{cost_column}_Original"] = df_modified[cost_column]
+    
+    # Aplicar overrides
+    for _, row in uploaded_df.iterrows():
+        sku = str(row["SKU"]).strip()
+        costo_nuevo = pd.to_numeric(row["CostoNuevo"], errors="coerce")
+        
+        if pd.isna(costo_nuevo):
+            continue
+            
+        # Buscar SKU en la base
+        mask = df_modified["SKU"] == sku
+        if mask.any():
+            df_modified.loc[mask, cost_column] = costo_nuevo
+            updated_count += 1
+    
+    if updated_count > 0:
+        # Recalcular EBITDA si es posible
+        if "PrecioVenta (USD/kg)" in df_modified.columns and cost_column in df_modified.columns:
+            df_modified["EBITDA (USD/kg)"] = df_modified["PrecioVenta (USD/kg)"] - df_modified[cost_column]
+            
+            # Recalcular EBITDA Pct
+            df_modified["EBITDA Pct"] = np.where(
+                df_modified["PrecioVenta (USD/kg)"].abs() > 1e-12,
+                (df_modified["EBITDA (USD/kg)"] / df_modified["PrecioVenta (USD/kg)"]) * 100,
+                0.0
+            )
+        
+        st.success(f"✅ Se actualizaron {updated_count} SKUs desde el archivo")
+    else:
+        st.warning("⚠️ No se encontraron SKUs coincidentes en la base")
+    
+    return df_modified, updated_count
+
+# ===================== Cálculo de EBITDA =====================
+def compute_ebitda(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula EBITDA para cada SKU.
+    
+    Args:
+        df: DataFrame con precios y costos
+        
+    Returns:
+        DataFrame con EBITDA calculado
+    """
+    df_ebitda = df.copy()
+    
+    # Buscar columnas de precio y costos disponibles
+    price_column = None
+    cost_column = None
+    
+    if "PrecioVenta (USD/kg)" in df_ebitda.columns:
+        price_column = "PrecioVenta (USD/kg)"
+    elif "PrecioUSD_kg" in df_ebitda.columns:
+        price_column = "PrecioUSD_kg"
+    
+    if "Costos Totales (USD/kg)" in df_ebitda.columns:
+        cost_column = "Costos Totales (USD/kg)"
+    elif "CostoUSD_kg" in df_ebitda.columns:
+        cost_column = "CostoUSD_kg"
+    
+    # Si no hay columnas específicas, calcular costos totales
+    if not cost_column:
+        cost_columns = [col for col in df_ebitda.columns if "USD/kg" in col and "Precio" not in col]
+        if cost_columns:
+            df_ebitda["Costos Totales (USD/kg)"] = df_ebitda[cost_columns].sum(axis=1)
+            cost_column = "Costos Totales (USD/kg)"
+    
+    # Asegurar que las columnas numéricas existen
+    if not price_column:
+        df_ebitda["PrecioVenta (USD/kg)"] = 0.0
+        price_column = "PrecioVenta (USD/kg)"
+    
+    if not cost_column:
+        df_ebitda["Costos Totales (USD/kg)"] = 0.0
+        cost_column = "Costos Totales (USD/kg)"
+    
+    # Calcular EBITDA
+    df_ebitda["EBITDA (USD/kg)"] = df_ebitda[price_column] - df_ebitda[cost_column]
+    
+    # Calcular margen porcentual
+    df_ebitda["EBITDA Pct"] = np.where(
+        df_ebitda[price_column].abs() > 1e-12,
+        (df_ebitda["EBITDA (USD/kg)"] / df_ebitda[price_column]) * 100,
+        0.0
+    )
+    
+    return df_ebitda
+
+# ===================== Análisis y KPIs =====================
 def calculate_kpis(df: pd.DataFrame) -> Dict[str, float]:
     """
     Calcula KPIs principales del DataFrame.
     
     Args:
-        df: DataFrame con datos
+        df: DataFrame con EBITDA calculado
         
     Returns:
-        Dict con KPIs calculados
+        Diccionario con KPIs
     """
+    if df.empty:
+        return {
+            "EBITDA Promedio (USD/kg)": 0.0,
+            "EBITDA Total (USD)": 0.0,
+            "SKUs Rentables": 0,
+            "EBITDA Promedio (%)": 0.0,
+            "Total SKUs": 0
+        }
+    
     kpis = {}
     
-    # KPIs de EBITDA
-    kpis["EBITDA Promedio (USD/kg)"] = df["EBITDA (USD/kg)"].mean()
-    kpis["EBITDA Total (USD)"] = df["EBITDA (USD/kg)"].sum()
-    kpis["EBITDA Promedio (%)"] = df["EBITDA Pct"].mean()
+    # Buscar columnas de EBITDA disponibles
+    ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in df.columns else "EBITDAUSD_kg"
+    ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in df.columns else "MargenPct"
     
-    # KPIs de rentabilidad
-    kpis["SKUs Rentables"] = len(df[df["EBITDA (USD/kg)"] > 0])
-    kpis["SKUs No Rentables"] = len(df[df["EBITDA (USD/kg)"] <= 0])
-    kpis["% SKUs Rentables"] = (kpis["SKUs Rentables"] / len(df)) * 100
+    if ebitda_column in df.columns:
+        # EBITDA promedio
+        kpis["EBITDA Promedio (USD/kg)"] = df[ebitda_column].mean()
+        
+        # EBITDA total (asumiendo 1 kg por SKU para el cálculo)
+        kpis["EBITDA Total (USD)"] = df[ebitda_column].sum()
+        
+        # SKUs rentables
+        kpis["SKUs Rentables"] = (df[ebitda_column] > 0).sum()
+        
+        # Total SKUs
+        kpis["Total SKUs"] = len(df)
+    else:
+        kpis["EBITDA Promedio (USD/kg)"] = 0.0
+        kpis["EBITDA Total (USD)"] = 0.0
+        kpis["SKUs Rentables"] = 0
+        kpis["Total SKUs"] = len(df)
     
-    # KPIs de costos
-    kpis["Costo Promedio (USD/kg)"] = df["Costos Totales (USD/kg)"].mean()
-    kpis["Precio Promedio (USD/kg)"] = df["PrecioVenta (USD/kg)"].mean()
-    
-    # KPIs de margen
-    kpis["Margen Promedio (%)"] = ((df["PrecioVenta (USD/kg)"] - df["Costos Totales (USD/kg)"]) / df["PrecioVenta (USD/kg)"]).mean() * 100
+    # Margen promedio
+    if ebitda_pct_column in df.columns:
+        kpis["EBITDA Promedio (%)"] = df[ebitda_pct_column].mean()
+    else:
+        kpis["EBITDA Promedio (%)"] = 0.0
     
     return kpis
 
-def create_ebitda_chart(df: pd.DataFrame, group_by: str = "Marca") -> alt.Chart:
+def get_top_bottom_skus(df: pd.DataFrame, n: int = 5) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Crea un gráfico de EBITDA agrupado por categoría.
+    Obtiene los top N y bottom N SKUs por EBITDA.
     
     Args:
-        df: DataFrame con datos
-        group_by: Columna para agrupar (Marca, Especie, Cliente, etc.)
+        df: DataFrame con EBITDA
+        n: Número de SKUs a mostrar
+        
+    Returns:
+        Tuple con (top_n_df, bottom_n_df)
+    """
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # Buscar columnas disponibles
+    ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in df.columns else "EBITDAUSD_kg"
+    ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in df.columns else "MargenPct"
+    
+    if ebitda_column not in df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # Top N por EBITDA
+    top_n = df.nlargest(n, ebitda_column)[["SKU", "Cliente", "Marca", ebitda_column, ebitda_pct_column]].copy()
+    
+    # Bottom N por EBITDA
+    bottom_n = df.nsmallest(n, ebitda_column)[["SKU", "Cliente", "Marca", ebitda_column, ebitda_pct_column]].copy()
+    
+    return top_n, bottom_n
+
+# ===================== Gráficos =====================
+def create_ebitda_chart(df: pd.DataFrame, top_n: int = 20) -> alt.Chart:
+    """
+    Crea gráfico de barras de EBITDA por SKU.
+    
+    Args:
+        df: DataFrame con EBITDA
+        top_n: Número de SKUs a mostrar
         
     Returns:
         Chart de Altair
     """
-    if group_by not in df.columns:
-        st.warning(f"Columna {group_by} no encontrada en los datos")
+    if df.empty:
         return None
     
-    # Agrupar datos
-    chart_data = df.groupby(group_by).agg({
-        "EBITDA (USD/kg)": "mean",
-        "SKU": "count"
-    }).reset_index()
-    chart_data.columns = [group_by, "EBITDA Promedio (USD/kg)", "Cantidad SKUs"]
+    # Buscar columnas disponibles
+    ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in df.columns else "EBITDAUSD_kg"
+    ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in df.columns else "MargenPct"
+    price_column = "PrecioVenta (USD/kg)" if "PrecioVenta (USD/kg)" in df.columns else "PrecioUSD_kg"
+    cost_column = "Costos Totales (USD/kg)" if "Costos Totales (USD/kg)" in df.columns else "CostoTotalUSD_kg"
+    
+    if ebitda_column not in df.columns:
+        return None
+    
+    # Obtener top N SKUs por EBITDA
+    chart_data = df.nlargest(top_n, ebitda_column).copy()
+    chart_data["SKU_Cliente"] = chart_data["SKU"] + " - " + chart_data["Cliente"]
     
     # Crear gráfico
     chart = alt.Chart(chart_data).mark_bar().encode(
-        x=alt.X(f"{group_by}:N", title=group_by),
-        y=alt.Y("EBITDA Promedio (USD/kg):Q", title="EBITDA Promedio (USD/kg)"),
-        color=alt.Color("EBITDA Promedio (USD/kg):Q", scale=alt.Scale(scheme="redblue")),
-        tooltip=[group_by, "EBITDA Promedio (USD/kg)", "Cantidad SKUs"]
+        x=alt.X(f"{ebitda_column}:Q", title="EBITDA (USD/kg)"),
+        y=alt.Y("SKU_Cliente:N", title="SKU - Cliente", sort="-x"),
+        color=alt.condition(
+            alt.datum[ebitda_column] > 0,
+            alt.value("green"),
+            alt.value("red")
+        ),
+        tooltip=[
+            alt.Tooltip("SKU_Cliente:N", title="SKU - Cliente"),
+            alt.Tooltip(f"{ebitda_column}:Q", title="EBITDA (USD/kg)", format=".3f"),
+            alt.Tooltip(f"{ebitda_pct_column}:Q", title="Margen %", format=".1f"),
+            alt.Tooltip(f"{price_column}:Q", title="Precio (USD/kg)", format=".3f"),
+            alt.Tooltip(f"{cost_column}:Q", title="Costo Total (USD/kg)", format=".3f")
+        ]
     ).properties(
-        title=f"EBITDA Promedio por {group_by}",
+        title=f"Top {top_n} SKUs por EBITDA",
         width=600,
         height=400
     )
@@ -206,208 +389,121 @@ def create_ebitda_chart(df: pd.DataFrame, group_by: str = "Marca") -> alt.Chart:
 
 def create_margin_distribution_chart(df: pd.DataFrame) -> alt.Chart:
     """
-    Crea un gráfico de distribución de márgenes.
+    Crea gráfico de distribución de márgenes.
     
     Args:
-        df: DataFrame con datos
+        df: DataFrame con márgenes
         
     Returns:
         Chart de Altair
     """
-    # Crear bins para el histograma
-    margin_data = df[["EBITDA Pct"]].copy()
-    margin_data = margin_data.dropna()
+    if df.empty:
+        return None
     
-    chart = alt.Chart(margin_data).mark_bar().encode(
-        x=alt.X("EBITDA Pct:Q", bin=alt.Bin(step=5), title="EBITDA (%)"),
-        y=alt.Y("count():Q", title="Cantidad de SKUs"),
-        tooltip=["EBITDA Pct", "count()"]
+    # Buscar columna de margen disponible
+    margin_column = "EBITDA Pct" if "EBITDA Pct" in df.columns else "MargenPct"
+    
+    if margin_column not in df.columns:
+        return None
+    
+    # Crear bins para el histograma
+    chart_data = df.copy()
+    chart_data["MargenBin"] = pd.cut(
+        chart_data[margin_column], 
+        bins=20, 
+        labels=False
+    )
+    
+    chart = alt.Chart(chart_data).mark_bar().encode(
+        x=alt.X(f"{margin_column}:Q", title="Margen (%)", bin=alt.Bin(maxbins=20)),
+        y=alt.Y("count():Q", title="Número de SKUs"),
+        tooltip=[
+            alt.Tooltip(f"{margin_column}:Q", title="Margen %", bin=True),
+            alt.Tooltip("count():Q", title="Número de SKUs")
+        ]
     ).properties(
-        title="Distribución de EBITDA por SKU",
+        title="Distribución de Márgenes",
         width=600,
-        height=400
+        height=300
     )
     
     return chart
 
-def export_scenario(df: pd.DataFrame, scenario_name: str = "escenario_simulado") -> bytes:
+# ===================== Export =====================
+def export_escenario(df: pd.DataFrame, filename_prefix: str = "escenario") -> Path:
     """
-    Exporta el escenario simulado a Excel.
+    Exporta el escenario a CSV.
     
     Args:
-        df: DataFrame con datos del escenario
-        scenario_name: Nombre del archivo
+        df: DataFrame a exportar
+        filename_prefix: Prefijo del nombre del archivo
         
     Returns:
-        Bytes del archivo Excel
+        Path al archivo exportado
     """
-    output = io.BytesIO()
+    # Crear directorio outputs si no existe
+    outputs_dir = Path("outputs")
+    outputs_dir.mkdir(exist_ok=True)
     
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # Hoja principal con datos simulados
-        df.to_excel(writer, sheet_name="Escenario_Simulado", index=False)
-        
-        # Hoja con KPIs
-        kpis = calculate_kpis(df)
-        kpis_df = pd.DataFrame(list(kpis.items()), columns=["KPI", "Valor"])
-        kpis_df.to_excel(writer, sheet_name="KPIs", index=False)
-        
-        # Hoja con resumen por grupo
-        for group_col in ["Marca", "Especie", "Cliente"]:
-            if group_col in df.columns:
-                summary = df.groupby(group_col).agg({
-                    "EBITDA (USD/kg)": ["mean", "min", "max", "sum"],
-                    "EBITDA Pct": "mean",
-                    "SKU": "count"
-                }).round(3)
-                summary.columns = ["EBITDA Promedio", "EBITDA Min", "EBITDA Max", "EBITDA Total", "EBITDA % Promedio", "Cantidad SKUs"]
-                summary.to_excel(writer, sheet_name=f"Resumen_{group_col}")
+    # Generar nombre de archivo con timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"{filename_prefix}_{timestamp}.csv"
+    filepath = outputs_dir / filename
     
-    output.seek(0)
-    return output.getvalue()
+    # Exportar a CSV
+    df.to_csv(filepath, index=False, encoding='utf-8')
+    
+    return filepath
 
-def get_filter_options(df: pd.DataFrame) -> Dict[str, List[str]]:
-    """
-    Obtiene opciones de filtro para cada campo dimensional.
-    
-    Args:
-        df: DataFrame con datos
-        
-    Returns:
-        Dict con opciones de filtro por campo
-    """
-    filter_options = {}
-    
-    dimensional_fields = ["Marca", "Especie", "Cliente", "Condicion"]
-    
-    for field in dimensional_fields:
-        if field in df.columns:
-            options = sorted(df[field].dropna().unique().tolist())
-            filter_options[field] = options
-    
-    return filter_options
+# ===================== Funciones de Utilidad =====================
+def format_currency(value: float) -> str:
+    """Formatea un valor como moneda USD."""
+    return f"${value:.3f}"
 
-def apply_filters(df: pd.DataFrame, filters: Dict[str, List[str]]) -> pd.DataFrame:
-    """
-    Aplica filtros al DataFrame.
-    
-    Args:
-        df: DataFrame base
-        filters: Dict con campo:valores_seleccionados
-        
-    Returns:
-        DataFrame filtrado
-    """
-    df_filtered = df.copy()
-    
-    for field, values in filters.items():
-        if field in df_filtered.columns and values:
-            df_filtered = df_filtered[df_filtered[field].isin(values)]
-    
-    return df_filtered
+def format_percentage(value: float) -> str:
+    """Formatea un valor como porcentaje."""
+    return f"{value:.1f}%"
 
-def create_scenario_summary(df_original: pd.DataFrame, df_simulated: pd.DataFrame) -> pd.DataFrame:
-    """
-    Crea un resumen comparativo entre escenario original y simulado.
-    
-    Args:
-        df_original: DataFrame con datos originales
-        df_simulated: DataFrame con datos simulados
-        
-    Returns:
-        DataFrame con resumen comparativo
-    """
-    summary = pd.DataFrame({
-        "Métrica": [
-            "EBITDA Promedio (USD/kg)",
-            "EBITDA Total (USD)",
-            "EBITDA Promedio (%)",
-            "SKUs Rentables",
-            "SKUs No Rentables",
-            "% SKUs Rentables"
-        ],
-        "Escenario Original": [
-            df_original["EBITDA (USD/kg)"].mean(),
-            df_original["EBITDA (USD/kg)"].sum(),
-            df_original["EBITDA Pct"].mean(),
-            len(df_original[df_original["EBITDA (USD/kg)"] > 0]),
-            len(df_original[df_original["EBITDA (USD/kg)"] <= 0]),
-            (len(df_original[df_original["EBITDA (USD/kg)"] > 0]) / len(df_original)) * 100
-        ],
-        "Escenario Simulado": [
-            df_simulated["EBITDA (USD/kg)_Sim"].mean(),
-            df_simulated["EBITDA (USD/kg)_Sim"].sum(),
-            df_simulated["EBITDA Pct_Sim"].mean(),
-            len(df_simulated[df_simulated["EBITDA (USD/kg)_Sim"] > 0]),
-            len(df_simulated[df_simulated["EBITDA (USD/kg)_Sim"] <= 0]),
-            (len(df_simulated[df_simulated["EBITDA (USD/kg)_Sim"] > 0]) / len(df_simulated)) * 100
-        ]
-    })
-    
-    # Calcular variaciones
-    summary["Variación"] = summary["Escenario Simulado"] - summary["Escenario Original"]
-    summary["Variación %"] = (summary["Variación"] / summary["Escenario Original"]) * 100
-    
-    return summary.round(3)
+def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
+    """División segura que evita división por cero."""
+    if abs(denominator) < 1e-12:
+        return default
+    return numerator / denominator
 
-# ===================== Funciones de análisis avanzado =====================
-def identify_critical_skus(df: pd.DataFrame, threshold: float = -0.1) -> pd.DataFrame:
+def validate_upload_file(uploaded_file) -> Tuple[bool, str, Optional[pd.DataFrame]]:
     """
-    Identifica SKUs críticos (con EBITDA negativo o bajo).
+    Valida archivo subido para overrides.
     
     Args:
-        df: DataFrame con datos
-        threshold: Umbral de EBITDA para considerar crítico
+        uploaded_file: Archivo subido a Streamlit
         
     Returns:
-        DataFrame con SKUs críticos
+        Tuple con (es_válido, mensaje, DataFrame)
     """
-    critical = df[df["EBITDA Pct"] < threshold].copy()
-    critical = critical.sort_values("EBITDA Pct")
+    if uploaded_file is None:
+        return False, "No se seleccionó ningún archivo", None
     
-    return critical
-
-def analyze_cost_structure(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Analiza la estructura de costos por SKU.
-    
-    Args:
-        df: DataFrame con datos
+    try:
+        # Leer archivo según extensión
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(uploaded_file)
+        else:
+            return False, "Formato de archivo no soportado. Use .csv, .xlsx o .xls", None
         
-    Returns:
-        DataFrame con análisis de estructura de costos
-    """
-    cost_cols = [col for col in df.columns if "USD/kg" in col and "Sim" not in col and "PrecioVenta" not in col]
-    
-    analysis = df[["SKU"] + cost_cols].copy()
-    
-    # Calcular porcentajes de cada componente
-    for col in cost_cols:
-        analysis[f"{col}_Pct"] = (analysis[col] / analysis[cost_cols].sum(axis=1)) * 100
-    
-    return analysis
-
-def calculate_break_even_analysis(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calcula análisis de punto de equilibrio.
-    
-    Args:
-        df: DataFrame con datos
+        # Validar columnas requeridas
+        required_cols = ["SKU", "CostoNuevo"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
         
-    Returns:
-        DataFrame con análisis de break-even
-    """
-    be_analysis = df[["SKU", "PrecioVenta (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)"]].copy()
-    
-    # Calcular margen de contribución
-    be_analysis["Margen_Contribucion"] = be_analysis["PrecioVenta (USD/kg)"] - be_analysis["Costos Totales (USD/kg)"]
-    
-    # Calcular margen de contribución porcentual
-    be_analysis["Margen_Contribucion_Pct"] = (
-        be_analysis["Margen_Contribucion"] / be_analysis["PrecioVenta (USD/kg)"]
-    ) * 100
-    
-    # Identificar si está por encima del break-even
-    be_analysis["Por_Encima_BE"] = be_analysis["Margen_Contribucion"] > 0
-    
-    return be_analysis
+        if missing_cols:
+            return False, f"Columnas faltantes: {', '.join(missing_cols)}", None
+        
+        # Validar que CostoNuevo sea numérico
+        if not pd.api.types.is_numeric_dtype(df["CostoNuevo"]):
+            return False, "La columna 'CostoNuevo' debe ser numérica", None
+        
+        return True, f"Archivo válido con {len(df)} filas", df
+        
+    except Exception as e:
+        return False, f"Error leyendo archivo: {e}", None

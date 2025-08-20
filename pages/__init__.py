@@ -1,1 +1,4 @@
-# Este archivo permite que Python reconozca el directorio como un paquete
+"""
+Módulo pages para la aplicación multipage de Streamlit.
+Contiene las diferentes páginas de la aplicación.
+"""
