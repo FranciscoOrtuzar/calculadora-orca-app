@@ -27,7 +27,7 @@ jobs:
         shell: cmd
         run: |
           pyinstaller --noconfirm --onefile --name PricingApp ^
-            --add-data "app.py;." ^
+            --add-data "Inicio.py;." ^
             --collect-all altair --collect-all pydeck ^
             main.py
 
