@@ -361,7 +361,8 @@ def create_ebitda_chart(df: pd.DataFrame, top_n: int = 20) -> alt.Chart:
     
     # Obtener top N SKUs por EBITDA
     chart_data = df.nlargest(top_n, ebitda_column).copy()
-    chart_data["SKU_Cliente"] = chart_data["SKU"] + " - " + chart_data["Cliente"]
+    # Convertir SKU y Cliente a string antes de concatenar
+    chart_data["SKU_Cliente"] = chart_data["SKU"].astype(str) + " - " + chart_data["Cliente"].astype(str)
     
     # Crear gráfico
     chart = alt.Chart(chart_data).mark_bar().encode(

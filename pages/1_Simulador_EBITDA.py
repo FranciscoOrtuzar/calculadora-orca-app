@@ -217,13 +217,16 @@ def recalculate_totals(df: pd.DataFrame) -> pd.DataFrame:
     
     return df_calc
 
-def recalculate_table(edited_df: pd.DataFrame, filtered_skus: list) -> None:
+def recalculate_table(edited_df: pd.DataFrame, filtered_skus: list) -> pd.DataFrame:
     """
     Recalcula los totales en la tabla y actualiza la sesión.
     
     Args:
         edited_df: DataFrame editado con cambios
         filtered_skus: Lista de SKUs filtrados actualmente
+        
+    Returns:
+        DataFrame con totales recalculados
     """
     try:
         # Validar y corregir signos antes de recalcular
@@ -232,35 +235,86 @@ def recalculate_table(edited_df: pd.DataFrame, filtered_skus: list) -> None:
         # Recalcular totales
         edited_df_recalculated = recalculate_totals(edited_df_corrected)
         
-        # ACTUALIZAR TAMBIÉN EN LA SESIÓN COMPLETA
-        if "detalle" in st.session_state:
-            # Obtener todos los SKUs del detalle original
-            all_skus = st.session_state.detalle["SKU"].tolist()
-            detalle_actualizado = st.session_state.detalle.copy()
-            
-            # Aplicar los cambios a los SKUs filtrados
-            for sku in filtered_skus:
-                if sku in all_skus:
-                    idx_original = detalle_actualizado[detalle_actualizado["SKU"] == sku].index
-                    if len(idx_original) > 0:
-                        idx = idx_original[0]
-                        # Copiar todos los valores actualizados
-                        for col in edited_df_recalculated.columns:
-                            if col in detalle_actualizado.columns:
-                                detalle_actualizado.loc[idx, col] = edited_df_recalculated[edited_df_recalculated["SKU"] == sku][col].iloc[0]
-            
-            # Recalcular totales en el detalle completo
-            detalle_actualizado = recalculate_totals(detalle_actualizado)
-            st.session_state.detalle = detalle_actualizado
-        
         # Actualizar datos en sesión para la tabla editable
         st.session_state.df_current = edited_df_recalculated.copy()
         
-        st.success("✅ Cambios aplicados y totales recalculados automáticamente")
+        return edited_df_recalculated
         
     except Exception as e:
         st.error(f"❌ Error al recalcular totales: {e}")
         st.warning("⚠️ Los cambios no se guardaron en la sesión")
+        return edited_df
+
+# ===================== Sistema de Historial de Cambios =====================
+def save_edit_history(sku: str, column: str, old_value: float, new_value: float) -> None:
+    """
+    Guarda el historial de cambios para poder revertirlos.
+    
+    Args:
+        sku: SKU que fue editado
+        column: Columna que fue editada
+        old_value: Valor anterior
+        new_value: Nuevo valor
+    """
+    if "edit_history" not in st.session_state:
+        st.session_state.edit_history = {}
+    
+    change_key = f"{sku}_{column}"
+    st.session_state.edit_history[change_key] = {
+        "sku": sku,
+        "column": column,
+        "old_value": old_value,
+        "new_value": new_value,
+        "timestamp": pd.Timestamp.now()
+    }
+
+def revert_edit(sku: str, column: str) -> bool:
+    """
+    Revierte un cambio específico a su valor original.
+    
+    Args:
+        sku: SKU a revertir
+        column: Columna a revertir
+        
+    Returns:
+        True si se pudo revertir, False en caso contrario
+    """
+    if "edit_history" not in st.session_state:
+        return False
+    
+    change_key = f"{sku}_{column}"
+    if change_key not in st.session_state.edit_history:
+        return False
+    
+    change_info = st.session_state.edit_history[change_key]
+    old_value = change_info["old_value"]
+    
+    # Revertir en el detalle de la sesión
+    if "detalle" in st.session_state:
+        mask = st.session_state.detalle["SKU"] == sku
+        if mask.any():
+            idx = st.session_state.detalle[mask].index[0]
+            st.session_state.detalle.loc[idx, column] = old_value
+            
+            # Recalcular totales
+            st.session_state.detalle = recalculate_totals(st.session_state.detalle)
+            
+            # Actualizar df_current
+            if "df_current" in st.session_state:
+                # Aplicar ajustes universales si existen
+                if st.session_state.universal_adjustments:
+                    st.session_state.df_current = apply_universal_adjustments(
+                        st.session_state.detalle, 
+                        st.session_state.universal_adjustments
+                    )
+                else:
+                    st.session_state.df_current = st.session_state.detalle.copy()
+            
+            # Eliminar del historial
+            del st.session_state.edit_history[change_key]
+            return True
+    
+    return False
 
 # ===================== Función de Validación de Cálculos =====================
 def validate_calculations(df: pd.DataFrame) -> dict:
@@ -376,7 +430,7 @@ def apply_universal_adjustments(df: pd.DataFrame, adjustments: dict) -> pd.DataF
                 df_adjusted[cost_column] = df_adjusted[cost_column] * (1 + adjustment_info["value"] / 100)
             else:  # dollars
                 # Aplicar ajuste en dólares manteniendo el signo negativo de los costos
-                df_adjusted[cost_column] = df_adjusted[cost_column] + adjustment_info["value"]
+                df_adjusted[cost_column] = adjustment_info["value"]
     
     # Recalcular totales después de aplicar ajustes
     df_adjusted = recalculate_totals(df_adjusted)
@@ -680,24 +734,24 @@ if st.session_state.get("show_skus_info", True):
 
 
 
-# Botón para forzar actualización de datos cuando cambien los filtros
-if st.session_state.universal_adjustments:
-    if st.sidebar.button("🔄 Actualizar Datos con Filtros", type="secondary", 
-                         help="Fuerza la actualización de datos cuando cambian los filtros"):
-        # Reaplicar ajustes universales a los nuevos datos filtrados
-        df_current = apply_universal_adjustments(df_filtered, st.session_state.universal_adjustments)
+# # Botón para forzar actualización de datos cuando cambien los filtros
+# if st.session_state.universal_adjustments:
+#     if st.sidebar.button("🔄 Actualizar Datos con Filtros", type="secondary", 
+#                          help="Fuerza la actualización de datos cuando cambian los filtros"):
+#         # Reaplicar ajustes universales a los nuevos datos filtrados
+#         df_current = apply_universal_adjustments(df_filtered, st.session_state.universal_adjustments)
         
-        # Filtrar SKUs sin costos totales también en datos simulados
-        if "Costos Totales (USD/kg)" in df_current.columns:
-            original_count = len(df_current)
-            df_current = df_current[df_current["Costos Totales (USD/kg)"] != 0].copy()
-            filtered_count = len(df_current)
-            if original_count > filtered_count:
-                st.sidebar.info(f"🔍 Se excluyeron {original_count - filtered_count} SKUs sin costos de la simulación")
+#         # Filtrar SKUs sin costos totales también en datos simulados
+#         if "Costos Totales (USD/kg)" in df_current.columns:
+#             original_count = len(df_current)
+#             df_current = df_current[df_current["Costos Totales (USD/kg)"] != 0].copy()
+#             filtered_count = len(df_current)
+#             if original_count > filtered_count:
+#                 st.sidebar.info(f"🔍 Se excluyeron {original_count - filtered_count} SKUs sin costos de la simulación")
         
-        st.session_state.df_current = df_current.copy()
-        st.sidebar.success("✅ Datos actualizados con filtros actuales")
-        st.rerun()
+#         st.session_state.df_current = df_current.copy()
+#         st.sidebar.success("✅ Datos actualizados con filtros actuales")
+#         st.rerun()
 
 # ===================== Sidebar - Overrides Globales =====================
 st.sidebar.header("Overrides Globales")
@@ -868,17 +922,17 @@ if len(df_filtered) < len(df_base):
             real_col = RESOLVED[logical]
             active_filters.append(f"**{logical}**: {', '.join(selections)}")
     
-    if active_filters:
-        with st.expander("🔍 Ver filtros activos"):
-            for filter_info in active_filters:
-                st.write(filter_info)
+    # if active_filters:
+    #     with st.expander("🔍 Ver filtros activos"):
+    #         for filter_info in active_filters:
+    #             st.write(filter_info)
         
-        # Botón para limpiar filtros
-        if st.button("🧹 Limpiar todos los filtros", type="secondary"):
-            for logical in FILTER_FIELDS:
-                if f"ms_sim_{logical}" in st.session_state:
-                    del st.session_state[f"ms_sim_{logical}"]
-            st.rerun()
+    #     # Botón para limpiar filtros
+    #     if st.button("🧹 Limpiar todos los filtros", type="secondary"):
+    #         for logical in FILTER_FIELDS:
+    #             if f"ms_sim_{logical}" in st.session_state:
+    #                 del st.session_state[f"ms_sim_{logical}"]
+    #         st.rerun()
 else:
     # Información de sin filtros (con botón de cierre)
     if st.session_state.get("show_no_filters_info", True):
@@ -902,7 +956,7 @@ if "detalle" in st.session_state:
     detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
     
     # Identificar columnas de costos (excluyendo dimensiones y totales)
-    dimension_cols = ["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Removido SKU-Cliente
+    dimension_cols = ["SKU","SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Removido SKU-Cliente
     total_cols = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
     intermediate_cols = ["PrecioVenta (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
                          "MO Total", "Materiales Total", "MMPP Total (USD/kg)"]
@@ -910,6 +964,8 @@ if "detalle" in st.session_state:
     # Columnas de costos individuales
     cost_columns = [col for col in detalle_filtrado.columns 
                     if col not in dimension_cols + total_cols + intermediate_cols]
+    adj_columns = cost_columns.copy()
+    adj_columns.append("PrecioVenta (USD/kg)")
     
     if cost_columns:
         col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -917,15 +973,15 @@ if "detalle" in st.session_state:
         with col1:
             selected_cost = st.selectbox(
                 "Seleccionar costo a ajustar:",
-                options=cost_columns,
+                options=adj_columns,
                 help="Selecciona el costo específico que quieres ajustar universalmente"
             )
         
         with col2:
             adjustment_type = st.selectbox(
                 "Tipo de ajuste:",
-                options=["Porcentaje (%)", "Dólares (USD)"],
-                help="Ajuste por porcentaje o valor absoluto"
+                options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
+                help="Ajuste por porcentaje o nuevo valor en dólares por kg"
             )
         
         with col3:
@@ -941,17 +997,17 @@ if "detalle" in st.session_state:
                 )
             else:
                 adjustment_value = st.number_input(
-                    "Valor del ajuste:",
+                    "Nuevo valor:",
                     min_value=-10.0,
-                    max_value=10.0,
+                    max_value=0.0,
                     value=0.0,
                     step=0.01,
                     format="%.3f",
-                    help="Cambio en dólares por kg"
+                    help="Nuevo valor en dólares por kg"
                 )
         
         with col4:
-            if st.button("🚀 Aplicar Ajuste", type="primary"):
+            if st.button("Aplicar Ajuste", type="primary"):
                 # Aplicar ajuste universal
                 if adjustment_type == "Porcentaje (%)":
                     # Ajuste porcentual
@@ -961,7 +1017,7 @@ if "detalle" in st.session_state:
                 else:
                     # Ajuste en dólares
                     # detalle_filtrado[f"{selected_cost}_Original"] = detalle_filtrado[selected_cost]
-                    detalle_filtrado[selected_cost] = detalle_filtrado[selected_cost] + adjustment_value
+                    detalle_filtrado[selected_cost] = adjustment_value
                     st.success(f"✅ Ajuste aplicado: {adjustment_value:+.3f} USD/kg a {selected_cost}")
                 
                 # Recalcular totales
@@ -1008,7 +1064,8 @@ if "detalle" in st.session_state:
                                 detalle_actualizado.loc[idx, selected_cost] = detalle_actualizado.loc[idx, selected_cost] * (1 + adjustment_value / 100)
                             else:
                                 # detalle_actualizado.loc[idx, f"{selected_cost}_Original"] = detalle_actualizado.loc[idx, selected_cost]
-                                detalle_actualizado.loc[idx, selected_cost] = detalle_actualizado.loc[idx, selected_cost] + adjustment_value
+                                # Para dólares por kg, sobreescribir completamente el valor
+                                detalle_actualizado.loc[idx, selected_cost] = adjustment_value
                 
                 # Recalcular totales en el detalle completo
                 detalle_actualizado = recalculate_totals(detalle_actualizado)
@@ -1096,10 +1153,6 @@ if "detalle" in st.session_state:
             st.session_state.universal_adjustments = {}
             st.success("✅ Todos los ajustes universales eliminados")
             st.rerun()
-    
-    # Confirmar que los ajustes solo aplican a SKUs filtrados
-    if st.session_state.universal_adjustments and len(df_filtered) < len(df_base):
-        st.info(f"🔍 **Confirmación**: Los ajustes universales solo se aplican a los {len(df_filtered)} SKUs filtrados de {len(df_base)} totales")
     
     # ===================== Tabla Editable Completa =====================
     st.subheader("📊 Tabla Editable - Todos los Costos")
@@ -1297,24 +1350,8 @@ if "detalle" in st.session_state:
         # Filtrar por SKUs actuales
         filtered_skus = df_filtered["SKU"].tolist()
         
-        # SIMPLIFICADO: Ahora que df_base y detalle_data vienen de la misma fuente,
-        # solo necesitamos aplicar los filtros que ya están en df_filtered
-        try:
-            if df_base.equals(detalle_data):
-                # Si son la misma fuente, usar df_filtered directamente
-                detalle_filtrado = df_filtered.copy()
-            else:
-                # Fallback: convertir tipos y filtrar
-                filtered_skus_str = [str(sku) for sku in filtered_skus]
-                detalle_data_copy = detalle_data.copy()
-                detalle_data_copy["SKU"] = detalle_data_copy["SKU"].astype(str)
-                detalle_filtrado = detalle_data_copy[detalle_data_copy["SKU"].isin(filtered_skus_str)].copy()
-            
-        except Exception as e:
-            st.error(f"❌ Error en filtrado: {e}")
-            # Fallback: usar todos los datos del detalle
-            detalle_filtrado = detalle_data.copy()
-            st.warning("⚠️ Usando todos los datos del detalle como fallback")
+        # Usar df_filtered directamente ya que viene de la misma fuente
+        detalle_filtrado = df_filtered.copy()
         
         # Identificar columnas de costos (excluyendo dimensiones y totales)
         # Nota: SKU-Cliente se incluye en dimension_cols para el procesamiento pero se oculta en la tabla
@@ -1368,12 +1405,25 @@ if "detalle" in st.session_state:
                     help=f"{col} (no editable)",
                 )
 
-        # OCULTAR específicamente la columna SKU-Cliente
+        # Configurar la columna SKU-Cliente (oculta pero necesaria para el índice)
         if "SKU-Cliente" in df_edit.columns:
-            editable_columns["SKU-Cliente"] = None  # Esto oculta la columna completamente
+            editable_columns["SKU-Cliente"] = st.column_config.TextColumn(
+                "SKU-Cliente",
+                disabled=True,
+                help="Identificador único SKU-Cliente (oculto)",
+            )
         # Configurar columnas intermedias (no editables)
         for col in intermediate_cols_edit:
-            if col in df_edit.columns:
+            if col == "PrecioVenta (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Valor intermedio de {col} (no editable)",
+                    format="%.3f",
+                    step=0.01,
+                    min_value=0.0,
+                    max_value=10.0
+                )
+            elif col in df_edit.columns:
                 editable_columns[col] = st.column_config.NumberColumn(
                     col,
                     help=f"Valor intermedio de {col} (no editable)",
@@ -1415,12 +1465,53 @@ if "detalle" in st.session_state:
                 disabled=True
             )
         
-        # Mostrar tabla editable con SKU-Cliente como índice
-        df_edit_indexed = df_edit.set_index("SKU-Cliente")
+        # Aplicar estilos antes de mostrar la tabla editable (igual que en datos históricos)
+        df_edit_styled = df_edit.copy()
         
+        # ESTABLECER EL ÍNDICE ANTES de aplicar estilos
+        df_edit_styled = df_edit_styled.set_index("SKU-Cliente")
+        
+        # IMPORTANTE: Guardar una copia del DataFrame original (con índice) ANTES de convertir a Styler
+        df_edit_original = df_edit_styled.copy()
+        
+        # Aplicar formato numérico ANTES de convertir a Styler
+        fmt_cols = {}
+        for c in df_edit_styled.columns:
+            if c not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+                if "Pct" in c or "Porcentaje" in c:
+                    fmt_cols[c] = "{:.1%}"  # Formato de porcentaje
+                elif np.issubdtype(df_edit_styled[c].dtype, np.number):
+                    fmt_cols[c] = "{:.3f}"   # Formato numérico
+        
+        # Aplicar formato numérico al DataFrame
+        if fmt_cols:
+            df_edit_styled = df_edit_styled.style.format(fmt_cols)
+        
+        # Aplicar negritas a las columnas de totales
+        total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)"]
+        existing_total_columns = [col for col in total_columns if col in df_edit.columns]
+        
+        if existing_total_columns:
+            df_edit_styled = df_edit_styled.set_properties(
+                subset=existing_total_columns,
+                **{"font-weight": "bold", "background-color": "#f8f9fa"}
+            )
+        
+        # Aplicar estilos a columnas EBITDA
+        ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+        existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit.columns]
+        
+        if existing_ebitda_columns:
+            df_edit_styled = df_edit_styled.set_properties(
+                subset=existing_ebitda_columns,
+                **{"font-weight": "bold", "background-color": "#fff7ed"}
+            )
+        
+        # El DataFrame ya tiene el índice establecido, solo aplicar estilos
+        df_edit_final = df_edit_styled
         
         edited_df = st.data_editor(
-            df_edit_indexed,
+            df_edit_final,
             column_config=editable_columns,
             use_container_width=True,
             height=500,
@@ -1428,26 +1519,138 @@ if "detalle" in st.session_state:
         )
         
         # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
-        if not edited_df.equals(df_edit_indexed):
+        if not edited_df.equals(df_edit_original):
+            st.info("🔍 Cambios detectados en la tabla editable")
+            
             # Restaurar índice para procesamiento
             edited_df_reset = edited_df.reset_index()
             
-            # Validar y corregir signos antes de procesar
-            edited_df_reset = validate_and_correct_signs(edited_df_reset)
+            # Guardar historial de cambios ANTES de procesar
+            changes_detected = 0
             
-            # Llamar a la función de recálculo
-            recalculate_table(edited_df_reset, filtered_skus)
+            # SIMPLIFICADO: Comparar directamente usando el DataFrame original sin índice
+            df_edit_original_reset = df_edit_original.reset_index()
             
-            # Actualizar df_current para que se refleje inmediatamente en KPIs y gráficos
-            if "df_current" in st.session_state:
-                st.session_state.df_current = edited_df_reset.copy()
+            # Convertir filtered_skus a strings para que coincida con los DataFrames
+            filtered_skus_str = [str(sku) for sku in filtered_skus]
             
-            # Mostrar mensaje de éxito
-            st.success("✅ Cambios aplicados - KPIs y gráficos se actualizarán automáticamente")
+            # Buscar cambios por SKU directamente
+            for sku in filtered_skus_str:
+                # Buscar el SKU en ambos DataFrames
+                mask_original = df_edit_original_reset["SKU"] == sku
+                mask_edited = edited_df_reset["SKU"] == sku
+                
+                if mask_original.any() and mask_edited.any():
+                    # Obtener las filas correspondientes
+                    original_row = df_edit_original_reset[mask_original].iloc[0]
+                    edited_row = edited_df_reset[mask_edited].iloc[0]
+                    
+                    # Comparar columnas numéricas (excluyendo dimensiones)
+                    for col in edited_df_reset.columns:
+                        if col not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+                            try:
+                                # Verificar que la columna existe en ambos DataFrames
+                                if col in original_row and col in edited_row:
+                                    original_value = original_row[col]
+                                    edited_value = edited_row[col]
+                                    
+                                    # Si hay cambio, guardar en historial
+                                    if abs(original_value - edited_value) > 1e-6:  # Tolerancia para floats
+                                        save_edit_history(sku, col, original_value, edited_value)
+                                        changes_detected += 1
+                                else:
+                                    st.warning(f"⚠️ Columna {col} no encontrada en uno de los DataFrames")
+                            except (IndexError, KeyError, TypeError) as e:
+                                st.warning(f"⚠️ Error comparando {sku} - {col}: {e}")
+                                continue
+                else:
+                    st.warning(f"⚠️ SKU {sku} no encontrado en uno de los DataFrames")
             
-            # Botón para forzar actualización de la vista
-            if st.button("🔄 Actualizar Vista", key="update_view_button"):
+            if changes_detected > 0:
+                st.success(f"✅ {changes_detected} cambios detectados y guardados en historial")
+                
+                # Validar y corregir signos antes de procesar
+                edited_df_reset = validate_and_correct_signs(edited_df_reset)
+                
+                # IMPORTANTE: Recalcular totales directamente en edited_df_reset
+                edited_df_recalculated = recalculate_totals(edited_df_reset)
+                
+                # Actualizar sesión directamente
+                if "detalle" in st.session_state:
+                    st.session_state.detalle = edited_df_recalculated.copy()
+                    st.session_state.df_current = edited_df_recalculated.copy()
+                
+                st.success("✅ EBITDA recalculado automáticamente")
+                
+                # Forzar actualización de la vista automáticamente
                 st.rerun()
+            else:
+                st.warning("⚠️ No se detectaron cambios específicos")
+        else:
+            st.info("ℹ️ No hay cambios en la tabla editable")
+        
+        # Mostrar historial de cambios y opciones de reversión
+        if "edit_history" in st.session_state and st.session_state.edit_history:
+            st.subheader("📝 Historial de Cambios Individuales")
+            
+            # Agrupar cambios por SKU para mejor visualización
+            changes_by_sku = {}
+            for change_key, change_info in st.session_state.edit_history.items():
+                sku = change_info["sku"]
+                if sku not in changes_by_sku:
+                    changes_by_sku[sku] = []
+                changes_by_sku[sku].append(change_info)
+            
+            # Mostrar cambios agrupados por SKU
+            for sku, changes in changes_by_sku.items():
+                with st.expander(f"🔧 SKU: {sku} ({len(changes)} cambios)", expanded=False):
+                    for change in changes:
+                        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                        
+                        with col1:
+                            st.write(f"**{change['column']}**: {change['old_value']:.3f} → {change['new_value']:.3f}")
+                        
+                        with col2:
+                            st.write(f"**{change['timestamp'].strftime('%H:%M:%S')}**")
+                        
+                        with col3:
+                            st.write(f"**{change['new_value'] - change['old_value']:+.3f}**")
+                        
+                        with col4:
+                            if st.button("↩️", key=f"revert_{change_key}_{sku}_{change['column']}", 
+                                       help=f"Revertir {change['column']} a {change['old_value']:.3f}"):
+                                if revert_edit(sku, change['column']):
+                                    st.success(f"✅ {change['column']} revertido a {change['old_value']:.3f}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ No se pudo revertir {change['column']}")
+                    
+                    # Botón para revertir todos los cambios de este SKU
+                    if st.button("🔄 Revertir Todos los Cambios", key=f"revert_all_{sku}", type="secondary"):
+                        reverted_count = 0
+                        for change in changes:
+                            if revert_edit(sku, change['column']):
+                                reverted_count += 1
+                        
+                        if reverted_count > 0:
+                            st.success(f"✅ {reverted_count} cambios revertidos para {sku}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ No se pudieron revertir los cambios para {sku}")
+            
+            # Botón para revertir todos los cambios
+            if st.button("🗑️ Revertir Todos los Cambios", type="secondary", 
+                        help="Revierte todos los cambios individuales a sus valores originales"):
+                reverted_total = 0
+                for change_key, change_info in list(st.session_state.edit_history.items()):
+                    if revert_edit(change_info['sku'], change_info['column']):
+                        reverted_total += 1
+                
+                if reverted_total > 0:
+                    st.success(f"✅ {reverted_total} cambios revertidos en total")
+                    st.rerun()
+                else:
+                    st.error("❌ No se pudieron revertir los cambios")
 
 else:
     st.warning("⚠️ No hay datos de detalle disponibles. Carga tu archivo en la página Home primero.")
@@ -1505,23 +1708,20 @@ if 'subproductos' in locals() and len(subproductos) > 0:
 
 st.header("📊 KPIs")
 
-# Debug: mostrar información sobre los datos usados para KPIs
-st.info(f"🔍 **Debug KPIs**: Usando {len(df_current)} SKUs de {len(df_base)} totales")
-st.info(f"🔍 **Debug datos**: Fuente: {'df_current (simulado)' if 'df_current' in st.session_state and st.session_state.df_current is not None else 'df_global (filtrado)'}")
-
 # Calcular KPIs
 try:
     kpis = calculate_kpis(df_current)
     
     # Mostrar KPIs en métricas
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            "EBITDA Promedio (USD/kg)",
-            f"${kpis['EBITDA Promedio (USD/kg)']:.3f}",
-            help="EBITDA promedio por kilogramo"
-        )
+    # col1, col2, col3, col4 = st.columns(4)
+    col2, col3 = st.columns(2)
+
+    # with col1:
+    #     st.metric(
+    #         "EBITDA Promedio (USD/kg)",
+    #         f"${kpis['EBITDA Promedio (USD/kg)']:.3f}",
+    #         help="EBITDA promedio por kilogramo"
+    #     )
     
     with col2:
         st.metric(
@@ -1542,12 +1742,12 @@ try:
             help="Número de SKUs con EBITDA positivo"
         )
     
-    with col4:
-        st.metric(
-            "Margen Promedio (%)",
-            f"{kpis['EBITDA Promedio (%)']:.1f}%",
-            help="Margen promedio como porcentaje del precio"
-        )
+    # with col4:
+    #     st.metric(
+    #         "Margen Promedio (%)",
+    #         f"{kpis['EBITDA Promedio (%)']:.1f}%",
+    #         help="Margen promedio como porcentaje del precio"
+    #     )
         
 except Exception as e:
     st.error(f"❌ Error calculando KPIs: {e}")
@@ -1555,10 +1755,6 @@ except Exception as e:
 
 # ===================== Top y Bottom SKUs =====================
 st.header(" Top 5 y Bottom 5 SKUs por EBITDA")
-
-# Información sobre subproductos en el análisis de Top/Bottom
-if 'subproductos' in locals() and len(subproductos) > 0:
-    st.info(f"💡 **Análisis de Top/Bottom**: Basado en {kpis['Total SKUs']} SKUs con costos reales. {len(subproductos)} subproductos (costos = 0) fueron excluidos del ranking.")
 
 try:
     col1, col2 = st.columns(2)
@@ -1627,10 +1823,6 @@ except Exception as e:
 
 # ===================== Gráficos =====================
 st.header("📈 Gráficos")
-
-# Información sobre subproductos en los gráficos
-if 'subproductos' in locals() and len(subproductos) > 0:
-    st.info(f"💡 **Visualizaciones**: Los gráficos muestran solo {kpis['Total SKUs']} SKUs con costos reales. {len(subproductos)} subproductos (costos = 0) no se incluyen en las visualizaciones.")
 
 # Configuración del gráfico
 col1, col2 = st.columns([1, 3])
