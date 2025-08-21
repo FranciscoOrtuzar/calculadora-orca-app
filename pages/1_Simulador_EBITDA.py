@@ -949,7 +949,7 @@ else:
 st.subheader("⚙️ Ajustes Universales por Costo")
 
 # Obtener datos del detalle si están disponibles en la sesión
-if "detalle" in st.session_state:
+if "detalle" in st.session_state and st.session_state.detalle is not None:
     detalle_data = st.session_state.detalle.copy()
     # Filtrar por SKUs actuales
     filtered_skus = df_filtered["SKU"].tolist()
@@ -1345,7 +1345,7 @@ if "detalle" in st.session_state:
     
     # Preparar datos para la tabla editable usando df_current (que incluye ajustes universales)
     # Obtener datos del detalle si están disponibles en la sesión
-    if "detalle" in st.session_state:
+    if "detalle" in st.session_state and st.session_state.detalle is not None:
         detalle_data = st.session_state.detalle.copy()
         # Filtrar por SKUs actuales
         filtered_skus = df_filtered["SKU"].tolist()
@@ -1653,7 +1653,17 @@ if "detalle" in st.session_state:
                     st.error("❌ No se pudieron revertir los cambios")
 
 else:
-    st.warning("⚠️ No hay datos de detalle disponibles. Carga tu archivo en la página Home primero.")
+    st.error("❌ **No hay datos disponibles para el simulador**")
+    st.info("💡 **Para usar el simulador, primero debes:**")
+    st.info("1. 📁 Ir a la página **Inicio**")
+    st.info("2. 📤 Cargar tu archivo Excel con los datos base")
+    st.info("3. 🔄 Regresar al simulador")
+
+    # Botón para ir a Inicio
+    if st.button("Ir a Inicio", type="primary", use_container_width=True):
+        st.switch_page("Inicio.py")
+    
+    st.stop()
 
 # ===================== KPIs =====================
 # Información sobre subproductos excluidos en la vista principal
