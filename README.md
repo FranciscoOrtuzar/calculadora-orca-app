@@ -14,7 +14,7 @@ Aplicación multipage de Streamlit para análisis de costos ponderados, precios 
 
 ```
 calculadora-VF-app/
-├── app.py                          # Página Home (Datos Históricos)
+├── Inicio.py                          # Página Home (Datos Históricos)
 ├── pages/
 │   └── 1_Simulador_EBITDA.py      # Simulador de EBITDA
 ├── src/
