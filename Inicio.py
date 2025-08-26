@@ -93,65 +93,108 @@ if st.session_state.current_page == "simulator":
         st.rerun()
 else:
     # Mostrar página Home
-    st.title(ST_TITLE)
+    # ===================== TÍTULO PRINCIPAL =====================
+    st.title("📊 Calculadora de Costos y Márgenes")
+    st.markdown("### Análisis de rentabilidad por SKU con sistema integrado de recetas")
+    st.markdown("---")
     
     # Mostrar navegación
     # show_navigation()
     
-    # ===================== Carga de datos (con persistencia) =====================
-    with st.sidebar:
-        st.header("1) Subir archivo maestro (.xlsx)")
-        
-        # Verificar si ya hay datos en la sesión
-        if "uploaded_file" in st.session_state and st.session_state.uploaded_file is not None:
-            st.write(f"📁 Archivo: {st.session_state.uploaded_file.name}")
-            
-            if st.button("🔄 Recargar archivo"):
-                # Limpiar datos existentes
-                for key in ["detalle", "uploaded_file", "file_bytes"]:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.rerun()
-        else:
-            up = st.file_uploader("Selecciona tu Excel con hojas: " + ", ".join(REQ_SHEETS.keys()),
-                                  type=["xlsx"], accept_multiple_files=False, key="file_uploader_home")
-            
-            if up is not None:
-                # Guardar archivo en sesión
-                st.session_state.uploaded_file = up
-                st.session_state.file_bytes = up.read()
-                st.rerun()
-        
-        st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
+    # ===================== CARGA DE ARCHIVOS =====================
+    st.sidebar.header("📁 Carga de Archivos")
+    st.sidebar.info("Sube tu archivo Excel con los datos de costos, precios y recetas para comenzar el análisis.")
+    uploaded_file = st.sidebar.file_uploader("Seleccionar archivo Excel", type=["xlsx", "xls"], help="El archivo debe contener las hojas: FACT_COSTOS_POND, FACT_PRECIOS, DIM_SKU, RECETA_SKU, INFO_FRUTA)")
+    if uploaded_file is not None:
+        st.success("✅ Archivo seleccionado")
+        st.sidebar.info(f"📄 **{uploaded_file.name}**")
+        st.sidebar.info(f"📏 **{uploaded_file.size / 1024:.1f} KB**")
+    else:
+        st.sidebar.info("📤 Selecciona un archivo para comenzar")
 
-        # # Información sobre subproductos en el sidebar
-        # if len(subproductos) > 0:
-        #     st.markdown("---")
-        #     st.warning(f"⚠️ **Subproductos detectados**: {len(subproductos)} SKUs con costos = 0")
-            
-        #     with st.expander(f"📋 Ver {len(subproductos)} subproductos", expanded=False):
-        #         st.write("**SKUs excluidos del análisis de EBITDA:**")
-        #         st.write(f"- **Total**: {len(subproductos)} SKUs")
-        #         st.write(f"- **Razón**: Costos totales = 0")
-                
-        #         # Mostrar algunos ejemplos
-        #         if len(subproductos) > 0:
-        #             sample_subproductos = subproductos[["SKU", "Descripcion", "Marca", "Cliente"]].head(5)
-        #             st.dataframe(sample_subproductos, use_container_width=True)
+    
+    
+    # Procesar archivo cuando se sube
+    if uploaded_file is not None:
+        # Guardar en sesión
+        st.session_state.uploaded_file = uploaded_file
+        st.session_state.file_bytes = uploaded_file.getvalue()
+        
+        # Configuración de parámetros
+        st.subheader("⚙️ Configuración de Análisis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            modo = st.selectbox(
+                "Modo de cálculo de último precio:",
+                options=["global", "to_date"],
+                help="Global: último precio disponible. To_date: precio hasta fecha específica"
+            )
+        
+        with col2:
+            if modo == "to_date":
+                ref_ym = st.number_input(
+                    "Año-Mes de referencia (YYYYMM):",
+                    min_value=202001,
+                    max_value=203012,
+                    value=202412,
+                    help="Formato: 202412 para Diciembre 2024"
+                )
+            else:
+                ref_ym = None
+        
+        # Procesar archivo
+        if st.button("🚀 Procesar Archivo", type="primary"):
+            try:
+                with st.spinner("Procesando archivo..."):
+                    from src.data_io import read_workbook
+                    sheets = read_workbook(st.session_state.file_bytes)
                     
-        #             if len(subproductos) > 5:
-        #                 st.write(f"... y {len(subproductos) - 5} SKUs más")
+                    # Verificar validación de hojas
+                    from src.data_io import validate_required_sheets
+                    missing_sheets = validate_required_sheets(sheets)
                     
-        #             # Botón para exportar subproductos desde el sidebar
-        #             csv_subproductos = subproductos.to_csv(index=False)
-        #             st.download_button(
-        #                 label="📥 Exportar Subproductos",
-        #                 data=csv_subproductos,
-        #                 file_name="subproductos_sin_costos.csv",
-        #                 mime="text/csv",
-        #                 use_container_width=True
-        #             )
-
+                    if missing_sheets:
+                        st.error(f"❌ **Hojas obligatorias faltantes**: {missing_sheets}")
+                        st.stop()
+                    
+                    # Procesar el archivo
+                    detalle = build_detalle(st.session_state.file_bytes, ultimo_precio_modo=modo, ref_ym=ref_ym)
+                    st.session_state.detalle = detalle
+                    
+                    st.success("✅ **Archivo procesado exitosamente**")
+                    st.info(f"📊 **Datos cargados**: {len(detalle)} SKUs procesados")
+                    
+                    # Mostrar resumen básico de datos
+                    st.subheader("📊 Resumen de Datos Cargados")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Total SKUs", len(detalle))
+                    
+                    with col2:
+                        if "Marca" in detalle.columns:
+                            marcas_unicas = detalle["Marca"].nunique()
+                            st.metric("Marcas", marcas_unicas)
+                        else:
+                            st.metric("Marcas", "N/A")
+                    
+                    with col3:
+                        if "Cliente" in detalle.columns:
+                            clientes_unicos = detalle["Cliente"].nunique()
+                            st.metric("Clientes", clientes_unicos)
+                        else:
+                            st.metric("Clientes", "N/A")
+                    
+                    # Mostrar primeras filas como preview
+                    with st.expander("👀 Ver Preview de Datos", expanded=False):
+                        st.dataframe(detalle.head(10), use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f"❌ **Error procesando archivo**: {e}")
+                st.info("💡 **Solución**: Verifica que el archivo tenga el formato correcto y las hojas requeridas")
+    
         st.header("2) Parámetros de precio vigente")
         modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
         ref_ym = None
@@ -168,8 +211,27 @@ else:
         if "file_bytes" in st.session_state:
             try:
                 with st.spinner("Procesando archivo..."):
+                    from src.data_io import read_workbook
+                    sheets = read_workbook(st.session_state.file_bytes)
+                    
+                    # Verificar validación de hojas
+                    from src.data_io import validate_required_sheets
+                    missing_sheets = validate_required_sheets(sheets)
+                    
+                    if missing_sheets:
+                        st.error(f"❌ **Hojas obligatorias faltantes**: {missing_sheets}")
+                        st.stop()
+                    
+                    # Procesar el archivo
                     detalle = build_detalle(st.session_state.file_bytes, ultimo_precio_modo=modo, ref_ym=ref_ym)
                     st.session_state.detalle = detalle
+                    
+                    st.success("✅ **Archivo procesado exitosamente**")
+                    st.info(f"📊 **Datos cargados**: {len(detalle)} SKUs procesados")
+                    
+                    # Mostrar resumen de datos
+                    show_data_summary(detalle)
+                        
             except Exception as e:
                 st.error(f"Error procesando el archivo: {e}")
                 st.stop()
@@ -207,9 +269,7 @@ else:
     # Verificar que detalle esté definido antes de continuar
     if 'detalle' not in locals() or detalle is None:
         st.error("❌ No hay datos disponibles para procesar")
-        st.info("💡 Por favor, sube tu archivo Excel primero")
-        st.stop()
-
+    
     # -------- Filtros sin orden (cascada dinámica) --------
     st.subheader("Filtros")
 
@@ -348,6 +408,28 @@ else:
 
     # -------- Mostrar resultados --------
     st.subheader("Márgenes actuales (unitarios)")
+    
+    # Mostrar información del sistema de recetas si está disponible
+    if "recipe_data" in st.session_state and st.session_state.recipe_data["success"]:
+        recipe_data = st.session_state.recipe_data
+        recipe_df = recipe_data.get("recipe_df", pd.DataFrame())
+        fruit_prices = recipe_data.get("fruit_prices", {})
+        
+        if not recipe_df.empty and fruit_prices:
+            # Contar frutas totales vs frutas con precios
+            total_frutas = len(fruit_prices)
+            frutas_con_precio = len([p for p in fruit_prices.values() if p > 0])
+            
+            st.success(f"🍎 **Sistema de Recetas Activo**: {len(recipe_df)} SKUs con recetas, {total_frutas} frutas base disponibles")
+            st.info("💡 **MMPP (Fruta) se calcula automáticamente** desde recetas usando precios y eficiencias de INFO_FRUTA")
+            
+            if frutas_con_precio < total_frutas:
+                st.warning(f"⚠️ **Atención**: Solo {frutas_con_precio} de {total_frutas} frutas tienen precios definidos. Las demás usarán precio 0.")
+        else:
+            st.warning("⚠️ **Sistema de Recetas**: Datos incompletos - verificar INFO_FRUTA y RECETA_SKU")
+    else:
+        st.info("ℹ️ **Sistema de Recetas**: No disponible - cargar archivo con hojas INFO_FRUTA y RECETA_SKU para cálculo automático de MMPP")
+    
     base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Proceso Granel (USD/kg)",
      "Guarda MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
     view_base = df_filtrado[base_cols].copy()
@@ -436,6 +518,24 @@ else:
         det = det.sort_values(["SKU-Cliente"]).reset_index(drop=True)
         view_base_det = det.copy()
         
+        # Agregar información sobre origen del MMPP (Fruta) si hay recetas disponibles
+        if "recipe_data" in st.session_state and st.session_state.recipe_data["success"]:
+            recipe_data = st.session_state.recipe_data
+            recipe_df = recipe_data.get("recipe_df", pd.DataFrame())
+            
+            if not recipe_df.empty:
+                # Crear diccionario de SKUs con recetas
+                skus_with_recipes = set(recipe_df["SKU"].astype(str).str.strip())
+                
+                # Agregar columna de origen
+                view_base_det["MMPP_Origen"] = view_base_det["SKU"].astype(str).str.strip().apply(
+                    lambda x: "📊 Receta" if x in skus_with_recipes else "📋 Manual"
+                )
+                
+                # Mover la columna MMPP_Origen al inicio (después de las dimensiones)
+                cols_order = dim_cols + ["MMPP_Origen"] + [c for c in view_base_det.columns if c not in dim_cols and c != "MMPP_Origen"]
+                view_base_det = view_base_det[cols_order]
+        
         # Asegurar que el índice SKU-Cliente sea único antes de aplicar estilos
         view_base_det = view_base_det.drop_duplicates(subset=["SKU-Cliente"], keep="first")
         view_base_det.set_index("SKU-Cliente", inplace=True)
@@ -516,6 +616,24 @@ else:
     ebitda_promedio = df_filtrado["EBITDA (USD/kg)"].mean()
     margen_promedio = df_filtrado["EBITDA Pct"].mean()
     
+    # KPIs del sistema de recetas
+    recipe_kpis = {}
+    if "recipe_data" in st.session_state and st.session_state.recipe_data["success"]:
+        recipe_data = st.session_state.recipe_data
+        recipe_df = recipe_data.get("recipe_df", pd.DataFrame())
+        fruit_prices = recipe_data.get("fruit_prices", {})
+        
+        if not recipe_df.empty and fruit_prices:
+            # Contar SKUs con MMPP calculado desde recetas
+            skus_with_recipes = set(recipe_df["SKU"].astype(str).str.strip())
+            skus_with_recipe_mmpp = len([sku for sku in df_filtrado["SKU"].astype(str).str.strip() if sku in skus_with_recipes])
+            
+            recipe_kpis = {
+                "skus_con_recetas": skus_with_recipe_mmpp,
+                "total_frutas": len(fruit_prices),
+                "porcentaje_cobertura": (skus_with_recipe_mmpp / total_skus * 100) if total_skus > 0 else 0
+            }
+    
     # Mostrar KPIs en columnas
     col1, col2 = st.columns([1,1])
     # col1, col2, col3, col4 = st.columns(4)
@@ -527,6 +645,60 @@ else:
     
     with col2:
         st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
+    
+    # Mostrar KPIs del sistema de recetas si está disponible
+    if recipe_kpis:
+        st.markdown("---")
+        st.subheader("🍎 **KPIs del Sistema de Recetas**")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                "SKUs con Recetas", 
+                recipe_kpis["skus_con_recetas"], 
+                f"{recipe_kpis['porcentaje_cobertura']:.1f}% del total"
+            )
+        
+        with col2:
+            st.metric(
+                "Frutas Base", 
+                recipe_kpis["total_frutas"],
+                "disponibles para recetas"
+            )
+        
+        with col3:
+            st.metric(
+                "Cobertura", 
+                f"{recipe_kpis['porcentaje_cobertura']:.1f}%",
+                f"{recipe_kpis['skus_con_recetas']} de {total_skus} SKUs"
+            )
+        
+        # Agregar métrica adicional para frutas con precios
+        if "recipe_data" in st.session_state and st.session_state.recipe_data["success"]:
+            fruit_prices = st.session_state.recipe_data.get("fruit_prices", {})
+            frutas_con_precio = len([p for p in fruit_prices.values() if p > 0])
+            total_frutas = len(fruit_prices)
+            
+            if frutas_con_precio < total_frutas:
+                st.markdown("---")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.metric(
+                        "Frutas con Precios",
+                        frutas_con_precio,
+                        f"de {total_frutas} totales"
+                    )
+                
+                with col2:
+                    porcentaje_precios = (frutas_con_precio / total_frutas * 100) if total_frutas > 0 else 0
+                    st.metric(
+                        "Cobertura de Precios",
+                        f"{porcentaje_precios:.1f}%",
+                        f"{frutas_con_precio}/{total_frutas} frutas"
+                    )
+        
+        st.info("💡 **Beneficio**: MMPP (Fruta) calculado automáticamente desde recetas para mayor precisión en costos")
     
     # with col3:
     #     st.metric("EBITDA Promedio", f"${ebitda_promedio:.3f}/kg", help="EBITDA promedio no contiene subproductos")
@@ -578,3 +750,17 @@ else:
     
     st.info("💡 **Navegación**: Usa el menú lateral para acceder al Simulador EBITDA y otras funcionalidades.")
     st.info("💾 **Datos persistentes**: Los archivos cargados se mantienen al cambiar de página.")
+
+    # Mostrar estado actual de la sesión
+    if st.button("📊 Ver Estado de Sesión", type="secondary"):
+        st.info("**Estado actual de la sesión:**")
+        session_keys = list(st.session_state.keys())
+        if session_keys:
+            for key in session_keys:
+                value = st.session_state[key]
+                if isinstance(value, pd.DataFrame):
+                    st.write(f"**{key}**: DataFrame con {len(value)} filas")
+                else:
+                    st.write(f"**{key}**: {type(value).__name__}")
+        else:
+            st.write("No hay datos en la sesión")

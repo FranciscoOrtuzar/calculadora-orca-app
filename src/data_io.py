@@ -15,8 +15,16 @@ import streamlit as st
 REQ_SHEETS = {
     "FACT_COSTOS_POND": "Tabla con costos unitarios ponderados por SKU (Oct-Jun).",
     "FACT_PRECIOS": "Precios mensuales: SKU, Año, Mes, PrecioVentaUSD.",
-    "DIM_SKU": "Dimensión de SKU (opcional, para filtrar por Marca/Especie/Cliente)."
+    "DIM_SKU": "Dimensión de SKU (opcional, para filtrar por Marca/Especie/Cliente).",
+    "RECETA_SKU": "Recetas de SKUs con proporciones de frutas base (opcional).",
+    "INFO_FRUTA": "Información de frutas base con precios y eficiencias (opcional)."
 }
+
+# Hojas obligatorias (las que SIEMPRE deben estar presentes)
+REQUIRED_SHEETS = ["FACT_COSTOS_POND", "FACT_PRECIOS"]
+
+# Hojas opcionales (las que pueden estar o no)
+OPTIONAL_SHEETS = ["DIM_SKU", "RECETA_SKU", "INFO_FRUTA"]
 
 MESES_ORD = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
              "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
@@ -84,15 +92,15 @@ def read_workbook(uploaded_bytes: bytes) -> Dict[str, pd.DataFrame]:
 
 def validate_required_sheets(sheets: Dict[str, pd.DataFrame]) -> list:
     """
-    Valida que existan las hojas requeridas.
+    Valida que existan las hojas OBLIGATORIAS (no las opcionales).
     
     Args:
         sheets: Dict de hojas cargadas
         
     Returns:
-        Lista de hojas faltantes
+        Lista de hojas obligatorias faltantes
     """
-    missing = [s for s in REQ_SHEETS if s not in sheets]
+    missing = [s for s in REQUIRED_SHEETS if s not in sheets]
     return missing
 
 # ===================== Procesamiento de datos =====================
@@ -308,7 +316,47 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     else:
         detalle = detalle.merge(latest, on="SKU", how="right")
     detalle = detalle.drop(columns=["FechaClave"])
-
+    
+    # 4.1) Normalización de especies (consolidar variaciones y estandarizar en inglés)
+    try:
+        from src.species_normalizer import normalize_species_column
+        if "Especie" in detalle.columns:
+            # Crear columna de respaldo antes de normalizar
+            detalle["Especie_Original"] = detalle["Especie"].copy()
+            # Aplicar normalización
+            detalle = normalize_species_column(detalle, "Especie")
+    except ImportError:
+        # Si no se puede importar el normalizador, continuar sin normalización
+        pass
+    
+    # 4.2) Procesamiento de recetas (si está disponible)
+    recipe_data = None
+    
+    try:
+        from src.recipe_calculator import process_recipe_data
+        if "RECETA_SKU" in sheets:
+            recipe_data = process_recipe_data(sheets, detalle)
+            
+            if recipe_data["success"]:
+                # Guardar datos de recetas en la sesión para uso posterior
+                st.session_state.recipe_data = recipe_data
+                
+                # 4.3) Calcular MMPP (Fruta) desde recetas
+                detalle = calculate_mmpp_from_recipes(detalle, recipe_data)
+                
+            else:
+                st.warning(f"⚠️ Error en sistema de recetas: {recipe_data.get('error', 'Error desconocido')}")
+        else:
+            st.warning("⚠️ **RECETA_SKU NO encontrada** - no se pueden procesar recetas")
+            
+    except ImportError as e:
+        # Si no se puede importar el calculador de recetas, continuar sin recetas
+        st.warning(f"⚠️ No se pudo importar el sistema de recetas: {e}")
+        pass
+    except Exception as e:
+        st.error(f"❌ **Error inesperado procesando recetas**: {e}")
+        pass
+    
     # 5) Conversión a numérico y cálculo de métricas
     numeric_columns = detalle.select_dtypes(include=[np.number]).columns
     for col in numeric_columns:
@@ -430,6 +478,215 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     else:
         detalle = detalle.sort_values("SKU", ascending=True).reset_index(drop=True)
     return detalle
+
+def calculate_mmpp_from_recipes(detalle_df: pd.DataFrame, recipe_data: Dict) -> pd.DataFrame:
+    """
+    Calcula MMPP (Fruta) desde las recetas y lo agrega al DataFrame de detalle.
+    
+    Args:
+        detalle_df: DataFrame con datos de detalle
+        recipe_data: Diccionario con datos de recetas procesadas
+        
+    Returns:
+        DataFrame con MMPP (Fruta) calculado desde recetas
+    """
+    try:
+        # Crear copia del DataFrame para no modificar el original
+        detalle_updated = detalle_df.copy()
+        
+        # Obtener datos de recetas
+        recipe_df = recipe_data.get("recipe_df", pd.DataFrame())
+        fruit_prices = recipe_data.get("fruit_prices", {})
+        fruit_efficiency = recipe_data.get("fruit_efficiency", {})
+        
+        if recipe_df.empty or not fruit_prices:
+            st.warning("⚠️ No hay datos de recetas suficientes para calcular MMPP (Fruta)")
+            return detalle_updated
+        
+        # Crear diccionario de precios por receta para cada SKU
+        sku_recipe_prices = {}
+        
+        # Agrupar por SKU para manejar recetas con múltiples frutas
+        for sku in recipe_df["SKU"].unique():
+            sku_recipes = recipe_df[recipe_df["SKU"] == sku]
+            
+            if not sku_recipes.empty:
+                total_mmpp = 0.0
+                total_percentage = 0.0
+                recipe_valid = True
+                
+                # Calcular MMPP total para este SKU sumando todas sus frutas
+                for _, recipe_row in sku_recipes.iterrows():
+                    fruta_id = recipe_row.get("fruta_id", "")
+                    porcentaje = recipe_row.get("Porcentaje", 0)
+                    
+                    if fruta_id and porcentaje > 0 and fruta_id in fruit_prices:
+                        # Calcular precio por receta
+                        fruit_cost_per_kg = fruit_prices[fruta_id]
+                        efficiency = fruit_efficiency.get(fruta_id, 0.9)
+                        
+                        # MMPP (Fruta) = (Porcentaje / 100) * Precio fruta / Eficiencia
+                        mmpp_fruta = (porcentaje / 100) * fruit_cost_per_kg / efficiency
+                        
+                        total_mmpp += mmpp_fruta
+                        total_percentage += porcentaje
+                    
+                    # Verificar si la receta es válida
+                    if not recipe_row.get("Porcentaje_Valido", True):
+                        recipe_valid = False
+                
+                # Solo incluir SKUs con recetas válidas y porcentaje total razonable
+                if recipe_valid and total_percentage <= 100.1:  # Tolerancia de 0.1%
+                    sku_recipe_prices[sku] = total_mmpp
+        
+        # Aplicar precios calculados al DataFrame de detalle
+        mmpp_calculated_count = 0
+        mmpp_updated_count = 0
+        
+        for idx, row in detalle_updated.iterrows():
+            sku = str(row.get("SKU", "")).strip()
+            
+            if sku in sku_recipe_prices:
+                mmpp_calculated = sku_recipe_prices[sku]
+                
+                # Verificar si ya existe la columna MMPP (Fruta) (USD/kg)
+                if "MMPP (Fruta) (USD/kg)" in detalle_updated.columns:
+                    # Comparar con el valor existente
+                    existing_mmpp = row.get("MMPP (Fruta) (USD/kg)", 0)
+                    
+                    if abs(existing_mmpp - mmpp_calculated) > 0.001:  # Tolerancia de 0.001
+                        detalle_updated.loc[idx, "MMPP (Fruta) (USD/kg)"] = mmpp_calculated
+                        mmpp_updated_count += 1
+                    else:
+                        mmpp_calculated_count += 1
+                else:
+                    # Crear la columna si no existe
+                    detalle_updated["MMPP (Fruta) (USD/kg)"] = 0.0
+                    detalle_updated.loc[idx, "MMPP (Fruta) (USD/kg)"] = mmpp_calculated
+                    mmpp_updated_count += 1
+        
+        # Mostrar estadísticas del cálculo
+        if mmpp_updated_count > 0:
+            pass
+        if mmpp_calculated_count > 0:
+            pass
+        
+        # Recalcular MMPP Total si existe la columna
+        if "MMPP (Fruta) (USD/kg)" in detalle_updated.columns and "Proceso Granel (USD/kg)" in detalle_updated.columns:
+            detalle_updated["MMPP Total (USD/kg)"] = (
+                detalle_updated["MMPP (Fruta) (USD/kg)"] + 
+                detalle_updated["Proceso Granel (USD/kg)"]
+            )
+        
+        # Recalcular costos totales y EBITDA
+        detalle_updated = recalculate_totals_with_mmpp(detalle_updated)
+        
+        return detalle_updated
+        
+    except Exception as e:
+        st.error(f"❌ Error calculando MMPP desde recetas: {e}")
+        return detalle_df
+
+def recalculate_totals_with_mmpp(detalle_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalcula totales incluyendo MMPP (Fruta) calculado desde recetas.
+    
+    Args:
+        detalle_df: DataFrame con datos de detalle
+        
+    Returns:
+        DataFrame con totales recalculados
+    """
+    try:
+        # Crear copia para no modificar el original
+        detalle_calc = detalle_df.copy()
+        
+        # Convertir columnas numéricas y limpiar valores inválidos
+        numeric_columns = detalle_calc.select_dtypes(include=[np.number]).columns
+        for col in numeric_columns:
+            detalle_calc[col] = pd.to_numeric(detalle_calc[col], errors='coerce').fillna(0.0)
+        
+        # FORZAR SIGNOS CORRECTOS
+        # Los costos siempre deben ser negativos
+        cost_columns = [col for col in detalle_calc.columns if "USD/kg" in col and "Precio" not in col]
+        for col in cost_columns:
+            if col in detalle_calc.columns:
+                # Convertir valores a negativos (costos siempre negativos)
+                detalle_calc[col] = -abs(detalle_calc[col])
+        
+        # También corregir columnas de costos sin USD/kg
+        other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
+                             "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
+                             "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
+        for col in other_cost_columns:
+            if col in detalle_calc.columns:
+                # Convertir valores a negativos (costos siempre negativos)
+                detalle_calc[col] = -abs(detalle_calc[col])
+        
+        # El precio de venta siempre debe ser positivo
+        if "PrecioVenta (USD/kg)" in detalle_calc.columns:
+            detalle_calc["PrecioVenta (USD/kg)"] = abs(detalle_calc["PrecioVenta (USD/kg)"])
+        
+        # Recalcular MMPP Total si están los componentes
+        mmpp_components = [
+            "MMPP (Fruta) (USD/kg)",
+            "Proceso Granel (USD/kg)"
+        ]
+        
+        if all(col in detalle_calc.columns for col in mmpp_components):
+            detalle_calc["MMPP Total (USD/kg)"] = detalle_calc[mmpp_components].sum(axis=1)
+        
+        # Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
+        gastos_components = [
+            "Guarda MMPP",
+            "Proceso Granel (USD/kg)",
+            "Retail Costos Indirectos (USD/kg)",
+            "Retail Costos Directos (USD/kg)"
+        ]
+        
+        # Solo incluir componentes que existan en el DataFrame
+        available_gastos = [col for col in gastos_components if col in detalle_calc.columns]
+        if available_gastos:
+            detalle_calc["Gastos Totales (USD/kg)"] = detalle_calc[available_gastos].sum(axis=1)
+        
+        # Recalcular Costos Totales (MMPP + Gastos)
+        costos_components = []
+        
+        # Agregar MMPP Total si existe
+        if "MMPP Total (USD/kg)" in detalle_calc.columns:
+            costos_components.append("MMPP Total (USD/kg)")
+        
+        # Agregar Gastos Totales si existe
+        if "Gastos Totales (USD/kg)" in detalle_calc.columns:
+            costos_components.append("Gastos Totales (USD/kg)")
+        
+        # Calcular costos totales
+        if costos_components:
+            detalle_calc["Costos Totales (USD/kg)"] = detalle_calc[costos_components].sum(axis=1)
+        
+        # Recalcular EBITDA usando COSTOS TOTALES
+        if "PrecioVenta (USD/kg)" in detalle_calc.columns and "Costos Totales (USD/kg)" in detalle_calc.columns:
+            # Asegurar que los valores sean numéricos válidos
+            precio = pd.to_numeric(detalle_calc["PrecioVenta (USD/kg)"], errors='coerce').fillna(0.0)
+            costos = pd.to_numeric(detalle_calc["Costos Totales (USD/kg)"], errors='coerce').fillna(0.0)
+            
+            # Los costos ya están en valor absoluto (negativos), pero para el cálculo EBITDA los convertimos a positivos
+            costos_abs = abs(costos)
+            
+            detalle_calc["EBITDA (USD/kg)"] = precio - costos_abs
+            
+            # Recalcular EBITDA Pct
+            detalle_calc["EBITDA Pct"] = np.where(
+                precio > 1e-12,
+                (detalle_calc["EBITDA (USD/kg)"] / precio) * 100,
+                0.0
+            )
+        
+        return detalle_calc
+        
+    except Exception as e:
+        st.error(f"❌ Error recalculando totales: {e}")
+        return detalle_df
 
 # ===================== Documentación para nuevas fuentes =====================
 """
