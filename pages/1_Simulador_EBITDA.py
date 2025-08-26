@@ -187,9 +187,6 @@ def recalculate_totals(df: pd.DataFrame) -> pd.DataFrame:
             (df_calc["EBITDA (USD/kg)"] / precio) * 100,
             0.0
         )
-        
-
-    
     return df_calc
 
 def recalculate_table(edited_df: pd.DataFrame, filtered_skus: list) -> pd.DataFrame:
@@ -228,8 +225,8 @@ def save_edit_history(sku: str, column: str, old_value: float, new_value: float)
     Args:
         sku: SKU que fue editado
         column: Columna que fue editada
-        old_value: Valor anterior
-        new_value: Nuevo valor
+        old_value: Valor anterior (desde hist.df - NO editable)
+        new_value: Nuevo valor (en sim.df)
     """
     if "sim.edit_history" not in st.session_state:
         st.session_state["sim.edit_history"] = {}
@@ -238,8 +235,8 @@ def save_edit_history(sku: str, column: str, old_value: float, new_value: float)
     st.session_state["sim.edit_history"][change_key] = {
         "sku": sku,
         "column": column,
-        "old_value": old_value,
-        "new_value": new_value,
+        "old_value": old_value,  # Valor original desde hist.df
+        "new_value": new_value,  # Valor nuevo en sim.df
         "timestamp": pd.Timestamp.now()
     }
 
@@ -264,26 +261,19 @@ def revert_edit(sku: str, column: str) -> bool:
     change_info = st.session_state["sim.edit_history"][change_key]
     old_value = change_info["old_value"]
     
-    # Revertir en el detalle de la sesión
-    if "hist.df" in st.session_state:
-        mask = st.session_state["hist.df"]["SKU"] == sku
+    # IMPORTANTE: NO editar hist.df - solo trabajar con sim.df
+    if "sim.df" in st.session_state:
+        mask = st.session_state["sim.df"]["SKU"] == sku
         if mask.any():
-            idx = st.session_state["hist.df"][mask].index[0]
-            st.session_state["hist.df"].loc[idx, column] = old_value
+            idx = st.session_state["sim.df"][mask].index[0]
+            # Revertir solo en sim.df, no en hist.df
+            st.session_state["sim.df"].loc[idx, column] = old_value
             
-            # Recalcular totales
-            st.session_state["hist.df"] = recalculate_totals(st.session_state["hist.df"])
+            # Recalcular totales solo en sim.df
+            st.session_state["sim.df"] = recalculate_totals(st.session_state["sim.df"])
             
-            # Actualizar sim.df
-            if "sim.df" in st.session_state:
-                # Aplicar ajustes universales si existen
-                if st.session_state.get("sim.overrides_row"):
-                    st.session_state["sim.df"] = apply_universal_adjustments(
-                        st.session_state["hist.df"], 
-                        st.session_state["sim.overrides_row"]
-                    )
-                else:
-                    st.session_state["sim.df"] = st.session_state["hist.df"].copy()
+            # Marcar como dirty para indicar que hay cambios
+            st.session_state["sim.dirty"] = True
             
             # Eliminar del historial
             del st.session_state["sim.edit_history"][change_key]
@@ -397,18 +387,38 @@ def apply_universal_adjustments(df: pd.DataFrame, adjustments: dict) -> pd.DataF
     
     df_adjusted = df.copy()
     
+    # Debug: mostrar información de entrada
+    st.write(f"🔍 **Debug apply_universal_adjustments**:")
+    st.write(f"  - DataFrame de entrada: {len(df)} filas")
+    st.write(f"  - Ajustes a aplicar: {list(adjustments.keys())}")
+    
     # Aplicar cada ajuste universal
     for cost_column, adjustment_info in adjustments.items():
         if cost_column in df_adjusted.columns:
+            st.write(f"  - Aplicando ajuste a {cost_column}: {adjustment_info}")
+            
             if adjustment_info["type"] == "percentage":
                 # Aplicar ajuste porcentual manteniendo el signo negativo de los costos
+                before_values = df_adjusted[cost_column].head(3).tolist()
                 df_adjusted[cost_column] = df_adjusted[cost_column] * (1 + adjustment_info["value"] / 100)
+                after_values = df_adjusted[cost_column].head(3).tolist()
+                st.write(f"    - Valores antes: {before_values}")
+                st.write(f"    - Valores después: {after_values}")
             else:  # dollars
                 # Aplicar ajuste en dólares manteniendo el signo negativo de los costos
+                before_values = df_adjusted[cost_column].head(3).tolist()
                 df_adjusted[cost_column] = adjustment_info["value"]
+                after_values = df_adjusted[cost_column].head(3).tolist()
+                st.write(f"    - Valores antes: {before_values}")
+                st.write(f"    - Valores después: {after_values}")
+        else:
+            st.write(f"  - ⚠️ Columna {cost_column} no encontrada en DataFrame")
     
     # Recalcular totales después de aplicar ajustes
+    st.write(f"  - Recalculando totales...")
     df_adjusted = recalculate_totals(df_adjusted)
+    st.write(f"  - Final: {len(df_adjusted)} filas")
+    
     return df_adjusted
 
 # ===================== Configuración de la página =====================
@@ -417,37 +427,6 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
-
-# CSS para estilos de tabla mejorados
-st.markdown("""
-<style>
-/* Estilos base para encabezados de tabla */
-.stDataFrame th, .stDataEditor th {
-    font-weight: bold !important;
-    text-align: center !important;
-    border: 1px solid #d1d5db !important;
-    background-color: #f3f4f6 !important;
-    color: #374151 !important;
-}
-
-/* Mejorar la legibilidad de las celdas de datos */
-.stDataFrame td, .stDataEditor td {
-    border: 1px solid #e5e7eb !important;
-    padding: 8px !important;
-    background-color: white !important;
-}
-
-/* Resaltar filas al pasar el mouse */
-.stDataFrame tbody tr:hover td, .stDataEditor tbody tr:hover td {
-    background-color: #f9fafb !important;
-}
-
-/* Estilos específicos para celdas editables */
-.stDataEditor input {
-    background-color: white !important;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # ===================== Inicialización de Variables de Sesión =====================
 def initialize_session_state():
@@ -477,31 +456,6 @@ ensure_session_state()
 st.title("Simulador de EBITDA por SKU (USD/kg)")
 st.markdown("Simula escenarios de variación en costos y analiza impacto en rentabilidad por SKU.")
 
-# Botones de Undo/Redo en la interfaz principal
-col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
-with col1:
-    st.write("")
-with col2:
-    undo_disabled = get_sim_undo_count() == 0
-    if st.button("↩️ Undo", disabled=undo_disabled, type="secondary", 
-                help=f"Deshacer ({get_sim_undo_count()} disponible)"):
-        sim_undo()
-        st.rerun()
-with col3:
-    redo_disabled = get_sim_redo_count() == 0
-    if st.button("↪️ Redo", disabled=redo_disabled, type="secondary",
-                help=f"Rehacer ({get_sim_redo_count()} disponible)"):
-        sim_redo()
-        st.rerun()
-with col4:
-    if is_sim_dirty():
-        st.warning("⚠️ Cambios sin guardar")
-    else:
-        st.success("✅ Sin cambios pendientes")
-
-# # Mostrar navegación
-# show_navigation()
-
 # ===================== Carga de datos =====================
 @st.cache_data
 def load_base_data():
@@ -524,15 +478,14 @@ def load_base_data():
 # Cargar datos base
 df_base = load_base_data()
 
-# Inicializar sim.df si es necesario
-if df_base is not None and "sim.df" not in st.session_state:
+# Inicializar sim.df una sola vez
+if df_base is not None and st.session_state["sim.df"] is None:
     st.session_state["sim.df"] = df_base.copy()
-elif df_base is not None and st.session_state.get("sim.df") is None:
-    st.session_state["sim.df"] = df_base.copy()
-elif df_base is not None and (st.session_state.get("mmpp.dirty") or st.session_state.get("sim.dirty")):
-    # Refrescar sim.df si hay cambios pendientes
-    st.session_state["sim.df"] = df_base.copy()
-    st.session_state["sim.dirty"] = False
+
+# Nunca sobrescribas sim.df por estar "dirty"
+if df_base is not None and st.session_state.get("mmpp.dirty"):
+    # aquí dispara solo lo que deba recalcularse (si aplica),
+    # pero NO reasignes sim.df = df_base.copy()
     st.session_state["mmpp.dirty"] = False
 
 # Filtrar SKUs sin costos totales (igual a 0) para análisis de EBITDA más preciso
@@ -697,7 +650,15 @@ else:
 
 # Releer selecciones ya actualizadas por los widgets y aplicar
 SELECTIONS = _current_selections()
-df_filtered = _apply_filters(df_base, SELECTIONS).copy()
+
+# IMPORTANTE: Aplicar ajustes universales ANTES de filtrar
+# Usar sim.df si existe y tiene ajustes, sino usar df_base
+if "sim.df" in st.session_state and st.session_state["sim.df"] is not None and st.session_state.get("sim.overrides_row"):
+    # Aplicar filtros a sim.df que ya incluye ajustes universales
+    df_filtered = _apply_filters(st.session_state["sim.df"], SELECTIONS).copy()
+else:
+    # Aplicar filtros a df_base (sin ajustes universales)
+    df_filtered = _apply_filters(df_base, SELECTIONS).copy()
 
 # Orden por SKU-Cliente si existe y sin índice
 sku_cliente_col = "SKU-Cliente"
@@ -842,17 +803,6 @@ with col2:
         st.info("📤 Selecciona un archivo para aplicar overrides")
 
 # ===================== Estado de la sesión =====================
-# Inicializar TODAS las variables de sesión al principio
-if "upload_applied" not in st.session_state:
-    st.session_state.upload_applied = False
-
-if "df_current" not in st.session_state:
-    st.session_state.df_current = None
-
-if "universal_adjustments" not in st.session_state:
-    st.session_state.universal_adjustments = {}
-
-# DataFrame actual para trabajar (usar df_global que ya tiene los filtros aplicados)
 # Si hay datos en sesión, aplicarlos sobre los filtros actuales
 if st.session_state.get("sim.override_upload") and "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
     # Aplicar los overrides de sesión sobre los datos filtrados
@@ -888,7 +838,8 @@ if st.session_state.get("sim.overrides_row"):
             if adjustment_info["type"] == "percentage":
                 df_current_with_adjustments[cost_column] = df_current_with_adjustments[cost_column] * (1 + adjustment_info["value"] / 100)
             else:  # dollars
-                df_current_with_adjustments[cost_column] = df_current_with_adjustments[cost_column] + adjustment_info["value"]
+                df_current_with_adjustments[cost_column] = adjustment_info["value"]
+
     
     # Recalcular totales después de aplicar ajustes
     df_current_with_adjustments = recalculate_totals(df_current_with_adjustments)
@@ -1012,31 +963,19 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
                 # Tomar snapshot antes de aplicar cambios masivos
                 sim_snapshot_push()
                 
-                # Aplicar ajuste universal
-                if adjustment_type == "Porcentaje (%)":
-                    # Ajuste porcentual
-                    # detalle_filtrado[f"{selected_cost}_Original"] = detalle_filtrado[selected_cost]
-                    detalle_filtrado[selected_cost] = detalle_filtrado[selected_cost] * (1 + adjustment_value / 100)
-                    st.success(f"✅ Ajuste aplicado: {adjustment_value:+.1f}% a {selected_cost}")
-                else:
-                    # Ajuste en dólares
-                    # detalle_filtrado[f"{selected_cost_cost}_Original"] = detalle_filtrado[selected_cost]
-                    detalle_filtrado[selected_cost] = adjustment_value
-                    st.success(f"✅ Ajuste aplicado: {adjustment_value:+.3f} USD/kg a {selected_cost}")
-                
-                # Recalcular totales
-                detalle_filtrado = recalculate_totals(detalle_filtrado)
-                
-                # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN
+                # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN (NO modificar hist.df)
                 adjustment_key = f"{selected_cost}"
                 
-                # IMPORTANTE: Guardar valores originales ANTES de aplicar el ajuste
-                # Usar el detalle original de la sesión, no el filtrado ya modificado
+                # IMPORTANTE: Guardar valores originales desde hist.df (NO editable)
                 original_values = {}
                 for sku in filtered_skus:
                     if sku in st.session_state["hist.df"]["SKU"].values:
                         idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
                         original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
+                
+                # Inicializar sim.overrides_row si no existe
+                if "sim.overrides_row" not in st.session_state:
+                    st.session_state["sim.overrides_row"] = {}
                 
                 st.session_state["sim.overrides_row"][adjustment_key] = {
                     "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
@@ -1046,41 +985,38 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
                     "timestamp": pd.Timestamp.now()
                 }
                 
-
-                
-                # ACTUALIZAR LOS DATOS ORIGINALES EN LA SESIÓN
-                # Obtener todos los SKUs del detalle original
-                all_skus = st.session_state["hist.df"]["SKU"].tolist()
-                
-                # Crear una copia del detalle original
-                detalle_actualizado = st.session_state["hist.df"].copy()
-                
-                # Aplicar los cambios solo a los SKUs filtrados
-                for sku in filtered_skus:
-                    if sku in all_skus:
-                        # Encontrar el índice en el detalle original
-                        idx_original = detalle_actualizado[detalle_actualizado["SKU"] == sku].index
-                        if len(idx_original) > 0:
-                            idx = idx_original[0]
-                            # Aplicar el cambio al costo seleccionado
-                            if adjustment_type == "Porcentaje (%)":
-                                # detalle_actualizado.loc[idx, f"{selected_cost}_Original"] = detalle_actualizado.loc[idx, selected_cost]
-                                detalle_actualizado.loc[idx, selected_cost] = detalle_actualizado.loc[idx, selected_cost] * (1 + adjustment_value / 100)
-                            else:
-                                # detalle_actualizado.loc[idx, f"{selected_cost}_Original"] = detalle_actualizado.loc[idx, selected_cost]
-                                # Para dólares por kg, sobreescribir completamente el valor
-                                df_current_updated.loc[idx, selected_cost] = adjustment_value
-                
-                # Recalcular totales en el detalle completo
-                detalle_actualizado = recalculate_totals(detalle_actualizado)
-                
-                # Actualizar la sesión con el detalle completo actualizado
-                st.session_state["hist.df"] = detalle_actualizado
-                
                 # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
-                # Aplicar los ajustes universales actualizados a df_global
-                df_current_updated = apply_universal_adjustments(df_global, st.session_state["sim.overrides_row"])
+                # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
+                
+                # Debug: mostrar información antes de aplicar ajustes
+                st.write(f"🔍 **Debug**: Aplicando ajuste a {selected_cost}")
+                st.write(f"🔍 **Debug**: df_base tiene {len(df_base)} filas")
+                st.write(f"🔍 **Debug**: Tipo de ajuste: {adjustment_type}")
+                st.write(f"🔍 **Debug**: Valor del ajuste: {adjustment_value}")
+                
+                df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
+                
+                # Debug: mostrar información después de aplicar ajustes
+                st.write(f"🔍 **Debug**: Después de apply_universal_adjustments: {len(df_current_updated)} filas")
+                
+                # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
+                if "Costos Totales (USD/kg)" in df_current_updated.columns:
+                    before_filter = len(df_current_updated)
+                    df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
+                    after_filter = len(df_current_updated)
+                    st.write(f"🔍 **Debug**: Filtrado SKUs sin costos: {before_filter} → {after_filter} filas")
+                
+                # Recalcular totales en sim.df
+                df_current_updated = recalculate_totals(df_current_updated)
+                
+                # Debug: mostrar información final
+                st.write(f"🔍 **Debug**: Final: {len(df_current_updated)} filas en sim.df")
+                
+                # Guardar en sim.df
                 st.session_state["sim.df"] = df_current_updated.copy()
+                
+                # Marcar como dirty
+                st.session_state["sim.dirty"] = True
                 
                 st.success(f"✅ Ajuste universal aplicado a {len(filtered_skus)} SKUs filtrados y guardado en sesión")
                 st.rerun()
@@ -1116,49 +1052,43 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
                 st.write(f"**Tipo**: {adjustment_type_str}")
             with col4:
                 if st.button("🗑️", key=f"remove_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
-                    # Restaurar valores originales del detalle
-                    if "hist.df" in st.session_state:
-                        # Obtener valores originales del detalle
-                        detalle_original = st.session_state["hist.df"].copy()
+                    # IMPORTANTE: NO modificar hist.df - solo actualizar sim.df
+                    if "sim.df" in st.session_state:
+                        # Aplicar los ajustes universales restantes a df_base completo
+                        remaining_adjustments = {k: v for k, v in st.session_state["sim.overrides_row"].items() if k != cost_column}
+                        if remaining_adjustments:
+                            # Aplicar ajustes restantes a df_base
+                            df_current_updated = apply_universal_adjustments(df_base, remaining_adjustments)
+                            
+                            # IMPORTANTE: Excluir SKUs sin costos totales
+                            if "Costos Totales (USD/kg)" in df_current_updated.columns:
+                                df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
+                            
+                            # Recalcular totales
+                            df_current_updated = recalculate_totals(df_current_updated)
+                            st.session_state["sim.df"] = df_current_updated.copy()
+                        else:
+                            # Sin ajustes, usar df_base original (que ya excluye SKUs sin costos)
+                            st.session_state["sim.df"] = df_base.copy()
                         
-                        # Aplicar valores originales a los SKUs afectados
-                        for sku in adjustment_info["applied_skus"]:
-                            if sku in detalle_original["SKU"].values:
-                                idx = detalle_original[detalle_original["SKU"] == sku].index[0]
-                                # Restaurar el valor original del costo usando los valores guardados
-                                if cost_column in detalle_original.columns and "original_values" in adjustment_info:
-                                    if sku in adjustment_info["original_values"]:
-                                        original_value = adjustment_info["original_values"][sku]
-                                        # Aplicar el valor original
-                                        detalle_original.loc[idx, cost_column] = original_value
+                        # Marcar como dirty
+                        st.session_state["sim.dirty"] = True
                         
-                        # Recalcular totales
-                        detalle_original = recalculate_totals(detalle_original)
-                        st.session_state["hist.df"] = detalle_original
-                        
-                        # Actualizar sim.df
-                        if "sim.df" in st.session_state:
-                            # Aplicar los ajustes universales restantes
-                            remaining_adjustments = {k: v for k, v in st.session_state["sim.overrides_row"].items() if k != cost_column}
-                            if remaining_adjustments:
-                                df_current_updated = apply_universal_adjustments(detalle_original, remaining_adjustments)
-                                st.session_state["sim.df"] = df_current_updated.copy()
-                            else:
-                                st.session_state["sim.df"] = detalle_original.copy()
-                        
-
-                    
-                    # Eliminar el ajuste
-                    del st.session_state.universal_adjustments[cost_column]
-                    st.success(f"✅ Ajuste de {cost_column} eliminado - Valores originales restaurados")
-                    st.rerun()
+                        # Eliminar el ajuste
+                        del st.session_state["sim.overrides_row"][cost_column]
+                        st.success(f"✅ Ajuste de {cost_column} eliminado - Valores originales restaurados")
+                        st.rerun()
         
                         # Botón para limpiar todos los ajustes
                 if st.button("Limpiar todos los ajustes", type="secondary"):
                     # Tomar snapshot antes de aplicar cambios masivos
                     sim_snapshot_push()
                     
+                    # Restaurar sim.df a df_base original (que ya excluye SKUs sin costos)
+                    st.session_state["sim.df"] = df_base.copy()
                     st.session_state["sim.overrides_row"] = {}
+                    st.session_state["sim.dirty"] = True
+                    
                     st.success("✅ Todos los ajustes universales eliminados")
                     st.rerun()
     
@@ -1172,6 +1102,53 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
         st.info("1. 📁 Cargar datos en la página Home")
         st.info("2. 🔄 Regresar al simulador")
         st.stop()
+    
+    # Mostrar información sobre ajustes universales aplicados
+    if st.session_state.get("sim.overrides_row"):
+        active_overrides = list(st.session_state["sim.overrides_row"].keys())
+        st.info(f"🔧 **Ajustes universales activos**: {', '.join(active_overrides)} - Los valores mostrados incluyen estos ajustes")
+        
+        # Debug: mostrar información del estado de los datos
+        with st.expander("🔍 Debug: Estado de los datos", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write("**df_base (original):**")
+                if df_base is not None:
+                    st.write(f"- Filas: {len(df_base)}")
+                    st.write(f"- Columnas: {len(df_base.columns)}")
+                else:
+                    st.write("❌ No disponible")
+            
+            with col2:
+                st.write("**sim.df (con ajustes):**")
+                if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
+                    st.write(f"- Filas: {len(st.session_state['sim.df'])}")
+                    st.write(f"- Columnas: {len(st.session_state['sim.df'].columns)}")
+                    st.write(f"- Dirty: {st.session_state.get('sim.dirty', False)}")
+                else:
+                    st.write("❌ No disponible")
+            
+            with col3:
+                st.write("**df_filtered (filtrado):**")
+                if 'df_filtered' in locals():
+                    st.write(f"- Filas: {len(df_filtered)}")
+                    st.write(f"- Columnas: {len(df_filtered.columns)}")
+                else:
+                    st.write("❌ No disponible")
+            
+            # Mostrar algunos valores de ejemplo para el primer SKU
+            if df_base is not None and len(df_base) > 0:
+                st.write("**Ejemplo de valores (primer SKU):**")
+                first_sku = df_base.iloc[0]
+                if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
+                    sim_first_sku = st.session_state["sim.df"][st.session_state["sim.df"]["SKU"] == first_sku["SKU"]]
+                    if len(sim_first_sku) > 0:
+                        sim_first_sku = sim_first_sku.iloc[0]
+                        for col in ["MMPP Total (USD/kg)", "MO Total", "Materiales Total"]:
+                            if col in df_base.columns and col in sim_first_sku:
+                                original_val = first_sku[col]
+                                adjusted_val = sim_first_sku[col]
+                                st.write(f"- {col}: {original_val:.3f} → {adjusted_val:.3f}")
 
     # Botón para forzar recálculo manual
     col1, col2 = st.columns([3, 1])
@@ -1182,39 +1159,38 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
             # Recalcular totales en el detalle filtrado
             detalle_filtrado = recalculate_totals(detalle_filtrado)
             
-            # Actualizar también en la sesión
-            if "hist.df" in st.session_state:
-                # Obtener todos los SKUs del detalle original
-                all_skus = st.session_state["hist.df"]["SKU"].tolist()
-                detalle_actualizado = st.session_state["hist.df"].copy()
+            # Actualizar solo sim.df (NO modificar hist.df)
+            if "sim.df" in st.session_state:
+                # Obtener todos los SKUs del detalle filtrado
+                all_skus = detalle_filtrado["SKU"].tolist()
+                sim_df_actualizado = st.session_state["sim.df"].copy()
                 
                 # Aplicar los cambios a los SKUs filtrados
                 for sku in filtered_skus:
                     if sku in all_skus:
-                        idx_original = detalle_actualizado[detalle_actualizado["SKU"] == sku].index
-                        if len(idx_original) > 0:
-                            idx = idx_original[0]
+                        idx_sim = sim_df_actualizado[sim_df_actualizado["SKU"] == sku].index
+                        if len(idx_sim) > 0:
+                            idx = idx_sim[0]
                             # Copiar todos los valores actualizados
                             for col in detalle_filtrado.columns:
-                                if col in detalle_actualizado.columns:
-                                    detalle_actualizado.loc[idx, col] = detalle_filtrado[detalle_filtrado["SKU"] == sku][col].iloc[0]
+                                if col in sim_df_actualizado.columns:
+                                    sim_df_actualizado.loc[idx, col] = detalle_filtrado[detalle_filtrado["SKU"] == sku][col].iloc[0]
                 
-                # Recalcular totales en el detalle completo
-                detalle_actualizado = recalculate_totals(detalle_actualizado)
-                st.session_state["hist.df"] = detalle_actualizado
+                # Recalcular totales en sim.df
+                sim_df_actualizado = recalculate_totals(sim_df_actualizado)
+                st.session_state["sim.df"] = sim_df_actualizado
+                st.session_state["sim.dirty"] = True
             
             st.success("✅ Totales recalculados manualmente")
             st.rerun()
     
     # Preparar datos para la tabla editable usando sim.df (que incluye ajustes universales)
-    # Obtener datos del detalle si están disponibles en la sesión
-    if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
-        detalle_data = st.session_state["hist.df"].copy()
+    # Obtener datos de simulación si están disponibles en la sesión
+    if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
+        # Usar sim.df que ya incluye los ajustes universales aplicados
+        sim_data = st.session_state["sim.df"].copy()
         # Filtrar por SKUs actuales
         filtered_skus = df_filtered["SKU"].tolist()
-        
-        # Usar df_filtered directamente ya que viene de la misma fuente
-        detalle_filtrado = df_filtered.copy()
         
         # Identificar columnas de costos (excluyendo dimensiones y totales)
         # Nota: SKU-Cliente se incluye en dimension_cols para el procesamiento pero se oculta en la tabla
@@ -1222,18 +1198,16 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
         total_cols = ["Gastos Totales (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
         
         # Columnas de costos individuales
-        cost_columns = [col for col in detalle_filtrado.columns 
+        cost_columns = [col for col in sim_data.columns 
                         if col not in dimension_cols + total_cols]
         
         # Mover columnas dimensionales al inicio
         display_order = dimension_cols + cost_columns + total_cols
-        available_display_cols = [col for col in display_order if col in detalle_filtrado.columns]
+        available_display_cols = [col for col in display_order if col in sim_data.columns]
         
         # Crear DataFrame para edición
-        df_edit = detalle_filtrado[available_display_cols].copy()
-        
-        # Los colores ahora solo se aplican a los encabezados mediante CSS
-        
+        df_edit = sim_data[available_display_cols].copy()
+                
         # Configurar columnas editables (solo costos individuales, no totales)
         editable_columns = {}
         
@@ -1392,43 +1366,46 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
             # Guardar historial de cambios ANTES de procesar
             changes_detected = 0
             
-            # SIMPLIFICADO: Comparar directamente usando el DataFrame original sin índice
-            df_edit_original_reset = df_edit_original.reset_index()
-            
-            # Convertir filtered_skus a strings para que coincida con los DataFrames
-            filtered_skus_str = [str(sku) for sku in filtered_skus]
-            
-            # Buscar cambios por SKU directamente
-            for sku in filtered_skus_str:
-                # Buscar el SKU en ambos DataFrames
-                mask_original = df_edit_original_reset["SKU"] == sku
-                mask_edited = edited_df_reset["SKU"] == sku
+            # Comparar contra hist.df (valores originales) para detectar cambios
+            if "hist.df" in st.session_state:
+                hist_df = st.session_state["hist.df"]
                 
-                if mask_original.any() and mask_edited.any():
-                    # Obtener las filas correspondientes
-                    original_row = df_edit_original_reset[mask_original].iloc[0]
-                    edited_row = edited_df_reset[mask_edited].iloc[0]
+                # Convertir filtered_skus a strings para que coincida con los DataFrames
+                filtered_skus_str = [str(sku) for sku in filtered_skus]
+                
+                # Buscar cambios por SKU comparando contra valores originales
+                for sku in filtered_skus_str:
+                    # Buscar el SKU en hist.df (valores originales)
+                    mask_hist = hist_df["SKU"] == sku
+                    mask_edited = edited_df_reset["SKU"] == sku
                     
-                    # Comparar columnas numéricas (excluyendo dimensiones)
-                    for col in edited_df_reset.columns:
-                        if col not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
-                            try:
-                                # Verificar que la columna existe en ambos DataFrames
-                                if col in original_row and col in edited_row:
-                                    original_value = original_row[col]
-                                    edited_value = edited_row[col]
-                                    
-                                    # Si hay cambio, guardar en historial
-                                    if abs(original_value - edited_value) > 1e-6:  # Tolerancia para floats
-                                        save_edit_history(sku, col, original_value, edited_value)
-                                        changes_detected += 1
-                                else:
-                                    st.warning(f"⚠️ Columna {col} no encontrada en uno de los DataFrames")
-                            except (IndexError, KeyError, TypeError) as e:
-                                st.warning(f"⚠️ Error comparando {sku} - {col}: {e}")
-                                continue
-                else:
-                    st.warning(f"⚠️ SKU {sku} no encontrado en uno de los DataFrames")
+                    if mask_hist.any() and mask_edited.any():
+                        # Obtener las filas correspondientes
+                        original_row = hist_df[mask_hist].iloc[0]
+                        edited_row = edited_df_reset[mask_edited].iloc[0]
+                        
+                        # Comparar columnas numéricas (excluyendo dimensiones)
+                        for col in edited_df_reset.columns:
+                            if col not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+                                try:
+                                    # Verificar que la columna existe en ambos DataFrames
+                                    if col in original_row and col in edited_row:
+                                        original_value = original_row[col]
+                                        edited_value = edited_row[col]
+                                        
+                                        # Si hay cambio, guardar en historial
+                                        if abs(original_value - edited_value) > 1e-6:  # Tolerancia para floats
+                                            save_edit_history(sku, col, original_value, edited_value)
+                                            changes_detected += 1
+                                    else:
+                                        st.warning(f"⚠️ Columna {col} no encontrada en uno de los DataFrames")
+                                except (IndexError, KeyError, TypeError) as e:
+                                    st.warning(f"⚠️ Error comparando {sku} - {col}: {e}")
+                                    continue
+                    else:
+                        st.warning(f"⚠️ SKU {sku} no encontrado en uno de los DataFrames")
+            else:
+                st.warning("⚠️ No hay datos históricos disponibles para comparar cambios")
             
             if changes_detected > 0:
                 st.success(f"✅ {changes_detected} cambios detectados y guardados en historial")
@@ -1439,10 +1416,10 @@ if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
                 # IMPORTANTE: Recalcular totales directamente en edited_df_reset
                 edited_df_recalculated = recalculate_totals(edited_df_reset)
                 
-                # Actualizar sesión directamente
-                if "hist.df" in st.session_state:
-                    st.session_state["hist.df"] = edited_df_recalculated.copy()
+                # Actualizar solo sim.df (NO modificar hist.df)
+                if "sim.df" in st.session_state:
                     st.session_state["sim.df"] = edited_df_recalculated.copy()
+                    st.session_state["sim.dirty"] = True
                 
                 st.success("✅ EBITDA recalculado automáticamente")
                 

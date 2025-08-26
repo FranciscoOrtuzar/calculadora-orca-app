@@ -21,58 +21,12 @@ import numpy as np
 # ===================== Config básica =====================
 ST_TITLE = "Datos Históricos de Precios y Costos Octubre 2024 - Junio 2025 (MVP)"
 
-# ===================== Navegación =====================
-# def show_navigation():
-#     """Muestra la navegación entre páginas"""
-#     st.sidebar.markdown("---")
-#     st.sidebar.header("🧭 Navegación")
-    
-#     if st.sidebar.button("🏠 Home - Datos Históricos", type="primary"):
-#         st.session_state.current_page = "home"
-#         st.rerun()
-    
-#     if st.sidebar.button("📊 Simulador EBITDA"):
-#         st.session_state.current_page = "simulator"
-#         st.rerun()
-
 # ===================== UI =====================
 st.set_page_config(
     page_title="Calculadora de Costos",  # Título en la pestaña
     page_icon="📊",                      # Ícono de la pestaña (emoji o ruta a imagen)
     layout="wide"
 )
-# CSS para estilos de tabla mejorados
-st.markdown("""
-<style>
-/* Estilos base para encabezados de tabla */
-.stDataFrame th {
-    font-weight: bold !important;
-    text-align: center !important;
-    border: 1px solid #d1d5db !important;
-    background-color: #f3f4f6 !important;
-    color: #374151 !important;
-}
-
-/* Estilos específicos para columnas de totales - negritas */
-.stDataFrame td {
-    border: 1px solid #e5e7eb !important;
-    padding: 8px !important;
-    background-color: white !important;
-}
-
-/* Hacer que las columnas de totales estén en negritas */
-.stDataFrame tbody tr td:nth-child(n) {
-    font-weight: normal;
-}
-
-/* Resaltar filas al pasar el mouse */
-.stDataFrame tbody tr:hover td {
-    background-color: #f9fafb !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
 
 # Inicializar estado de navegación
 if "current_page" not in st.session_state:
@@ -128,34 +82,6 @@ else:
         
         st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
 
-        # # Información sobre subproductos en el sidebar
-        # if len(subproductos) > 0:
-        #     st.markdown("---")
-        #     st.warning(f"⚠️ **Subproductos detectados**: {len(subproductos)} SKUs con costos = 0")
-            
-        #     with st.expander(f"📋 Ver {len(subproductos)} subproductos", expanded=False):
-        #         st.write("**SKUs excluidos del análisis de EBITDA:**")
-        #         st.write(f"- **Total**: {len(subproductos)} SKUs")
-        #         st.write(f"- **Razón**: Costos totales = 0")
-                
-        #         # Mostrar algunos ejemplos
-        #         if len(subproductos) > 0:
-        #             sample_subproductos = subproductos[["SKU", "Descripcion", "Marca", "Cliente"]].head(5)
-        #             st.dataframe(sample_subproductos, use_container_width=True)
-                    
-        #             if len(subproductos) > 5:
-        #                 st.write(f"... y {len(subproductos) - 5} SKUs más")
-                    
-        #             # Botón para exportar subproductos desde el sidebar
-        #             csv_subproductos = subproductos.to_csv(index=False)
-        #             st.download_button(
-        #                 label="📥 Exportar Subproductos",
-        #                 data=csv_subproductos,
-        #                 file_name="subproductos_sin_costos.csv",
-        #                 mime="text/csv",
-        #                 use_container_width=True
-        #             )
-
         st.header("2) Parámetros de precio vigente")
         modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
         ref_ym = None
@@ -168,7 +94,7 @@ else:
         st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
 
     # Procesar datos solo si no están en caché o si se recargó
-    if "hist.df" not in st.session_state:
+    if st.session_state["hist.df"] is None:
         if "hist.file_bytes" in st.session_state:
             try:
                 with st.spinner("Procesando archivo..."):
@@ -181,32 +107,8 @@ else:
             st.info("Sube tu archivo para comenzar.")
             st.stop()
     else:
-        # Usar datos de la sesión y aplicar renombrado si es necesario
-        if st.session_state["hist.df"] is not None:
-            detalle = st.session_state["hist.df"].copy()
-            
-            # Forzar renombrado de columnas para que coincidan con los nombres deseados
-            column_rename_map = {
-                "Calidad": "Laboratorio",
-                "Matencion": "Mantención", 
-                "Fletes": "Fletes Internos"
-            }
-            
-            # Aplicar renombrado solo si las columnas existen
-            for old_name, new_name in column_rename_map.items():
-                if old_name in detalle.columns:
-                    detalle = detalle.rename(columns={old_name: new_name})
-            
-            # Actualizar la sesión con los nombres corregidos
-            st.session_state["hist.df"] = detalle
-            
-            # Mostrar mensaje informativo sobre el renombrado
-            if any(old_name in st.session_state["hist.df"].columns for old_name in ["Calidad", "Matencion", "Fletes"]):
-                st.info("✅ **Columnas actualizadas**: Se aplicaron los nombres correctos (Laboratorio, Mantención, Fletes Internos)")
-        else:
-            st.warning("⚠️ Los datos de la sesión están vacíos o corruptos")
-            st.info("💡 Por favor, sube tu archivo nuevamente")
-            st.stop()
+        detalle = st.session_state["hist.df"]
+        
 
     # Verificar que detalle esté definido antes de continuar
     if 'detalle' not in locals() or detalle is None:
