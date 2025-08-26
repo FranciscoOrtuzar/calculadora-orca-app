@@ -17,6 +17,11 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 try:
     # Intentar import desde src
     from src.data_io import build_detalle, REQ_SHEETS
+    from src.state import (
+        ensure_session_state, session_state_table, sim_snapshot_push, 
+        sim_undo, sim_redo, apply_fruit_override,
+        get_sim_undo_count, get_sim_redo_count, is_sim_dirty
+    )
     from src.simulator import (
         apply_filters, get_filter_options, apply_global_overrides, 
         apply_upload_overrides, compute_ebitda, calculate_kpis,
@@ -25,36 +30,6 @@ try:
     )
 except ImportError as e:
     st.warning(f"⚠️ Error importando desde src/: {e}")
-    
-    try:
-        # Intentar import directo
-        from data_io import build_detalle, REQ_SHEETS
-        from simulator import (
-            apply_filters, get_filter_options, apply_global_overrides, 
-            apply_upload_overrides, compute_ebitda, calculate_kpis,
-            get_top_bottom_skus, create_ebitda_chart, create_margin_distribution_chart,
-            export_escenario, validate_upload_file
-        )
-        st.success("✅ Módulos importados correctamente (import directo)")
-    except ImportError as e2:
-        st.error(f"❌ Error en import directo: {e2}")
-        
-        # Crear funciones stub para evitar errores
-        st.warning("⚠️ Creando funciones stub para continuar...")
-        
-        def apply_filters(df, **kwargs): return df
-        def get_filter_options(df): return {}
-        def apply_global_overrides(df, pct, enabled): return df
-        def apply_upload_overrides(df, upload_df): return df, 0
-        def compute_ebitda(df): return df
-        def calculate_kpis(df): return {}
-        def get_top_bottom_skus(df, n): return pd.DataFrame(), pd.DataFrame()
-        def create_ebitda_chart(df, n): return None
-        def create_margin_distribution_chart(df): return None
-        def export_escenario(df, prefix): return Path("output.csv")
-        def validate_upload_file(file): return True, "Archivo válido", None
-        
-        st.info("💡 Funciones stub creadas. Algunas funcionalidades pueden no funcionar correctamente.")
 
 # ===================== Función para Validar y Corregir Signos =====================
 def validate_and_correct_signs(df: pd.DataFrame) -> pd.DataFrame:
@@ -256,11 +231,11 @@ def save_edit_history(sku: str, column: str, old_value: float, new_value: float)
         old_value: Valor anterior
         new_value: Nuevo valor
     """
-    if "edit_history" not in st.session_state:
-        st.session_state.edit_history = {}
+    if "sim.edit_history" not in st.session_state:
+        st.session_state["sim.edit_history"] = {}
     
     change_key = f"{sku}_{column}"
-    st.session_state.edit_history[change_key] = {
+    st.session_state["sim.edit_history"][change_key] = {
         "sku": sku,
         "column": column,
         "old_value": old_value,
@@ -279,39 +254,39 @@ def revert_edit(sku: str, column: str) -> bool:
     Returns:
         True si se pudo revertir, False en caso contrario
     """
-    if "edit_history" not in st.session_state:
+    if "sim.edit_history" not in st.session_state:
         return False
     
     change_key = f"{sku}_{column}"
-    if change_key not in st.session_state.edit_history:
+    if change_key not in st.session_state["sim.edit_history"]:
         return False
     
-    change_info = st.session_state.edit_history[change_key]
+    change_info = st.session_state["sim.edit_history"][change_key]
     old_value = change_info["old_value"]
     
     # Revertir en el detalle de la sesión
-    if "detalle" in st.session_state:
-        mask = st.session_state.detalle["SKU"] == sku
+    if "hist.df" in st.session_state:
+        mask = st.session_state["hist.df"]["SKU"] == sku
         if mask.any():
-            idx = st.session_state.detalle[mask].index[0]
-            st.session_state.detalle.loc[idx, column] = old_value
+            idx = st.session_state["hist.df"][mask].index[0]
+            st.session_state["hist.df"].loc[idx, column] = old_value
             
             # Recalcular totales
-            st.session_state.detalle = recalculate_totals(st.session_state.detalle)
+            st.session_state["hist.df"] = recalculate_totals(st.session_state["hist.df"])
             
-            # Actualizar df_current
-            if "df_current" in st.session_state:
+            # Actualizar sim.df
+            if "sim.df" in st.session_state:
                 # Aplicar ajustes universales si existen
-                if st.session_state.universal_adjustments:
-                    st.session_state.df_current = apply_universal_adjustments(
-                        st.session_state.detalle, 
-                        st.session_state.universal_adjustments
+                if st.session_state.get("sim.overrides_row"):
+                    st.session_state["sim.df"] = apply_universal_adjustments(
+                        st.session_state["hist.df"], 
+                        st.session_state["sim.overrides_row"]
                     )
                 else:
-                    st.session_state.df_current = st.session_state.detalle.copy()
+                    st.session_state["sim.df"] = st.session_state["hist.df"].copy()
             
             # Eliminar del historial
-            del st.session_state.edit_history[change_key]
+            del st.session_state["sim.edit_history"][change_key]
             return True
     
     return False
@@ -477,20 +452,14 @@ st.markdown("""
 # ===================== Inicialización de Variables de Sesión =====================
 def initialize_session_state():
     """Inicializa todas las variables de sesión necesarias"""
-    if "upload_applied" not in st.session_state:
-        st.session_state.upload_applied = False
-    
-    if "df_current" not in st.session_state:
-        st.session_state.df_current = None
-    
-    if "universal_adjustments" not in st.session_state:
-        st.session_state.universal_adjustments = {}
-    
-    if "detalle" not in st.session_state:
-        st.session_state.detalle = None
+    # Esta función ya no es necesaria ya que ensure_session_state() maneja todo
+    pass
 
 # Inicializar sesión
 initialize_session_state()
+
+# Inicializar y migrar todas las variables de session_state del sistema
+ensure_session_state()
 
 # ===================== Navegación =====================
 # def show_navigation():
@@ -508,6 +477,28 @@ initialize_session_state()
 st.title("Simulador de EBITDA por SKU (USD/kg)")
 st.markdown("Simula escenarios de variación en costos y analiza impacto en rentabilidad por SKU.")
 
+# Botones de Undo/Redo en la interfaz principal
+col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
+with col1:
+    st.write("")
+with col2:
+    undo_disabled = get_sim_undo_count() == 0
+    if st.button("↩️ Undo", disabled=undo_disabled, type="secondary", 
+                help=f"Deshacer ({get_sim_undo_count()} disponible)"):
+        sim_undo()
+        st.rerun()
+with col3:
+    redo_disabled = get_sim_redo_count() == 0
+    if st.button("↪️ Redo", disabled=redo_disabled, type="secondary",
+                help=f"Rehacer ({get_sim_redo_count()} disponible)"):
+        sim_redo()
+        st.rerun()
+with col4:
+    if is_sim_dirty():
+        st.warning("⚠️ Cambios sin guardar")
+    else:
+        st.success("✅ Sin cambios pendientes")
+
 # # Mostrar navegación
 # show_navigation()
 
@@ -516,9 +507,9 @@ st.markdown("Simula escenarios de variación en costos y analiza impacto en rent
 def load_base_data():
     """Carga los datos base desde archivo local o sesión."""
     
-    # CAMBIO: Priorizar 'detalle' para el simulador
-    if "detalle" in st.session_state and len(st.session_state.detalle) > 0:
-        return st.session_state.detalle
+    # CAMBIO: Priorizar 'hist.df' para el simulador
+    if "hist.df" in st.session_state and len(st.session_state["hist.df"]) > 0:
+        return st.session_state["hist.df"]
     
     # Si no hay datos en sesión, mostrar mensaje para cargar desde Home
     st.warning("⚠️ No hay datos cargados en la sesión")
@@ -532,6 +523,17 @@ def load_base_data():
 
 # Cargar datos base
 df_base = load_base_data()
+
+# Inicializar sim.df si es necesario
+if df_base is not None and "sim.df" not in st.session_state:
+    st.session_state["sim.df"] = df_base.copy()
+elif df_base is not None and st.session_state.get("sim.df") is None:
+    st.session_state["sim.df"] = df_base.copy()
+elif df_base is not None and (st.session_state.get("mmpp.dirty") or st.session_state.get("sim.dirty")):
+    # Refrescar sim.df si hay cambios pendientes
+    st.session_state["sim.df"] = df_base.copy()
+    st.session_state["sim.dirty"] = False
+    st.session_state["mmpp.dirty"] = False
 
 # Filtrar SKUs sin costos totales (igual a 0) para análisis de EBITDA más preciso
 # Guardar los excluidos en variable 'subproductos' para mantenerlos disponibles
@@ -598,9 +600,9 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
 
 # Si no hay datos base, intentar cargar desde la sesión directamente
 if df_base is None:
-    # CAMBIO: Priorizar 'detalle' para el simulador ya que contiene los costos detallados
-    if "detalle" in st.session_state and st.session_state.detalle is not None:
-        df_base = st.session_state.detalle
+    # CAMBIO: Priorizar 'hist.df' para el simulador ya que contiene los costos detallados
+    if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
+        df_base = st.session_state["hist.df"]
         # Filtrar SKUs sin costos totales también desde la sesión
         # Guardar los excluidos en variable 'subproductos' para mantenerlos disponibles
         if "Costos Totales (USD/kg)" in df_base.columns:
@@ -617,7 +619,7 @@ if df_base is None:
         if "EBITDA Pct" in df_base.columns:
             df_base = recalculate_totals(df_base)
         
-        st.success("✅ Datos cargados desde sesión (detalle) - Fuente correcta para simulador")
+        st.success("✅ Datos cargados desde sesión (hist.df) - Fuente correcta para simulador")
     else:
         st.info("📁 Para usar el simulador, primero carga tu archivo Excel en la página Home.")
         st.info("🔄 Luego regresa aquí para simular escenarios.")
@@ -677,6 +679,9 @@ def _current_selections():
         selections[logical] = st.session_state.get(f"ms_sim_{logical}", [])
     return selections
 
+# Guardar filtros en sim.filters
+st.session_state["sim.filters"] = _current_selections()
+
 # Crear filtros en filas (uno abajo del otro)
 if FILTER_FIELDS:
     # Multiselects con opciones dependientes del resto, en filas separadas
@@ -700,6 +705,9 @@ if sku_cliente_col in df_filtered.columns:
     df_filtered = df_filtered.sort_values([sku_cliente_col]).reset_index(drop=True)
 else:
     df_filtered = df_filtered.reset_index(drop=True)
+
+# Guardar resultado filtrado en sim.df_filtered
+st.session_state["sim.df_filtered"] = df_filtered.copy()
 
 # Debug: mostrar información de los datos
 # Información de SKUs mostrados (con botón de cierre)
@@ -731,33 +739,31 @@ if st.session_state.get("show_skus_info", True):
                         use_container_width=True,
                         key="download_subproductos_sidebar"
                     )
-
-
-
-# # Botón para forzar actualización de datos cuando cambien los filtros
-# if st.session_state.universal_adjustments:
-#     if st.sidebar.button("🔄 Actualizar Datos con Filtros", type="secondary", 
-#                          help="Fuerza la actualización de datos cuando cambian los filtros"):
-#         # Reaplicar ajustes universales a los nuevos datos filtrados
-#         df_current = apply_universal_adjustments(df_filtered, st.session_state.universal_adjustments)
-        
-#         # Filtrar SKUs sin costos totales también en datos simulados
-#         if "Costos Totales (USD/kg)" in df_current.columns:
-#             original_count = len(df_current)
-#             df_current = df_current[df_current["Costos Totales (USD/kg)"] != 0].copy()
-#             filtered_count = len(df_current)
-#             if original_count > filtered_count:
-#                 st.sidebar.info(f"🔍 Se excluyeron {original_count - filtered_count} SKUs sin costos de la simulación")
-        
-#         st.session_state.df_current = df_current.copy()
-#         st.sidebar.success("✅ Datos actualizados con filtros actuales")
-#         st.rerun()
-
 # ===================== Sidebar - Overrides Globales =====================
 st.sidebar.header("Overrides Globales")
 
 # Checkbox para habilitar overrides globales
 enable_global = st.sidebar.checkbox("Aplicar % global a costos", value=False)
+
+# Botones de Undo/Redo en el sidebar
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    undo_disabled = get_sim_undo_count() == 0
+    if st.button("↩️ Undo", disabled=undo_disabled, help=f"Deshacer ({get_sim_undo_count()} disponible)"):
+        sim_undo()
+        st.rerun()
+
+with col2:
+    redo_disabled = get_sim_redo_count() == 0
+    if st.button("↪️ Redo", disabled=redo_disabled, help=f"Rehacer ({get_sim_redo_count()} disponible)"):
+        sim_redo()
+        st.rerun()
+
+# Mostrar estado de dirty
+if is_sim_dirty():
+    st.sidebar.warning("⚠️ Cambios sin guardar")
+else:
+    st.sidebar.success("✅ Sin cambios pendientes")
 
 # Input para porcentaje de cambio
 pct_change = 0.0  # Inicializar variable
@@ -778,6 +784,9 @@ if enable_global:
     # Mostrar información del override aplicado
     if abs(pct_change) > 0.01:
         st.sidebar.success(f"✅ Override global aplicado: {pct_change:+.1f}% a costos")
+        
+        # Tomar snapshot antes de aplicar cambios masivos
+        sim_snapshot_push()
 else:
     df_global = df_filtered.copy()
 
@@ -815,6 +824,9 @@ with col2:
             
             # Botón para aplicar overrides
             if st.button("🚀 Aplicar Overrides", type="primary"):
+                # Tomar snapshot antes de aplicar cambios masivos
+                sim_snapshot_push()
+                
                 # Aplicar overrides desde archivo sobre los datos filtrados
                 df_with_upload, updated_count = apply_upload_overrides(df_global, df_upload)
                 
@@ -842,9 +854,9 @@ if "universal_adjustments" not in st.session_state:
 
 # DataFrame actual para trabajar (usar df_global que ya tiene los filtros aplicados)
 # Si hay datos en sesión, aplicarlos sobre los filtros actuales
-if st.session_state.upload_applied and "df_current" in st.session_state and st.session_state.df_current is not None:
+if st.session_state.get("sim.override_upload") and "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
     # Aplicar los overrides de sesión sobre los datos filtrados
-    df_current = st.session_state.df_current.copy()
+    df_current = st.session_state["sim.df"].copy()
     # Asegurar que solo se muestren los SKUs filtrados
     filtered_skus = df_filtered["SKU"].tolist()
     df_current = df_current[df_current["SKU"].isin(filtered_skus)].copy()
@@ -867,11 +879,11 @@ if "Costos Totales (USD/kg)" in df_current.columns:
                     st.rerun()
 
 # Verificar si hay ajustes universales aplicados y actualizar df_current
-if st.session_state.universal_adjustments:
+if st.session_state.get("sim.overrides_row"):
     # Aplicar ajustes universales a los datos filtrados
     df_current_with_adjustments = df_current.copy()
     
-    for cost_column, adjustment_info in st.session_state.universal_adjustments.items():
+    for cost_column, adjustment_info in st.session_state["sim.overrides_row"].items():
         if cost_column in df_current_with_adjustments.columns:
             if adjustment_info["type"] == "percentage":
                 df_current_with_adjustments[cost_column] = df_current_with_adjustments[cost_column] * (1 + adjustment_info["value"] / 100)
@@ -922,17 +934,6 @@ if len(df_filtered) < len(df_base):
             real_col = RESOLVED[logical]
             active_filters.append(f"**{logical}**: {', '.join(selections)}")
     
-    # if active_filters:
-    #     with st.expander("🔍 Ver filtros activos"):
-    #         for filter_info in active_filters:
-    #             st.write(filter_info)
-        
-    #     # Botón para limpiar filtros
-    #     if st.button("🧹 Limpiar todos los filtros", type="secondary"):
-    #         for logical in FILTER_FIELDS:
-    #             if f"ms_sim_{logical}" in st.session_state:
-    #                 del st.session_state[f"ms_sim_{logical}"]
-    #         st.rerun()
 else:
     # Información de sin filtros (con botón de cierre)
     if st.session_state.get("show_no_filters_info", True):
@@ -949,8 +950,8 @@ else:
 st.subheader("⚙️ Ajustes Universales por Costo")
 
 # Obtener datos del detalle si están disponibles en la sesión
-if "detalle" in st.session_state and st.session_state.detalle is not None:
-    detalle_data = st.session_state.detalle.copy()
+if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
+    detalle_data = st.session_state["hist.df"].copy()
     # Filtrar por SKUs actuales
     filtered_skus = df_filtered["SKU"].tolist()
     detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
@@ -1008,6 +1009,9 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
         
         with col4:
             if st.button("Aplicar Ajuste", type="primary"):
+                # Tomar snapshot antes de aplicar cambios masivos
+                sim_snapshot_push()
+                
                 # Aplicar ajuste universal
                 if adjustment_type == "Porcentaje (%)":
                     # Ajuste porcentual
@@ -1016,7 +1020,7 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                     st.success(f"✅ Ajuste aplicado: {adjustment_value:+.1f}% a {selected_cost}")
                 else:
                     # Ajuste en dólares
-                    # detalle_filtrado[f"{selected_cost}_Original"] = detalle_filtrado[selected_cost]
+                    # detalle_filtrado[f"{selected_cost_cost}_Original"] = detalle_filtrado[selected_cost]
                     detalle_filtrado[selected_cost] = adjustment_value
                     st.success(f"✅ Ajuste aplicado: {adjustment_value:+.3f} USD/kg a {selected_cost}")
                 
@@ -1030,11 +1034,11 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                 # Usar el detalle original de la sesión, no el filtrado ya modificado
                 original_values = {}
                 for sku in filtered_skus:
-                    if sku in st.session_state.detalle["SKU"].values:
-                        idx_original = st.session_state.detalle[st.session_state.detalle["SKU"] == sku].index[0]
-                        original_values[sku] = st.session_state.detalle.loc[idx_original, selected_cost]
+                    if sku in st.session_state["hist.df"]["SKU"].values:
+                        idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
+                        original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
                 
-                st.session_state.universal_adjustments[adjustment_key] = {
+                st.session_state["sim.overrides_row"][adjustment_key] = {
                     "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
                     "value": adjustment_value,
                     "applied_skus": filtered_skus.copy(),  # Guardar SKUs afectados
@@ -1046,10 +1050,10 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                 
                 # ACTUALIZAR LOS DATOS ORIGINALES EN LA SESIÓN
                 # Obtener todos los SKUs del detalle original
-                all_skus = st.session_state.detalle["SKU"].tolist()
+                all_skus = st.session_state["hist.df"]["SKU"].tolist()
                 
                 # Crear una copia del detalle original
-                detalle_actualizado = st.session_state.detalle.copy()
+                detalle_actualizado = st.session_state["hist.df"].copy()
                 
                 # Aplicar los cambios solo a los SKUs filtrados
                 for sku in filtered_skus:
@@ -1065,38 +1069,39 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                             else:
                                 # detalle_actualizado.loc[idx, f"{selected_cost}_Original"] = detalle_actualizado.loc[idx, selected_cost]
                                 # Para dólares por kg, sobreescribir completamente el valor
-                                detalle_actualizado.loc[idx, selected_cost] = adjustment_value
+                                df_current_updated.loc[idx, selected_cost] = adjustment_value
                 
                 # Recalcular totales en el detalle completo
                 detalle_actualizado = recalculate_totals(detalle_actualizado)
                 
                 # Actualizar la sesión con el detalle completo actualizado
-                st.session_state.detalle = detalle_actualizado
+                st.session_state["hist.df"] = detalle_actualizado
                 
-                # ACTUALIZAR df_current para que se refleje en la tabla editable y KPIs
+                # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
                 # Aplicar los ajustes universales actualizados a df_global
-                df_current_updated = apply_universal_adjustments(df_global, st.session_state.universal_adjustments)
-                st.session_state.df_current = df_current_updated.copy()
+                df_current_updated = apply_universal_adjustments(df_global, st.session_state["sim.overrides_row"])
+                st.session_state["sim.df"] = df_current_updated.copy()
                 
                 st.success(f"✅ Ajuste universal aplicado a {len(filtered_skus)} SKUs filtrados y guardado en sesión")
                 st.rerun()
     
     # Mostrar ajustes universales activos
-    if st.session_state.universal_adjustments:
+    if st.session_state.get("sim.overrides_row"):
         st.subheader("Ajustes Universales Activos")
         
                 # Información sobre restauración (con botón de cierre)
-        if st.session_state.get("show_restoration_info", True):
+        if st.session_state.get("ui.messages") and any("restoration_info" in msg for msg in st.session_state["ui.messages"]):
             with st.container():
                 col1, col2 = st.columns([20, 1])
                 with col1:
                     st.info("💡 **Restauración automática**: Al eliminar un ajuste, se restauran automáticamente los valores originales del detalle histórico.")
                 with col2:
                     if st.button("✕", key="close_restoration_info", help="Cerrar aviso"):
-                        st.session_state.show_restoration_info = False
+                        # Marcar mensaje como leído
+                        st.session_state["ui.messages"] = [msg for msg in st.session_state["ui.messages"] if "restoration_info" not in msg]
                         st.rerun()
         
-        for cost_column, adjustment_info in st.session_state.universal_adjustments.items():
+        for cost_column, adjustment_info in st.session_state["sim.overrides_row"].items():
             adjustment_type_str = "Porcentaje" if adjustment_info["type"] == "percentage" else "Dólares"
             value_str = f"{adjustment_info['value']:+.1f}%" if adjustment_info["type"] == "percentage" else f"{adjustment_info['value']:+.3f} USD/kg"
             skus_count = len(adjustment_info["applied_skus"])
@@ -1112,9 +1117,9 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
             with col4:
                 if st.button("🗑️", key=f"remove_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
                     # Restaurar valores originales del detalle
-                    if "detalle" in st.session_state:
+                    if "hist.df" in st.session_state:
                         # Obtener valores originales del detalle
-                        detalle_original = st.session_state.detalle.copy()
+                        detalle_original = st.session_state["hist.df"].copy()
                         
                         # Aplicar valores originales a los SKUs afectados
                         for sku in adjustment_info["applied_skus"]:
@@ -1129,17 +1134,17 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                         
                         # Recalcular totales
                         detalle_original = recalculate_totals(detalle_original)
-                        st.session_state.detalle = detalle_original
+                        st.session_state["hist.df"] = detalle_original
                         
-                        # Actualizar df_current
-                        if "df_current" in st.session_state:
+                        # Actualizar sim.df
+                        if "sim.df" in st.session_state:
                             # Aplicar los ajustes universales restantes
-                            remaining_adjustments = {k: v for k, v in st.session_state.universal_adjustments.items() if k != cost_column}
+                            remaining_adjustments = {k: v for k, v in st.session_state["sim.overrides_row"].items() if k != cost_column}
                             if remaining_adjustments:
                                 df_current_updated = apply_universal_adjustments(detalle_original, remaining_adjustments)
-                                st.session_state.df_current = df_current_updated.copy()
+                                st.session_state["sim.df"] = df_current_updated.copy()
                             else:
-                                st.session_state.df_current = detalle_original.copy()
+                                st.session_state["sim.df"] = detalle_original.copy()
                         
 
                     
@@ -1148,168 +1153,26 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                     st.success(f"✅ Ajuste de {cost_column} eliminado - Valores originales restaurados")
                     st.rerun()
         
-        # Botón para limpiar todos los ajustes
-        if st.button("Limpiar todos los ajustes", type="secondary"):
-            st.session_state.universal_adjustments = {}
-            st.success("✅ Todos los ajustes universales eliminados")
-            st.rerun()
+                        # Botón para limpiar todos los ajustes
+                if st.button("Limpiar todos los ajustes", type="secondary"):
+                    # Tomar snapshot antes de aplicar cambios masivos
+                    sim_snapshot_push()
+                    
+                    st.session_state["sim.overrides_row"] = {}
+                    st.success("✅ Todos los ajustes universales eliminados")
+                    st.rerun()
     
     # ===================== Tabla Editable Completa =====================
     st.subheader("📊 Tabla Editable - Todos los Costos")
     
-    # Leyenda de colores
-    # with st.expander("🎨 **Leyenda de Colores**", expanded=False):
-    #     col1, col2, col3, col4 = st.columns(4)
-        
-    #     with col1:
-    #         st.markdown("""
-    #         <div style="background-color: #dbeafe; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #2563eb;">
-    #             <strong style="color: #2563eb;">📘 DIRECTOS</strong><br>
-    #             <small>Costos Directos</small>
-    #         </div>
-    #         """, unsafe_allow_html=True)
-        
-    #     with col2:
-    #         st.markdown("""
-    #         <div style="background-color: #dcfce7; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #16a34a;">
-    #             <strong style="color: #16a34a;">📗 INDIRECTOS</strong><br>
-    #             <small>Costos Indirectos</small>
-    #         </div>
-    #         """, unsafe_allow_html=True)
-        
-    #     with col3:
-    #         st.markdown("""
-    #         <div style="background-color: #e5e7eb; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #6b7280;">
-    #             <strong style="color: #6b7280;">📊 TOTALES</strong><br>
-    #             <small>Costos/Gastos Totales</small>
-    #         </div>
-    #         """, unsafe_allow_html=True)
-        
-    #     with col4:
-    #         st.markdown("""
-    #         <div style="background-color: #fef9c3; padding: 10px; border-radius: 5px; text-align: center; border: 1px solid #f59e0b;">
-    #             <strong style="color: #f59e0b;">💰 EBITDA</strong><br>
-    #             <small>Rentabilidad</small>
-    #         </div>
-    #         """, unsafe_allow_html=True)
+    # Verificar que sim.df esté disponible
+    if "sim.df" not in st.session_state or st.session_state["sim.df"] is None:
+        st.error("❌ **No hay datos de simulación disponibles**")
+        st.info("💡 **Para usar la tabla editable, primero debes:**")
+        st.info("1. 📁 Cargar datos en la página Home")
+        st.info("2. 🔄 Regresar al simulador")
+        st.stop()
 
-# # Información sobre subproductos en la tabla editable
-# if 'subproductos' in locals() and len(subproductos) > 0:
-#     st.info(f"💡 **Tabla Editable**: Solo se muestran {len(df_current)} SKUs con costos reales. {len(subproductos)} subproductos (costos = 0) fueron excluidos de la edición.")
-
-#     # Obtener un SKU de ejemplo para mostrar los componentes
-#     sample_sku = df_current["SKU"].iloc[0] if len(df_current) > 0 else None
-    
-    # if sample_sku is not None:
-    #     sample_row = df_current[df_current["SKU"] == sample_sku].iloc[0]
-        
-    #     st.write(f"**SKU de ejemplo:** {sample_sku}")
-    #     st.write(f"**PrecioVenta:** ${sample_row.get('PrecioVenta (USD/kg)', 'N/A'):.3f}/kg")
-        
-    #     # Mostrar componentes de costos totales
-    #     costos_components = []
-    #     if "MMPP Total (USD/kg)" in df_current.columns:
-    #         costos_components.append("MMPP Total (USD/kg)")
-    #     elif all(col in df_current.columns for col in ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)"]):
-    #         costos_components.extend(["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)"])
-        
-    #     other_cost_components = [
-    #         "Retail Costos Directos (USD/kg)",
-    #         "Retail Costos Indirectos (USD/kg)",
-    #         "Guarda MMPP",
-    #         "MO Directa",
-    #         "MO Indirecta",
-    #         "Materiales Cajas y Bolsas",
-    #         "Materiales Indirectos",
-    #         "Calidad",
-    #         "Mantencion",
-    #         "Servicios Generales",
-    #         "Utilities",
-    #         "Fletes",
-    #         "Comex",
-    #         "Guarda PT"
-    #     ]
-        
-    #     for component in other_cost_components:
-    #         if component in df_current.columns and component not in costos_components:
-    #             costos_components.append(component)
-        
-    #     st.write("**Componentes de Costos Totales:**")
-    #     total_cost = 0
-    #     for component in costos_components:
-    #         if component in sample_row:
-    #             value = sample_row[component]
-    #             total_cost += value
-    #             st.write(f"  - {component}: ${value:.3f}/kg")
-        
-    #     st.write(f"**Costos Totales calculados:** ${total_cost:.3f}/kg")
-        
-    #     if "Costos Totales (USD/kg)" in sample_row:
-    #         st.write(f"**Costos Totales en datos:** ${sample_row['Costos Totales (USD/kg)']:.3f}/kg")
-        
-    #     if "PrecioVenta (USD/kg)" in sample_row and "Costos Totales (USD/kg)" in sample_row:
-    #         ebitda_calc = sample_row["PrecioVenta (USD/kg)"] - sample_row["Costos Totales (USD/kg)"]
-    #         st.write(f"**EBITDA calculado:** ${ebitda_calc:.3f}/kg")
-            
-    #         if "EBITDA (USD/kg)" in sample_row:
-    #             st.write(f"**EBITDA en datos:** ${sample_row['EBITDA (USD/kg)']:.3f}/kg")
-            
-    #         if sample_row["PrecioVenta (USD/kg)"] > 0:
-    #             ebitda_pct_calc = (ebitda_calc / sample_row["PrecioVenta (USD/kg)"]) * 100
-    #             st.write(f"**EBITDA % calculado:** {ebitda_pct_calc:.1f}%")
-                
-    #             if "EBITDA Pct" in sample_row:
-    #                 st.write(f"**EBITDA % en datos:** {sample_row['EBITDA Pct']:.1f}%")
-        
-    #     # Validación de cálculos
-    #     st.write("---")
-    #     st.write("**🔍 Validación de Cálculos:**")
-        
-    #     # Crear DataFrame de muestra para validación
-    #     sample_df = pd.DataFrame([sample_row])
-    #     validation_result = validate_calculations(sample_df)
-        
-    #     if validation_result["is_valid"]:
-    #         st.success("✅ Cálculos válidos")
-    #     else:
-    #         st.error("❌ Errores en cálculos:")
-    #         for error in validation_result["errors"]:
-    #             st.error(f"  - {error}")
-        
-    #     if validation_result["warnings"]:
-    #         st.warning("⚠️ Advertencias:")
-    #         for warning in validation_result["warnings"]:
-    #             st.warning(f"  - {warning}")
-        
-    #     # Mostrar valores de validación
-    #     st.write("**📊 Valores de Validación:**")
-    #     calc_info = validation_result["calculations"]
-    #     st.write(f"  - Precio: ${calc_info['precio']:.3f}/kg")
-    #     st.write(f"  - Costos Totales: ${calc_info['costos_totales']:.3f}/kg")
-    #     st.write(f"  - Gastos Totales: ${calc_info['gastos_totales']:.3f}/kg")
-    #     st.write(f"  - EBITDA: ${calc_info['ebitda']:.3f}/kg")
-    #     st.write(f"  - EBITDA %: {calc_info['ebitda_pct']:.1f}%")
-        
-    #     # Verificación manual
-    #     if calc_info['precio'] > 0 and calc_info['costos_totales'] >= 0:
-    #         expected_ebitda = calc_info['precio'] - calc_info['costos_totales']
-    #         expected_pct = (expected_ebitda / calc_info['precio']) * 100
-    #         st.write(f"**🧮 Verificación Manual:**")
-    #         st.write(f"  - EBITDA esperado: ${expected_ebitda:.3f}/kg")
-    #         st.write(f"  - EBITDA % esperado: {expected_pct:.1f}%")
-            
-    #         if abs(calc_info['ebitda'] - expected_ebitda) > 0.01:
-    #             st.error(f"  - ❌ Diferencia en EBITDA: {abs(calc_info['ebitda'] - expected_ebitda):.3f}")
-    #         else:
-    #             st.success(f"  - ✅ EBITDA correcto")
-            
-    #         if abs(calc_info['ebitda_pct'] - expected_pct) > 0.1:
-    #             st.error(f"  - ❌ Diferencia en EBITDA %: {abs(calc_info['ebitda_pct'] - expected_pct):.1f}%")
-    #         else:
-    #             st.success(f"  - ✅ EBITDA % correcto")
-                
-
-    
     # Botón para forzar recálculo manual
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -1320,10 +1183,10 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
             detalle_filtrado = recalculate_totals(detalle_filtrado)
             
             # Actualizar también en la sesión
-            if "detalle" in st.session_state:
+            if "hist.df" in st.session_state:
                 # Obtener todos los SKUs del detalle original
-                all_skus = st.session_state.detalle["SKU"].tolist()
-                detalle_actualizado = st.session_state.detalle.copy()
+                all_skus = st.session_state["hist.df"]["SKU"].tolist()
+                detalle_actualizado = st.session_state["hist.df"].copy()
                 
                 # Aplicar los cambios a los SKUs filtrados
                 for sku in filtered_skus:
@@ -1338,15 +1201,15 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                 
                 # Recalcular totales en el detalle completo
                 detalle_actualizado = recalculate_totals(detalle_actualizado)
-                st.session_state.detalle = detalle_actualizado
+                st.session_state["hist.df"] = detalle_actualizado
             
             st.success("✅ Totales recalculados manualmente")
             st.rerun()
     
-    # Preparar datos para la tabla editable usando df_current (que incluye ajustes universales)
+    # Preparar datos para la tabla editable usando sim.df (que incluye ajustes universales)
     # Obtener datos del detalle si están disponibles en la sesión
-    if "detalle" in st.session_state and st.session_state.detalle is not None:
-        detalle_data = st.session_state.detalle.copy()
+    if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
+        detalle_data = st.session_state["hist.df"].copy()
         # Filtrar por SKUs actuales
         filtered_skus = df_filtered["SKU"].tolist()
         
@@ -1515,7 +1378,8 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
             column_config=editable_columns,
             use_container_width=True,
             height=500,
-            key="data_editor_detalle"
+            key="data_editor_detalle",
+            hide_index=True
         )
         
         # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
@@ -1576,9 +1440,9 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                 edited_df_recalculated = recalculate_totals(edited_df_reset)
                 
                 # Actualizar sesión directamente
-                if "detalle" in st.session_state:
-                    st.session_state.detalle = edited_df_recalculated.copy()
-                    st.session_state.df_current = edited_df_recalculated.copy()
+                if "hist.df" in st.session_state:
+                    st.session_state["hist.df"] = edited_df_recalculated.copy()
+                    st.session_state["sim.df"] = edited_df_recalculated.copy()
                 
                 st.success("✅ EBITDA recalculado automáticamente")
                 
@@ -1590,12 +1454,12 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
             st.info("ℹ️ No hay cambios en la tabla editable")
         
         # Mostrar historial de cambios y opciones de reversión
-        if "edit_history" in st.session_state and st.session_state.edit_history:
+        if "sim.edit_history" in st.session_state and st.session_state["sim.edit_history"]:
             st.subheader("📝 Historial de Cambios Individuales")
             
             # Agrupar cambios por SKU para mejor visualización
             changes_by_sku = {}
-            for change_key, change_info in st.session_state.edit_history.items():
+            for change_key, change_info in st.session_state["sim.edit_history"].items():
                 sku = change_info["sku"]
                 if sku not in changes_by_sku:
                     changes_by_sku[sku] = []
@@ -1638,19 +1502,22 @@ if "detalle" in st.session_state and st.session_state.detalle is not None:
                         else:
                             st.error(f"❌ No se pudieron revertir los cambios para {sku}")
             
-            # Botón para revertir todos los cambios
-            if st.button("🗑️ Revertir Todos los Cambios", type="secondary", 
-                        help="Revierte todos los cambios individuales a sus valores originales"):
-                reverted_total = 0
-                for change_key, change_info in list(st.session_state.edit_history.items()):
-                    if revert_edit(change_info['sku'], change_info['column']):
-                        reverted_total += 1
-                
-                if reverted_total > 0:
-                    st.success(f"✅ {reverted_total} cambios revertidos en total")
-                    st.rerun()
-                else:
-                    st.error("❌ No se pudieron revertir los cambios")
+                    # Botón para revertir todos los cambios
+        if st.button("🗑️ Revertir Todos los Cambios", type="secondary", 
+                    help="Revierte todos los cambios individuales a sus valores originales"):
+            # Tomar snapshot antes de aplicar cambios masivos
+            sim_snapshot_push()
+            
+            reverted_total = 0
+            for change_key, change_info in list(st.session_state["sim.edit_history"].items()):
+                if revert_edit(change_info['sku'], change_info['column']):
+                    reverted_total += 1
+            
+            if reverted_total > 0:
+                st.success(f"✅ {reverted_total} cambios revertidos en total")
+                st.rerun()
+            else:
+                st.error("❌ No se pudieron revertir los cambios")
 
 else:
     st.error("❌ **No hay datos disponibles para el simulador**")
@@ -1668,7 +1535,7 @@ else:
 # ===================== KPIs =====================
 # Información sobre subproductos excluidos en la vista principal
 if 'subproductos' in locals() and len(subproductos) > 0:
-    if st.session_state.get("show_subproductos_main", True):
+    if st.session_state.get("ui.messages") and any("subproductos_main" in msg for msg in st.session_state["ui.messages"]):
         
         # Información detallada sobre subproductos
         with st.expander(f"📋 **Detalles de Subproductos Excluidos** ({len(subproductos)} SKUs)", expanded=False):
@@ -1943,6 +1810,11 @@ Este simulador te permite:
 
 # -------- Información de navegación --------
 st.markdown("---")
+
+# Expander opcional para diagnóstico de session_state
+with st.expander("🔎 Diagnóstico session_state", expanded=False):
+    session_state_table()
+
 st.info("💡 **Navegación**: Usa el menú lateral para volver a la página principal.")
 st.info("💾 **Datos persistentes**: Los cambios se mantienen durante la sesión.")
 st.info("📁 **Requisito**: Debes cargar datos en la página Home antes de usar el simulador.")

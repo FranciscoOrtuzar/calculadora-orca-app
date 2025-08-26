@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.data_io import build_detalle, REQ_SHEETS, MESES_ORD, MES2NUM
+from src.state import ensure_session_state, session_state_table
 import pandas as pd
 import numpy as np
 
@@ -77,6 +78,9 @@ st.markdown("""
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 
+# Inicializar y migrar todas las variables de session_state
+ensure_session_state()
+
 # Si estamos en la página del simulador, mostrar esa página
 if st.session_state.current_page == "simulator":
     # Importar y ejecutar la página del simulador
@@ -103,12 +107,12 @@ else:
         st.header("1) Subir archivo maestro (.xlsx)")
         
         # Verificar si ya hay datos en la sesión
-        if "uploaded_file" in st.session_state and st.session_state.uploaded_file is not None:
-            st.write(f"📁 Archivo: {st.session_state.uploaded_file.name}")
+        if "hist.uploaded_file" in st.session_state and st.session_state["hist.uploaded_file"] is not None:
+            st.write(f"📁 Archivo: {st.session_state['hist.uploaded_file'].name}")
             
             if st.button("🔄 Recargar archivo"):
                 # Limpiar datos existentes
-                for key in ["detalle", "uploaded_file", "file_bytes"]:
+                for key in ["hist.df", "hist.uploaded_file", "hist.file_bytes"]:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
@@ -118,8 +122,8 @@ else:
             
             if up is not None:
                 # Guardar archivo en sesión
-                st.session_state.uploaded_file = up
-                st.session_state.file_bytes = up.read()
+                st.session_state["hist.uploaded_file"] = up
+                st.session_state["hist.file_bytes"] = up.read()
                 st.rerun()
         
         st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
@@ -164,12 +168,12 @@ else:
         st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
 
     # Procesar datos solo si no están en caché o si se recargó
-    if "detalle" not in st.session_state:
-        if "file_bytes" in st.session_state:
+    if "hist.df" not in st.session_state:
+        if "hist.file_bytes" in st.session_state:
             try:
                 with st.spinner("Procesando archivo..."):
-                    detalle = build_detalle(st.session_state.file_bytes, ultimo_precio_modo=modo, ref_ym=ref_ym)
-                    st.session_state.detalle = detalle
+                    detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym)
+                    st.session_state["hist.df"] = detalle
             except Exception as e:
                 st.error(f"Error procesando el archivo: {e}")
                 st.stop()
@@ -178,8 +182,8 @@ else:
             st.stop()
     else:
         # Usar datos de la sesión y aplicar renombrado si es necesario
-        if st.session_state.detalle is not None:
-            detalle = st.session_state.detalle.copy()
+        if st.session_state["hist.df"] is not None:
+            detalle = st.session_state["hist.df"].copy()
             
             # Forzar renombrado de columnas para que coincidan con los nombres deseados
             column_rename_map = {
@@ -194,10 +198,10 @@ else:
                     detalle = detalle.rename(columns={old_name: new_name})
             
             # Actualizar la sesión con los nombres corregidos
-            st.session_state.detalle = detalle
+            st.session_state["hist.df"] = detalle
             
             # Mostrar mensaje informativo sobre el renombrado
-            if any(old_name in st.session_state.detalle.columns for old_name in ["Calidad", "Matencion", "Fletes"]):
+            if any(old_name in st.session_state["hist.df"].columns for old_name in ["Calidad", "Matencion", "Fletes"]):
                 st.info("✅ **Columnas actualizadas**: Se aplicaron los nombres correctos (Laboratorio, Mantención, Fletes Internos)")
         else:
             st.warning("⚠️ Los datos de la sesión están vacíos o corruptos")
@@ -261,6 +265,9 @@ else:
         for logical in FILTER_FIELDS:
             selections[logical] = st.session_state.get(f"ms_{logical}", [])
         return selections
+    
+    # Guardar filtros en hist.filters
+    st.session_state["hist.filters"] = _current_selections()
 
     cols = st.columns(len(FILTER_FIELDS) if FILTER_FIELDS else 1)
 
@@ -285,6 +292,9 @@ else:
         df_filtrado = df_filtrado.sort_values([sku_cliente_col]).reset_index(drop=True)
     else:
         df_filtrado = df_filtrado.reset_index(drop=True)
+
+    # Guardar resultado filtrado en hist.df_filtered
+    st.session_state["hist.df_filtered"] = df_filtrado.copy()
 
     # -------- Filtrar subproductos (SKUs con costos totales = 0) --------
     # Inicializar variable subproductos
@@ -504,8 +514,8 @@ else:
         to_excel_download(det, "costos_detalle_temporada.xlsx")
 
         # Descargar versión resumida
-        if "costos_resumen" in st.session_state:
-            to_excel_download(st.session_state["costos_resumen"], "costos_resumen_temporada.xlsx")
+        if "hist.costos_resumen" in st.session_state:
+            to_excel_download(st.session_state["hist.costos_resumen"], "costos_resumen_temporada.xlsx")
 
     # -------- KPIs y Resumen --------
     st.subheader("📊 Resumen Ejecutivo")
@@ -575,6 +585,10 @@ else:
 
     # -------- Información de navegación --------
     st.markdown("---")
+    
+    # Expander opcional para diagnóstico de session_state
+    with st.expander("🔎 Diagnóstico session_state", expanded=False):
+        session_state_table()
     
     st.info("💡 **Navegación**: Usa el menú lateral para acceder al Simulador EBITDA y otras funcionalidades.")
     st.info("💾 **Datos persistentes**: Los archivos cargados se mantienen al cambiar de página.")
