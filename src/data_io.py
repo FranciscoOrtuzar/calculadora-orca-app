@@ -15,7 +15,9 @@ import streamlit as st
 REQ_SHEETS = {
     "FACT_COSTOS_POND": "Tabla con costos unitarios ponderados por SKU (Oct-Jun).",
     "FACT_PRECIOS": "Precios mensuales: SKU, Año, Mes, PrecioVentaUSD.",
-    "DIM_SKU": "Dimensión de SKU (opcional, para filtrar por Marca/Especie/Cliente)."
+    "DIM_SKU": "Dimensión de SKU (opcional, para filtrar por Marca/Especie/Cliente).",
+    "RECETA_SKU": "Receta de SKU (opcional, para simular frutas).",
+    "INFO_FRUTA": "Información de fruta (opcional, para simular frutas)."
 }
 
 MESES_ORD = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
@@ -147,9 +149,9 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         elif lc == "comex":
             rename_map[c] = "Comex"
         elif lc == "guarda_pt":
-            rename_map[c] = "Guarda Producto Terminado"
-        elif lc == "guarda_mmpp":
-            rename_map[c] = "Guarda MMPP"
+            rename_map[c] = "Guarda PT"
+        elif lc == "guarda mmpp":
+            rename_map[c] = "Almacenaje"
         elif lc == "mmpp_fruta":
             rename_map[c] = "MMPP (Fruta) (USD/kg)"
         elif lc == "proceso granel":
@@ -168,12 +170,12 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
     # Calcular gastos totales solo si todas las columnas existen
-    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Guarda MMPP", "Proceso Granel (USD/kg)"]
+    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Almacenaje", "Proceso Granel (USD/kg)"]
     if all(col in df.columns for col in gastos_cols):
         df["Gastos Totales (USD/kg)"] = (
             df["Retail Costos Directos (USD/kg)"].astype(float) + 
             df["Retail Costos Indirectos (USD/kg)"].astype(float) + 
-            df["Guarda MMPP"].astype(float) + 
+            df["Almacenaje"].astype(float) + 
             df["Proceso Granel (USD/kg)"].astype(float)
         )
     else:
@@ -266,6 +268,240 @@ def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None)
         columns={"PrecioVentaUSD":"PrecioVenta (USD/kg)"})
     return latest.reset_index(drop=True)
 
+def columns_config(editable: bool = True) -> dict:
+    # Configurar columnas editables (solo costos individuales, no totales)
+    
+    # Definir tipos de columnas para la configuración
+    cost_columns = ["Proceso Granel (USD/kg)", "Almacenaje", "MMPP (Fruta) (USD/kg)", "MO Directa", "MO Indirecta",
+    "Materiales Cajas y Bolsas", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
+    "Fletes Internos", "Comex", "Guarda PT"]
+    dimension_cols_edit = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Columnas dimensionales visibles
+    total_cols_edit = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
+    intermediate_cols_edit = ["PrecioVenta (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+                                "MO Total", "Materiales Total", "MMPP Total (USD/kg)"]
+    
+    if editable:
+        editable_columns = {}   
+        for col in cost_columns:
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Valor de {col} (los costos se muestran como negativos)",
+                format="%.3f",
+                step=0.001
+            )
+        
+        # Configurar columnas dimensionales (visibles pero no editables)
+        for col in dimension_cols_edit:
+            if col == "SKU":
+                editable_columns[col] = st.column_config.TextColumn(
+                    col,
+                    disabled=True,
+                    help=f"{col} (no editable)",
+                    pinned="left"
+                )
+            elif col == "Descripcion":
+                editable_columns[col] = st.column_config.TextColumn(
+                    col,
+                    disabled=True,
+                    help=f"{col} (no editable)",
+                    width="medium",
+                    pinned="left"
+                )
+            else:
+                editable_columns[col] = st.column_config.TextColumn(
+                    col,
+                    disabled=True,
+                    help=f"{col} (no editable)",
+                )
+        # Configurar columnas intermedias (no editables)
+        for col in intermediate_cols_edit:
+            if col == "PrecioVenta (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Último precio de venta registrado",
+                    format="%.3f",
+                    step=0.01,
+                    min_value=0.0,
+                    max_value=10.0,
+                    pinned="left"
+                )
+            elif col == "Retail Costos Directos (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Utilities, Fletes Internos, Comex y Guarda PT",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+            elif col == "Retail Costos Indirectos (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Indirecta, Materiales Indirectos y Servicios Generales",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+            elif col == "MO Total":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Directa y MO Indirecta",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+            elif col == "Materiales Total":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+            elif col == "MMPP Total (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MMPP (Fruta) (USD/kg) y Proceso Granel (USD/kg)",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+        
+        for col in total_cols_edit:
+            if col == "EBITDA Pct":
+                # Formato especial para EBITDA Pct como porcentaje
+                editable_columns["EBITDA Pct"] = st.column_config.NumberColumn(
+                    "EBITDA Pct",
+                    help="Margen EBITDA en porcentaje (no editable)",
+                    format="%.1f%%",
+                    min_value=-100.0,
+                    step=0.1,
+                    disabled=True,
+                    pinned="left"
+                )
+            elif col == "EBITDA (USD/kg)":
+                editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Margen EBITDA: PrecioVenta (USD/kg) - Costos Totales (USD/kg)",
+                format="%.3f",
+                step=0.01,
+                disabled=True,
+                pinned="left"
+                )
+            else:
+                editable_columns[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Valor total de {col} (no editable)",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+    else:
+        config = {}
+        for col in cost_columns:
+            config[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Valor de {col} (los costos se muestran como negativos)",
+                format="%.3f",
+                step=0.001
+            )
+        
+        # Configurar columnas dimensionales (visibles pero no editables)
+        for col in dimension_cols_edit:
+            if col == "SKU":
+                config[col] = st.column_config.TextColumn(
+                    col,
+                    help=f"{col}",
+                    pinned="left",
+                )
+            elif col == "Descripcion":
+                config[col] = st.column_config.TextColumn(
+                    col,
+                    help=f"{col}",
+                    pinned="left",
+                    width="medium"
+                )
+            else:
+                config[col] = st.column_config.TextColumn(
+                    col,
+                    help=f"{col}",
+                )
+        # Configurar columnas intermedias (no editables)
+        for col in intermediate_cols_edit:
+            if col == "PrecioVenta (USD/kg)":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Último precio de venta registrado",
+                    format="%.3f",
+                    step=0.01,
+                    min_value=0.0,
+                    max_value=10.0,
+                    pinned="left"
+                )
+            elif col == "Retail Costos Directos (USD/kg)":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Servicios Generales, Utilities, Fletes Internos, Comex y Guarda PT",
+                    format="%.3f",
+                    step=0.01,
+                )
+            elif col == "Retail Costos Indirectos (USD/kg)":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Indirecta y Materiales Indirectos",
+                    format="%.3f",
+                    step=0.01,
+                )
+            elif col == "MO Total":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MO Directa y MO Indirecta",
+                    format="%.3f",
+                    step=0.01,
+                )
+            elif col == "Materiales Total":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
+                    format="%.3f",
+                    step=0.01,
+                )
+            elif col == "MMPP Total (USD/kg)":
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Incluye: MMPP (Fruta) (USD/kg) y Proceso Granel (USD/kg)",
+                    format="%.3f",
+                    step=0.01,
+                ) 
+        for col in total_cols_edit:
+            if col == "EBITDA Pct":
+                # Formato especial para EBITDA Pct como porcentaje
+                config["EBITDA Pct"] = st.column_config.NumberColumn(
+                    "EBITDA Pct",
+                    help="Margen EBITDA en porcentaje (no editable)",
+                    format="%.1f%%",
+                    min_value=-100.0,
+                    step=0.1,
+                    disabled=True,
+                    pinned="left"
+                )
+            elif col == "EBITDA (USD/kg)":
+                config[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Margen EBITDA: PrecioVenta (USD/kg) - Costos Totales (USD/kg)",
+                format="%.3f",
+                step=0.01,
+                disabled=True,
+                pinned="left"
+                )
+            else:
+                config[col] = st.column_config.NumberColumn(
+                    col,
+                    help=f"Valor total de {col} (no editable)",
+                    format="%.3f",
+                    step=0.01,
+                    disabled=True
+                )
+    return editable_columns if editable else config
 # ===================== Construcción del mart =====================
 @st.cache_data(show_spinner=True)
 def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int]) -> pd.DataFrame:
@@ -300,8 +536,15 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     # 3) DIM_SKU
     dim = build_dim_sku(sheets["DIM_SKU"])
 
+    # 3.1) MMPP y Almacenaje por SKU
+    mmpp_almacenaje = compute_mmpp_y_almacenaje_per_sku(sheets["RECETA_SKU"], sheets["INFO_FRUTA"])
+    mmpp_almacenaje = mmpp_almacenaje.rename(columns={"MMPP (Fruta) (USD/kg)": "MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje": "Almacenaje (Calculado)"})    
     # 4) Unión de tablas
-    detalle = costos_detalle.merge(dim, on="SKU", how="right")
+    costos_detalle_calculado = costos_detalle.merge(mmpp_almacenaje, on="SKU", how="right")
+    costos_detalle_calculado["MMPP (Fruta) (USD/kg)"] = -abs(costos_detalle_calculado["MMPP (Fruta) (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["MMPP (Fruta) (USD/kg)"]))
+    costos_detalle_calculado["Almacenaje"] = -abs(costos_detalle_calculado["Almacenaje (Calculado)"].fillna(costos_detalle_calculado["Almacenaje"]))
+    costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)"])
+    detalle = costos_detalle_calculado.merge(dim, on="SKU", how="right")
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
     if "SKU-Cliente" in dim.columns:
         detalle = detalle.merge(latest, on="SKU-Cliente", how="right")
@@ -369,7 +612,6 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
         "Materiales Cajas y Bolsas",
         "Laboratorio",
         "Mantención",
-        "Servicios Generales",
         "Utilities",
         "Fletes Internos",
         "Comex",
@@ -383,13 +625,14 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     retail_costs_indirect_components = [
         "MO Indirecta",
         "Materiales Indirectos",
+        "Servicios Generales"
     ]
     if all(col in detalle.columns for col in retail_costs_indirect_components):
         detalle["Retail Costos Indirectos (USD/kg)"] = detalle[retail_costs_indirect_components].sum(axis=1)
     
     # 4. Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
     gastos_components = [
-        "Guarda MMPP",
+        "Almacenaje",
         "Proceso Granel (USD/kg)",
         "Retail Costos Indirectos (USD/kg)",
         "Retail Costos Directos (USD/kg)"
@@ -418,7 +661,7 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     detalle["EBITDA (USD/kg)"] = detalle["PrecioVenta (USD/kg)"] - detalle["Costos Totales (USD/kg)"].abs()
     detalle["EBITDA Pct"] = np.where(
         detalle["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        (detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"]) * 100,  # ✅ Multiplicar por 100 para porcentaje
+        (detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"]) * 100,
         np.nan
     )
 
@@ -431,6 +674,169 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
         detalle = detalle.sort_values("SKU", ascending=True).reset_index(drop=True)
     return detalle
 
+# ===================== Carga de datos de fruta =====================
+def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Carga y normaliza la hoja RECETA_SKU del Excel.
+    
+    Args:
+        df_excel: DataFrame de la hoja RECETA_SKU
+        
+    Returns:
+        DataFrame normalizado con columnas [SKU, Fruta_id, Porcentaje]
+    """
+    # Verificar columnas requeridas
+    required_cols = ["SKU", "Fruta_id", "Porcentaje"]
+    missing_cols = [col for col in required_cols if col not in df_excel.columns]
+    if missing_cols:
+        raise ValueError(f"Columnas faltantes en RECETA_SKU: {missing_cols}")
+    
+    # Crear copia y normalizar
+    df = df_excel[required_cols].copy()
+    
+    # Convertir SKU a string y limpiar
+    df["SKU"] = df["SKU"].astype(str).str.strip()
+    
+    # Convertir Fruta_id a string y limpiar
+    df["Fruta_id"] = df["Fruta_id"].astype(str).str.strip()
+    
+    # Convertir Porcentaje a float y validar
+    df["Porcentaje"] = df["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+    
+    # Filtrar filas válidas (con Porcentaje no NaN y ≥ 0)
+    df = df[df["Porcentaje"].notna() & (df["Porcentaje"] >= 0)]
+    
+    # Resetear índice
+    df = df.reset_index(drop=True)
+    
+    return df
+
+
+def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Carga y normaliza la hoja INFO_FRUTA del Excel.
+    
+    Args:
+        df_excel: DataFrame de la hoja INFO_FRUTA
+        
+    Returns:
+        DataFrame normalizado con columnas [Fruta_id, Precio, Eficiencia]
+    """
+    # Verificar columnas requeridas
+    required_cols = ["Fruta_id", "Precio", "Eficiencia", "Name", "Almacenaje"]
+    missing_cols = [col for col in required_cols if col not in df_excel.columns]
+    if missing_cols:
+        raise ValueError(f"Columnas faltantes en INFO_FRUTA: {missing_cols}")
+    
+    # Crear copia y normalizar
+    df = df_excel[required_cols].copy()
+    
+    # Convertir Fruta_id a string y limpiar
+    df["Fruta_id"] = df["Fruta_id"].astype(str).str.strip()
+    
+    # Convertir Precio a float y validar
+    df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce")
+    
+    # Convertir Eficiencia a float y validar
+    df["Eficiencia"] = pd.to_numeric(df["Eficiencia"], errors="coerce")
+
+    # Convertir Almacenaje a float y validar
+    df["Almacenaje"] = pd.to_numeric(df["Almacenaje"], errors="coerce") 
+
+    # Convertir Name a string y limpiar
+    df["Name"] = df["Name"].astype(str).str.strip()
+    
+    # Filtrar filas válidas
+    df = df[df["Precio"].notna() & df["Eficiencia"].notna()]
+    
+    # Validar rangos
+    df = df[df["Precio"] >= 0]
+    df = df[df["Eficiencia"] > 0]
+    df = df[df["Eficiencia"] <= 1]
+    df = df[df["Almacenaje"] <= 0]
+    
+    # Reemplazar eficiencias 0/NaN por mínimo 0.01 y loggear warning
+    zero_efficiency_mask = (df["Eficiencia"] <= 0) | df["Eficiencia"].isna()
+    if zero_efficiency_mask.any():
+        zero_count = zero_efficiency_mask.sum()
+        st.warning(f"⚠️ {zero_count} frutas con eficiencia ≤ 0 o NaN. Se estableció eficiencia mínima de 0.01")
+        df.loc[zero_efficiency_mask, "Eficiencia"] = 0.01
+    
+    # Resetear índice
+    df = df.reset_index(drop=True)
+    
+    return df
+
+# ===================== Cálculo de MMPP =====================
+def compute_mmpp_y_almacenaje_per_sku(receta_df: pd.DataFrame, info_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula MMPP (Fruta) y Almacenaje por SKU basado en recetas y precios de fruta,
+    utilizando operaciones vectorizadas para optimizar el rendimiento.
+    """
+    # 1. Validación de columnas requeridas
+    #---------------------------------------
+    required_receta_cols = ["SKU", "Fruta_id", "Porcentaje"]
+    missing_receta_cols = [col for col in required_receta_cols if col not in receta_df.columns]
+    if missing_receta_cols:
+        raise ValueError(f"Columnas faltantes en RECETA_SKU: {missing_receta_cols}")
+
+    required_info_cols = ["Fruta_id", "Precio", "Eficiencia", "Name", "Almacenaje"]
+    missing_info_cols = [col for col in required_info_cols if col not in info_df.columns]
+    if missing_info_cols:
+        raise ValueError(f"Columnas faltantes en INFO_FRUTA: {missing_info_cols}")
+
+    # 2. Copia y normalización de datos
+    #-----------------------------------
+    # Crear copias para evitar modificar los DataFrames originales
+    df_receta = receta_df[required_receta_cols].copy()
+    df_info = info_df[required_info_cols].copy()
+
+    # Normalizar 'Fruta_id' a string y limpiar espacios
+    df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str).str.strip()
+    df_info["Fruta_id"] = df_info["Fruta_id"].astype(str).str.strip()
+
+    # Convertir columnas a tipo numérico, forzando NaN en errores
+    df_receta["Porcentaje"] = df_receta["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+    df_info["Precio"] = df_info["Precio"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+    df_info["Eficiencia"] = df_info["Eficiencia"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+    df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+
+    # 3. Filtrado y validación de rangos
+    #-----------------------------------
+    # Eliminar filas con valores nulos o no válidos
+    df_receta.dropna(subset=["Porcentaje"], inplace=True)
+    df_info.dropna(subset=["Precio", "Eficiencia", "Almacenaje"], inplace=True)
+    
+    # Filtrar valores numéricos inválidos (ej. <= 0 o > 1 en Eficiencia)
+    df_receta = df_receta[df_receta["Porcentaje"] > 0]
+    df_info = df_info[
+        (df_info["Precio"] >= 0) &
+        (df_info["Eficiencia"] > 0) &
+        (df_info["Eficiencia"] <= 1) &
+        (df_info["Almacenaje"] <= 0)
+    ]
+
+    # 4. Cálculo optimizado
+    #------------------------
+    # Unir los DataFrames para combinar la información de receta y fruta
+    # Únicos en cada dataset
+    df_merged = pd.merge(df_receta, df_info, on="Fruta_id", how="inner")
+    
+    # Calcular los costos de forma vectorizada
+    # MMPP: Precio de la fruta * Porcentaje de la receta / Eficiencia
+    df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Porcentaje"] / 100) / df_merged["Eficiencia"]
+    # Almacenaje: Costo de almacenaje de la fruta * Porcentaje de la receta
+    df_merged["Costo_Almacenaje"] = df_merged["Almacenaje"] * df_merged["Porcentaje"] / 100
+
+    # Agrupar por SKU y sumar los costos para obtener el resultado final
+    df_result = df_merged.groupby("SKU").agg(
+        **{
+            "MMPP (Fruta) (USD/kg)": pd.NamedAgg(column='Costo_MMPP', aggfunc='sum'),
+            "Almacenaje": pd.NamedAgg(column='Costo_Almacenaje', aggfunc='sum')
+        }
+    ).reset_index()
+
+    return df_result
 # ===================== Documentación para nuevas fuentes =====================
 """
 INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
@@ -452,4 +858,9 @@ INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
 4. Nuevas métricas:
    - Agregar cálculos en build_detalle() después de la conversión numérica
    - Incluir en num_cols si son columnas numéricas
+
+5. DATOS DE FRUTA:
+   - RECETA_SKU: Hoja con columnas [SKU, Fruta_id, Porcentaje] (formato largo)
+   - INFO_FRUTA: Hoja con columnas [Fruta_id, PrecioUSD_kg, Eficiencia]
+   - Usar load_receta_sku() y load_info_fruta() para cargar
 """

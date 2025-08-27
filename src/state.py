@@ -12,6 +12,7 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.filters", {})
     st.session_state.setdefault("hist.df_filtered", None)
     st.session_state.setdefault("hist.last_loaded_at", None)
+    st.session_state.setdefault("hist.skus_excluidos", None)
 
     # Simulación
     st.session_state.setdefault("sim.df", None)
@@ -26,13 +27,11 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("sim.last_saved_path", None)
     st.session_state.setdefault("sim.last_saved_at", None)
 
-    # MMPP / Recetas
-    st.session_state.setdefault("mmpp.recipes_df", None)
-    st.session_state.setdefault("mmpp.fruit_prices_df", None)
-    st.session_state.setdefault("mmpp.fruit_price_overrides", {})  # {fruta: precio}
-    st.session_state.setdefault("mmpp.sku_cost_component", None)
-    st.session_state.setdefault("mmpp.fruit_to_skus", {})
-    st.session_state.setdefault("mmpp.dirty", False)
+    
+    # Datos de fruta
+    st.session_state.setdefault("fruta.receta_df", None)
+    st.session_state.setdefault("fruta.info_df", None)
+    st.session_state.setdefault("sim.fruit_overrides", {})
 
     # UI / Otros
     st.session_state.setdefault("ui.active_tab", "Histórico")
@@ -71,6 +70,7 @@ def _sim_take_snapshot() -> dict:
         "override_pct_cost": st.session_state.get("sim.override_pct_cost", 0.0),
         "override_upload": st.session_state.get("sim.override_upload", None),
         "fruit_price_overrides": copy.deepcopy(st.session_state.get("mmpp.fruit_price_overrides", {})),
+        "fruit_overrides": copy.deepcopy(st.session_state.get("sim.fruit_overrides", {})),
     }
 
 def sim_snapshot_push() -> None:
@@ -94,6 +94,7 @@ def sim_undo() -> None:
     st.session_state["sim.override_pct_cost"] = prev["override_pct_cost"]
     st.session_state["sim.override_upload"] = prev["override_upload"]
     st.session_state["mmpp.fruit_price_overrides"] = prev["fruit_price_overrides"]
+    st.session_state["sim.fruit_overrides"] = prev["fruit_overrides"]
     st.session_state["sim.dirty"] = True
 
 def sim_redo() -> None:
@@ -111,6 +112,7 @@ def sim_redo() -> None:
     st.session_state["sim.override_pct_cost"] = next_["override_pct_cost"]
     st.session_state["sim.override_upload"] = next_["override_upload"]
     st.session_state["mmpp.fruit_price_overrides"] = next_["fruit_price_overrides"]
+    st.session_state["sim.fruit_overrides"] = next_["fruit_overrides"]
     st.session_state["sim.dirty"] = True
 
 # ---------- Overrides de fruta (MMPP) ----------
