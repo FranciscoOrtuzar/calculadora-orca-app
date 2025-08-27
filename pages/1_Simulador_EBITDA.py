@@ -673,7 +673,7 @@ else:
     st.sidebar.info("Sin overrides aplicados")
 
 # ===================== Pestañas del Simulador =====================
-tab_sku, tab_frutas, tab_adn = st.tabs(["📊 Retail (SKU)", "🍓 Precio Fruta", "📖 Receta"])
+tab_sku, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
     # ===================== Bloque 1 - Carga de Planilla =====================
@@ -1492,7 +1492,7 @@ with tab_sku:
     - **Margen bajo**: Menor rentabilidad relativa
     """)
 
-with tab_frutas:
+with tab_precio_frutas:
     st.subheader("🍓 Simulador de Precios de Frutas")
     
     # Verificar que los datos de frutas estén disponibles
@@ -2443,8 +2443,8 @@ with tab_frutas:
 def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
     # Normaliza tipos
     receta = receta_df.copy()
-    receta["SKU"] = receta["SKU"].astype(str)
-    receta = receta[receta["SKU"] == str(sku)].copy()
+    receta["SKU"] = receta["SKU"].astype(int)
+    receta = receta[receta["SKU"] == int(sku)].copy()
 
     if receta.empty:
         st.info("No hay líneas de receta para este SKU.")
@@ -2472,36 +2472,34 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
         # Contribución positiva = Precio * (Porcentaje/100) / Eficiencia
         pct  = pd.to_numeric(det["Porcentaje"], errors="coerce").fillna(0) / 100.0
         pr   = pd.to_numeric(det["Precio"], errors="coerce").fillna(0).clip(lower=0)
+        opt  = pd.to_numeric(det["Óptimo"], errors="coerce").fillna(0) / 100.0
         eff  = pd.to_numeric(det["Eficiencia"], errors="coerce").fillna(0).clip(lower=0.01, upper=1.0)
         det["Name"] = det["Name"].fillna(det["Fruta_id"])
-        det["Contribucion_USDkg"] = (pr * pct) / eff
+        det["Contribucion Original (USD/kg)"] = (pr * pct) / eff
+        det["Contribucion Óptima (USD/kg)"] = (pr * opt) / eff
+        det.rename(columns={"Porcentaje":"Porcentaje Original", "Óptimo":"Porcentaje Óptimo"}, inplace=True)
 
         # Cabecera compacta
-        c1, c2, c3 = st.columns([2,1,1])
+        c1, c2, c3, c4, c5 = st.columns([1,1,2,2,2])
         with c1: st.metric("SKU", sku)
         with c2: st.metric("Frutas usadas", int(det["Fruta_id"].nunique()))
         with c3: 
-            total = det["Contribucion_USDkg"].sum()
-            st.metric("MMPP (Fruta) simulado (+)", f"{total:.3f} USD/kg")
+            total = det["Contribucion Original (USD/kg)"].sum()
+            st.metric("MMPP (Fruta) Simulado - Original", f"{total:.3f} USD/kg")
+        with c4:
+            total = det["Contribucion Óptima (USD/kg)"].sum()
+            st.metric("MMPP (Fruta) Simulado - Óptimo", f"{total:.3f} USD/kg")
+        with c5:
+            total = (det["Contribucion Original (USD/kg)"] - det["Contribucion Óptima (USD/kg)"]).sum()
+            st.metric("MMPP (Fruta) Simulado - Diferencia", f"{total:.3f} USD/kg")
 
-        # Tablas
-        left, right = st.columns(2)
-        with left:
-            st.subheader("💰 Contribución por fruta (USD/kg)")
-            st.dataframe(
-                det[["Name","Fruta_id","Contribucion_USDkg","Porcentaje","Precio","Eficiencia"]]
-                  .sort_values("Contribucion_USDkg", ascending=False)
-                  .style.format({"Contribucion_USDkg":"{:.3f}","Porcentaje":"{:.2f}%","Precio":"{:.3f}","Eficiencia":"{:.3f}"}),
-                width='stretch', hide_index=True
-            )
-        with right:
-            st.subheader("📊 Composición (%)")
-            comp = det.groupby(["Fruta_id","Name"], as_index=False)["Porcentaje"].sum()
-            st.dataframe(
-                comp.sort_values("Porcentaje", ascending=False)
-                    .style.format({"Porcentaje":"{:.2f}%"}),
-                width='stretch', hide_index=True
-            )
+        st.subheader("💰 Contribución por fruta (USD/kg)")
+        st.dataframe(
+            det[["Name","Fruta_id","Contribucion Original (USD/kg)","Porcentaje Original","Contribucion Óptima (USD/kg)","Porcentaje Óptimo","Precio","Eficiencia"]]
+                .sort_values("Contribucion Óptima (USD/kg)", ascending=False)
+                .style.format({"Contribucion Original (USD/kg)":"{:.3f}","% Original":"{:.2f}%","Contribucion Óptima (USD/kg)":"{:.3f}","% Óptimo":"{:.2f}%","Precio":"{:.3f}","Eficiencia":"{:.3f}"}),
+            width='stretch', hide_index=True
+        )
 
         # Footer pegado
         st.markdown('<div class="modal-footer"></div>', unsafe_allow_html=True)
@@ -2510,8 +2508,8 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
         st.dataframe(receta, width='stretch', hide_index=True)
 
 
-with tab_adn:
-    st.header("🧬 ADN - Visor de Recetas por SKU")
+with tab_receta:
+    st.header("📖 Visor de Recetas por SKU")
     
     # Verificar que tenemos datos de recetas
     if receta_df is None:
@@ -2660,7 +2658,7 @@ with tab_adn:
         cols[1].write(desc)
         cols[2].write(marca)
         cols[3].write(cliente)
-        cols[4].write(frutas_usadas)
+        cols[4].write(frutas_usadas, help="Número de frutas diferentes usadas en el SKU")
     
         btn_key = f"ver_receta_{sku_cliente}_{start}"
         if cols[5].button("Ver receta", key=btn_key, width='stretch'):

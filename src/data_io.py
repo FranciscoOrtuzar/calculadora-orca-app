@@ -683,10 +683,10 @@ def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
         df_excel: DataFrame de la hoja RECETA_SKU
         
     Returns:
-        DataFrame normalizado con columnas [SKU, Fruta_id, Porcentaje]
+        DataFrame normalizado con columnas [SKU, Fruta_id, Porcentaje, Óptimo]
     """
     # Verificar columnas requeridas
-    required_cols = ["SKU", "Fruta_id", "Porcentaje"]
+    required_cols = ["SKU", "Fruta_id", "Porcentaje", "Óptimo"]
     missing_cols = [col for col in required_cols if col not in df_excel.columns]
     if missing_cols:
         raise ValueError(f"Columnas faltantes en RECETA_SKU: {missing_cols}")
@@ -702,7 +702,10 @@ def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
     
     # Convertir Porcentaje a float y validar
     df["Porcentaje"] = df["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
-    
+
+    # Convertir Óptimo a float y validar
+    df["Óptimo"] = df["Óptimo"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+
     # Filtrar filas válidas (con Porcentaje no NaN y ≥ 0)
     df = df[df["Porcentaje"].notna() & (df["Porcentaje"] >= 0)]
     
