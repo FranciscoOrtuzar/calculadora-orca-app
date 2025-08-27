@@ -155,6 +155,7 @@ def apply_fruit_overrides_to_sim(sim_df: pd.DataFrame,
     """
     params = get_adjusted_fruit_params(info_df, fruit_overrides)
     mmpp = compute_mmpp_fruta_per_sku(receta_df, params)
+    mmpp["SKU"] = mmpp["SKU"].astype(int)
     
     out = sim_df.copy()
     out = out.drop(columns=["MMPP (Fruta) (USD/kg)"], errors="ignore")
