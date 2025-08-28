@@ -2047,7 +2047,7 @@ with tab_receta:
     # Controles de página
     colp1, colp7, colp2, colp3, colp4, colp5, colp6 = st.columns([2,3,1,1,1,1,1])
     with colp1:
-        page_size = st.selectbox(placeholder="Filas por página", label="Filas por página", options=[10, 20, 50], index=1, key="adn_page_size", label_visibility="visible", )
+        page_size = st.selectbox(placeholder="Filas por página", label="Filas por página", options=[10, 20, 50], index=0, key="adn_page_size", label_visibility="visible", )
         total_rows = len(skus_summary)
         total_pages = max(1, math.ceil(total_rows / page_size))
         st.caption(f"{total_rows} filas • {total_pages} páginas")
