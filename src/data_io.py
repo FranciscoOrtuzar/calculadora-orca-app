@@ -131,7 +131,7 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         elif lc == "mo_total":
             rename_map[c] = "MO Total"
         elif lc == "materiales_cajas_y_bolsas":
-            rename_map[c] = "Materiales Cajas y Bolsas"
+            rename_map[c] = "Materiales Directos"
         elif lc == "materiales_indirectos":
             rename_map[c] = "Materiales Indirectos"
         elif lc == "materiales_total":
@@ -151,7 +151,7 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
         elif lc == "guarda_pt":
             rename_map[c] = "Guarda PT"
         elif lc == "guarda mmpp":
-            rename_map[c] = "Almacenaje"
+            rename_map[c] = "Almacenaje MMPP"
         elif lc == "mmpp_fruta":
             rename_map[c] = "MMPP (Fruta) (USD/kg)"
         elif lc == "proceso granel":
@@ -170,12 +170,12 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
     # Calcular gastos totales solo si todas las columnas existen
-    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Almacenaje", "Proceso Granel (USD/kg)"]
+    gastos_cols = ["Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "Almacenaje MMPP", "Proceso Granel (USD/kg)"]
     if all(col in df.columns for col in gastos_cols):
         df["Gastos Totales (USD/kg)"] = (
             df["Retail Costos Directos (USD/kg)"].astype(float) + 
             df["Retail Costos Indirectos (USD/kg)"].astype(float) + 
-            df["Almacenaje"].astype(float) + 
+            df["Almacenaje MMPP"].astype(float) + 
             df["Proceso Granel (USD/kg)"].astype(float)
         )
     else:
@@ -272,236 +272,277 @@ def columns_config(editable: bool = True) -> dict:
     # Configurar columnas editables (solo costos individuales, no totales)
     
     # Definir tipos de columnas para la configuración
-    cost_columns = ["Proceso Granel (USD/kg)", "Almacenaje", "MMPP (Fruta) (USD/kg)", "MO Directa", "MO Indirecta",
-    "Materiales Cajas y Bolsas", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
+    cost_columns = ["Proceso Granel (USD/kg)", "Almacenaje MMPP", "MMPP (Fruta) (USD/kg)", "MO Directa", "MO Indirecta",
+    "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
     "Fletes Internos", "Comex", "Guarda PT"]
     dimension_cols_edit = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Columnas dimensionales visibles
     total_cols_edit = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
     intermediate_cols_edit = ["PrecioVenta (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
                                 "MO Total", "Materiales Total", "MMPP Total (USD/kg)"]
     
-    if editable:
-        editable_columns = {}   
-        for col in cost_columns:
+    editable_columns = {}   
+    for col in cost_columns:
+        if col == "Materiales Directos":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: Cajas y Bolsas",
+                format="%.3f",
+                step=0.001
+            )
+        elif col == "Almacenaje MMPP":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Es el costo de almacenaje de la fruta granel",
+                format="%.3f",
+                step=0.001
+            )
+        else:
             editable_columns[col] = st.column_config.NumberColumn(
                 col,
                 help=f"Valor de {col} (los costos se muestran como negativos)",
                 format="%.3f",
                 step=0.001
             )
-        
-        # Configurar columnas dimensionales (visibles pero no editables)
-        for col in dimension_cols_edit:
-            if col == "SKU":
-                editable_columns[col] = st.column_config.TextColumn(
-                    col,
-                    disabled=True,
-                    help=f"{col} (no editable)",
-                    pinned="left"
-                )
-            elif col == "Descripcion":
-                editable_columns[col] = st.column_config.TextColumn(
-                    col,
-                    disabled=True,
-                    help=f"{col} (no editable)",
-                    width="medium",
-                    pinned="left"
-                )
-            else:
-                editable_columns[col] = st.column_config.TextColumn(
-                    col,
-                    disabled=True,
-                    help=f"{col} (no editable)",
-                )
-        # Configurar columnas intermedias (no editables)
-        for col in intermediate_cols_edit:
-            if col == "PrecioVenta (USD/kg)":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Último precio de venta registrado",
-                    format="%.3f",
-                    step=0.01,
-                    min_value=0.0,
-                    max_value=10.0,
-                    pinned="left"
-                )
-            elif col == "Retail Costos Directos (USD/kg)":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Utilities, Fletes Internos, Comex y Guarda PT",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-            elif col == "Retail Costos Indirectos (USD/kg)":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Indirecta, Materiales Indirectos y Servicios Generales",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-            elif col == "MO Total":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Directa y MO Indirecta",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-            elif col == "Materiales Total":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-            elif col == "MMPP Total (USD/kg)":
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MMPP (Fruta) (USD/kg) y Proceso Granel (USD/kg)",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-        
-        for col in total_cols_edit:
-            if col == "EBITDA Pct":
-                # Formato especial para EBITDA Pct como porcentaje
-                editable_columns["EBITDA Pct"] = st.column_config.NumberColumn(
-                    "EBITDA Pct",
-                    help="Margen EBITDA en porcentaje (no editable)",
-                    format="%.1f%%",
-                    min_value=-100.0,
-                    step=0.1,
-                    disabled=True,
-                    pinned="left"
-                )
-            elif col == "EBITDA (USD/kg)":
-                editable_columns[col] = st.column_config.NumberColumn(
+    
+    # Configurar columnas dimensionales (visibles pero no editables)
+    for col in dimension_cols_edit:
+        if col == "SKU":
+            editable_columns[col] = st.column_config.TextColumn(
                 col,
-                help=f"Margen EBITDA: PrecioVenta (USD/kg) - Costos Totales (USD/kg)",
-                format="%.3f",
-                step=0.01,
                 disabled=True,
+                help=f"{col} (no editable)",
                 pinned="left"
-                )
-            else:
-                editable_columns[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Valor total de {col} (no editable)",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-    else:
-        config = {}
-        for col in cost_columns:
-            config[col] = st.column_config.NumberColumn(
-                col,
-                help=f"Valor de {col} (los costos se muestran como negativos)",
-                format="%.3f",
-                step=0.001
             )
-        
-        # Configurar columnas dimensionales (visibles pero no editables)
-        for col in dimension_cols_edit:
-            if col == "SKU":
-                config[col] = st.column_config.TextColumn(
-                    col,
-                    help=f"{col}",
-                    pinned="left",
-                )
-            elif col == "Descripcion":
-                config[col] = st.column_config.TextColumn(
-                    col,
-                    help=f"{col}",
-                    pinned="left",
-                    width="medium"
-                )
-            else:
-                config[col] = st.column_config.TextColumn(
-                    col,
-                    help=f"{col}",
-                )
-        # Configurar columnas intermedias (no editables)
-        for col in intermediate_cols_edit:
-            if col == "PrecioVenta (USD/kg)":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Último precio de venta registrado",
-                    format="%.3f",
-                    step=0.01,
-                    min_value=0.0,
-                    max_value=10.0,
-                    pinned="left"
-                )
-            elif col == "Retail Costos Directos (USD/kg)":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Servicios Generales, Utilities, Fletes Internos, Comex y Guarda PT",
-                    format="%.3f",
-                    step=0.01,
-                )
-            elif col == "Retail Costos Indirectos (USD/kg)":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Indirecta y Materiales Indirectos",
-                    format="%.3f",
-                    step=0.01,
-                )
-            elif col == "MO Total":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MO Directa y MO Indirecta",
-                    format="%.3f",
-                    step=0.01,
-                )
-            elif col == "Materiales Total":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
-                    format="%.3f",
-                    step=0.01,
-                )
-            elif col == "MMPP Total (USD/kg)":
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Incluye: MMPP (Fruta) (USD/kg) y Proceso Granel (USD/kg)",
-                    format="%.3f",
-                    step=0.01,
-                ) 
-        for col in total_cols_edit:
-            if col == "EBITDA Pct":
-                # Formato especial para EBITDA Pct como porcentaje
-                config["EBITDA Pct"] = st.column_config.NumberColumn(
-                    "EBITDA Pct",
-                    help="Margen EBITDA en porcentaje (no editable)",
-                    format="%.1f%%",
-                    min_value=-100.0,
-                    step=0.1,
-                    disabled=True,
-                    pinned="left"
-                )
-            elif col == "EBITDA (USD/kg)":
-                config[col] = st.column_config.NumberColumn(
+        elif col == "Descripcion":
+            editable_columns[col] = st.column_config.TextColumn(
                 col,
-                help=f"Margen EBITDA: PrecioVenta (USD/kg) - Costos Totales (USD/kg)",
+                disabled=True,
+                help=f"{col} (no editable)",
+                width="medium",
+                pinned="left"
+            )
+        else:
+            editable_columns[col] = st.column_config.TextColumn(
+                col,
+                disabled=True,
+                help=f"{col} (no editable)",
+            )
+    # Configurar columnas intermedias (no editables)
+    for col in intermediate_cols_edit:
+        if col == "PrecioVenta (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Último precio de venta registrado",
                 format="%.3f",
-                step=0.01,
+                step=0.001,
+                min_value=0.0,
+                max_value=10.0,
+                pinned="left"
+            )
+        elif col == "Retail Costos Directos (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Utilities, Fletes Internos, Comex y Guarda PT",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+        elif col == "Retail Costos Indirectos (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: MO Indirecta, Materiales Indirectos y Servicios Generales",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+        elif col == "MO Total":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: MO Directa y MO Indirecta",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+        elif col == "Materiales Total":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+        elif col == "MMPP Total (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: MMPP (Fruta) (USD/kg) y Proceso Granel (USD/kg)",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+    
+    for col in total_cols_edit:
+        if col == "EBITDA Pct":
+            # Formato especial para EBITDA Pct como porcentaje
+            editable_columns["EBITDA Pct"] = st.column_config.NumberColumn(
+                "EBITDA Pct",
+                help="Margen EBITDA en porcentaje (no editable)",
+                format="%.1f%%",
+                min_value=-100.0,
+                step=0.1,
                 disabled=True,
                 pinned="left"
-                )
-            else:
-                config[col] = st.column_config.NumberColumn(
-                    col,
-                    help=f"Valor total de {col} (no editable)",
-                    format="%.3f",
-                    step=0.01,
-                    disabled=True
-                )
-    return editable_columns if editable else config
+            )
+        elif col == "EBITDA (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+            col,
+            help=f"Margen EBITDA: PrecioVenta (USD/kg) - Costos Totales (USD/kg)",
+            format="%.3f",
+            step=0.001,
+            disabled=True,
+            pinned="left"
+            )
+        elif col == "Gastos Totales (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: Retail Costos Directos (USD/kg), Retail Costos Indirectos (USD/kg), Almacenaje MMPP y Proceso Granel (USD/kg)",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+        elif col == "Costos Totales (USD/kg)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help=f"Incluye: Gastos Totales (USD/kg) y MMPP Fruta (USD/kg)",
+                format="%.3f",
+                step=0.001,
+                disabled=True
+            )
+    return editable_columns
+
+    # ===================== Función para Recalcular Totales =====================
+def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalcula costos totales, gastos totales y EBITDA basándose en costos individuales.
+    
+    Args:
+        df: DataFrame con costos individuales
+        
+    Returns:
+        DataFrame con totales recalculados
+    """
+    cost_columns = [col for col in detalle.columns if "USD/kg" in col and "Precio" not in col]
+    for col in cost_columns:
+        if col in detalle.columns:
+            # Convertir valores a negativos (costos siempre negativos)
+            detalle[col] = -abs(detalle[col])
+    
+    # También corregir columnas de costos sin USD/kg
+    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
+                         "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
+                         "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
+    for col in other_cost_columns:
+        if col in detalle.columns:
+            # Convertir valores a negativos (costos siempre negativos)
+            detalle[col] = -abs(detalle[col])
+    
+    # El precio de venta siempre debe ser positivo
+    if "PrecioVenta (USD/kg)" in detalle.columns:
+        detalle["PrecioVenta (USD/kg)"] = abs(detalle["PrecioVenta (USD/kg)"])
+    
+    # 1. Recalcular MMPP Total si están los componentes
+    mmpp_components = [
+        "MMPP (Fruta) (USD/kg)",
+        "Proceso Granel (USD/kg)"
+    ]
+    
+    if all(col in detalle.columns for col in mmpp_components):
+        detalle["MMPP Total (USD/kg)"] = detalle[mmpp_components].sum(axis=1)
+    
+    # 2. Recalcular MO Total si están los componentes
+    mo_components = [
+        "MO Directa",
+        "MO Indirecta"
+    ]
+    
+    if all(col in detalle.columns for col in mo_components):
+        detalle["MO Total"] = detalle[mo_components].sum(axis=1)
+    
+    # 3. Recalcular Materiales Total si están los componentes
+    materiales_components = [
+        "Materiales Directos",
+        "Materiales Indirectos"
+    ]
+    
+    if all(col in detalle.columns for col in materiales_components):
+        detalle["Materiales Total"] = detalle[materiales_components].sum(axis=1)
+
+    # 4.1 Recalcular Retail Costos Directos (USD/kg) si están los componentes
+    retail_costs_direct_components = [
+        "MO Directa",
+        "Materiales Directos",
+        "Laboratorio",
+        "Mantención",
+        "Utilities",
+        "Fletes Internos",
+        "Comex",
+        "Guarda PT",
+    ]
+    
+    if all(col in detalle.columns for col in retail_costs_direct_components):
+        detalle["Retail Costos Directos (USD/kg)"] = detalle[retail_costs_direct_components].sum(axis=1)
+    
+    # 4.2 Recalcular Retail Costos Indirectos (USD/kg) si están los componentes
+    retail_costs_indirect_components = [
+        "MO Indirecta",
+        "Materiales Indirectos",
+        "Servicios Generales"
+    ]
+    if all(col in detalle.columns for col in retail_costs_indirect_components):
+        detalle["Retail Costos Indirectos (USD/kg)"] = detalle[retail_costs_indirect_components].sum(axis=1)
+    
+    # 4. Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
+    gastos_components = [
+        "Almacenaje MMPP",
+        "Proceso Granel (USD/kg)",
+        "Retail Costos Indirectos (USD/kg)",
+        "Retail Costos Directos (USD/kg)"
+    ]
+    
+    # Solo incluir componentes que existan en el DataFrame
+    available_gastos = [col for col in gastos_components if col in detalle.columns]
+    if available_gastos:
+        detalle["Gastos Totales (USD/kg)"] = detalle[available_gastos].sum(axis=1)
+    
+    # 5. Recalcular Costos Totales (MMPP + Gastos)
+    costos_components = []
+    
+    # Agregar MMPP Total si existe
+    if "MMPP (Fruta) (USD/kg)" in detalle.columns:
+        costos_components.append("MMPP (Fruta) (USD/kg)")
+
+    # Agregar Gastos Totales si existe
+    if "Gastos Totales (USD/kg)" in detalle.columns:
+        costos_components.append("Gastos Totales (USD/kg)")
+    
+    # Calcular costos totales
+    if costos_components:
+        detalle["Costos Totales (USD/kg)"] = detalle[costos_components].sum(axis=1)
+    
+    detalle["EBITDA (USD/kg)"] = detalle["PrecioVenta (USD/kg)"] - detalle["Costos Totales (USD/kg)"].abs()
+    detalle["EBITDA Pct"] = np.where(
+        detalle["PrecioVenta (USD/kg)"].abs() > 1e-12,
+        (detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"]) * 100,
+        np.nan
+    )
+
+    # 7) Orden final
+    detalle["SKU"] = detalle["SKU"].astype(int)
+    # Ordenar por SKU-Cliente que es el identificador único real
+    if "SKU-Cliente" in detalle.columns:
+        detalle = detalle.sort_values("SKU-Cliente", ascending=True).reset_index(drop=True)
+    else:
+        detalle = detalle.sort_values("SKU", ascending=True).reset_index(drop=True)
+    return detalle
 # ===================== Construcción del mart =====================
 @st.cache_data(show_spinner=True)
 def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int]) -> pd.DataFrame:
@@ -542,7 +583,7 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     # 4) Unión de tablas
     costos_detalle_calculado = costos_detalle.merge(mmpp_almacenaje, on="SKU", how="right")
     costos_detalle_calculado["MMPP (Fruta) (USD/kg)"] = -abs(costos_detalle_calculado["MMPP (Fruta) (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["MMPP (Fruta) (USD/kg)"]))
-    costos_detalle_calculado["Almacenaje"] = -abs(costos_detalle_calculado["Almacenaje (Calculado)"].fillna(costos_detalle_calculado["Almacenaje"]))
+    costos_detalle_calculado["Almacenaje MMPP"] = -abs(costos_detalle_calculado["Almacenaje (Calculado)"].fillna(costos_detalle_calculado["Almacenaje MMPP"]))
     costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)"])
     detalle = costos_detalle_calculado.merge(dim, on="SKU", how="right")
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
@@ -559,119 +600,8 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     
     # FORZAR SIGNOS CORRECTOS
     # Los costos siempre deben ser negativos
-    
-    cost_columns = [col for col in detalle.columns if "USD/kg" in col and "Precio" not in col]
-    for col in cost_columns:
-        if col in detalle.columns:
-            # Convertir valores a negativos (costos siempre negativos)
-            detalle[col] = -abs(detalle[col])
-    
-    # También corregir columnas de costos sin USD/kg
-    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
-                         "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
-                         "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
-    for col in other_cost_columns:
-        if col in detalle.columns:
-            # Convertir valores a negativos (costos siempre negativos)
-            detalle[col] = -abs(detalle[col])
-    
-    # El precio de venta siempre debe ser positivo
-    if "PrecioVenta (USD/kg)" in detalle.columns:
-        detalle["PrecioVenta (USD/kg)"] = abs(detalle["PrecioVenta (USD/kg)"])
-    
-    # 1. Recalcular MMPP Total si están los componentes
-    mmpp_components = [
-        "MMPP (Fruta) (USD/kg)",
-        "Proceso Granel (USD/kg)"
-    ]
-    
-    if all(col in detalle.columns for col in mmpp_components):
-        detalle["MMPP Total (USD/kg)"] = detalle[mmpp_components].sum(axis=1)
-    
-    # 2. Recalcular MO Total si están los componentes
-    mo_components = [
-        "MO Directa",
-        "MO Indirecta"
-    ]
-    
-    if all(col in detalle.columns for col in mo_components):
-        detalle["MO Total"] = detalle[mo_components].sum(axis=1)
-    
-    # 3. Recalcular Materiales Total si están los componentes
-    materiales_components = [
-        "Materiales Cajas y Bolsas",
-        "Materiales Indirectos"
-    ]
-    
-    if all(col in detalle.columns for col in materiales_components):
-        detalle["Materiales Total"] = detalle[materiales_components].sum(axis=1)
 
-    # 4.1 Recalcular Retail Costos Directos (USD/kg) si están los componentes
-    retail_costs_direct_components = [
-        "MO Directa",
-        "Materiales Cajas y Bolsas",
-        "Laboratorio",
-        "Mantención",
-        "Utilities",
-        "Fletes Internos",
-        "Comex",
-        "Guarda PT",
-    ]
-    
-    if all(col in detalle.columns for col in retail_costs_direct_components):
-        detalle["Retail Costos Directos (USD/kg)"] = detalle[retail_costs_direct_components].sum(axis=1)
-    
-    # 4.2 Recalcular Retail Costos Indirectos (USD/kg) si están los componentes
-    retail_costs_indirect_components = [
-        "MO Indirecta",
-        "Materiales Indirectos",
-        "Servicios Generales"
-    ]
-    if all(col in detalle.columns for col in retail_costs_indirect_components):
-        detalle["Retail Costos Indirectos (USD/kg)"] = detalle[retail_costs_indirect_components].sum(axis=1)
-    
-    # 4. Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
-    gastos_components = [
-        "Almacenaje",
-        "Proceso Granel (USD/kg)",
-        "Retail Costos Indirectos (USD/kg)",
-        "Retail Costos Directos (USD/kg)"
-    ]
-    
-    # Solo incluir componentes que existan en el DataFrame
-    available_gastos = [col for col in gastos_components if col in detalle.columns]
-    if available_gastos:
-        detalle["Gastos Totales (USD/kg)"] = detalle[available_gastos].sum(axis=1)
-    
-    # 5. Recalcular Costos Totales (MMPP + Gastos)
-    costos_components = []
-    
-    # Agregar MMPP Total si existe
-    if "MMPP (Fruta) (USD/kg)" in detalle.columns:
-        costos_components.append("MMPP (Fruta) (USD/kg)")
-
-    # Agregar Gastos Totales si existe
-    if "Gastos Totales (USD/kg)" in detalle.columns:
-        costos_components.append("Gastos Totales (USD/kg)")
-    
-    # Calcular costos totales
-    if costos_components:
-        detalle["Costos Totales (USD/kg)"] = detalle[costos_components].sum(axis=1)
-    
-    detalle["EBITDA (USD/kg)"] = detalle["PrecioVenta (USD/kg)"] - detalle["Costos Totales (USD/kg)"].abs()
-    detalle["EBITDA Pct"] = np.where(
-        detalle["PrecioVenta (USD/kg)"].abs() > 1e-12,
-        (detalle["EBITDA (USD/kg)"] / detalle["PrecioVenta (USD/kg)"]) * 100,
-        np.nan
-    )
-
-    # 7) Orden final
-    detalle["SKU"] = detalle["SKU"].astype(int)
-    # Ordenar por SKU-Cliente que es el identificador único real
-    if "SKU-Cliente" in detalle.columns:
-        detalle = detalle.sort_values("SKU-Cliente", ascending=True).reset_index(drop=True)
-    else:
-        detalle = detalle.sort_values("SKU", ascending=True).reset_index(drop=True)
+    detalle = recalculate_totals(detalle)
     return detalle
 
 # ===================== Carga de datos de fruta =====================

@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 # Importar con manejo de errores más robusto
 try:
     # Intentar import desde src
-    from src.data_io import build_detalle, REQ_SHEETS, columns_config
+    from src.data_io import build_detalle, REQ_SHEETS, columns_config, recalculate_totals
     from src.state import (
         ensure_session_state, session_state_table, sim_snapshot_push, 
         sim_undo, sim_redo, apply_fruit_override,
@@ -71,124 +71,6 @@ def validate_and_correct_signs(df: pd.DataFrame) -> pd.DataFrame:
         df_corrected["PrecioVenta (USD/kg)"] = abs(df_corrected["PrecioVenta (USD/kg)"])
     
     return df_corrected
-
-
-
-# ===================== Función para Recalcular Totales =====================
-def recalculate_totals(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Recalcula costos totales, gastos totales y EBITDA basándose en costos individuales.
-    
-    Args:
-        df: DataFrame con costos individuales
-        
-    Returns:
-        DataFrame con totales recalculados
-    """
-    df_calc = df.copy()
-    
-    # Convertir columnas numéricas y limpiar valores inválido
-    numeric_columns = df_calc.select_dtypes(include=[np.number]).columns
-    for col in numeric_columns:
-        df_calc[col] = pd.to_numeric(df_calc[col], errors='coerce').fillna(0.0)
-    
-    # FORZAR SIGNOS CORRECTOS
-    # Los costos siempre deben ser negativos
-    cost_columns = [col for col in df_calc.columns if "USD/kg" in col and "Precio" not in col]
-    for col in cost_columns:
-        if col in df_calc.columns:
-            # Convertir valores a negativos (costos siempre negativos)
-            df_calc[col] = -abs(df_calc[col])
-    
-    # También corregir columnas de costos sin USD/kg
-    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
-                         "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
-                         "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
-    for col in other_cost_columns:
-        if col in df_calc.columns:
-            # Convertir valores a negativos (costos siempre negativos)
-            df_calc[col] = -abs(df_calc[col])
-    
-    # El precio de venta siempre debe ser positivo
-    if "PrecioVenta (USD/kg)" in df_calc.columns:
-        df_calc["PrecioVenta (USD/kg)"] = abs(df_calc["PrecioVenta (USD/kg)"])
-    
-    # 1. Recalcular MMPP Total si están los componentes
-    mmpp_components = [
-        "MMPP (Fruta) (USD/kg)",
-        "Proceso Granel (USD/kg)"
-    ]
-    
-    if all(col in df_calc.columns for col in mmpp_components):
-        df_calc["MMPP Total (USD/kg)"] = df_calc[mmpp_components].sum(axis=1)
-    
-    # 2. Recalcular MO Total si están los componentes
-    mo_components = [
-        "MO Directa",
-        "MO Indirecta"
-    ]
-    
-    if all(col in df_calc.columns for col in mo_components):
-        df_calc["MO Total"] = df_calc[mo_components].sum(axis=1)
-    
-    # 3. Recalcular Materiales Total si están los componentes
-    materiales_components = [
-        "Materiales Cajas y Bolsas",
-        "Materiales Indirectos"
-    ]
-    
-    if all(col in df_calc.columns for col in materiales_components):
-        df_calc["Materiales Total"] = df_calc[materiales_components].sum(axis=1)
-    
-    # 4. Recalcular Gastos Totales (costos indirectos - NO incluye MMPP)
-    gastos_components = [
-        "Guarda MMPP",
-        "MO Directa",
-        "MO Indirecta",
-        "Materiales Cajas y Bolsas",
-        "Materiales Indirectos",
-        "Calidad",
-        "Mantencion",
-        "Servicios Generales",
-        "Utilities",
-        "Fletes",
-        "Comex",
-        "Guarda PT",
-        "Proceso Granel (USD/kg)"
-    ]
-    
-    # Solo incluir componentes que existan en el DataFrame
-    available_gastos = [col for col in gastos_components if col in df_calc.columns]
-    if available_gastos:
-        df_calc["Gastos Totales (USD/kg)"] = df_calc[available_gastos].sum(axis=1)
-    
-    # 5. Recalcular Costos Totales (MMPP + Gastos)
-    costos_components = []
-    
-    # Agregar MMPP Total si existe
-    if "MMPP (Fruta) (USD/kg)" in df_calc.columns:
-        costos_components.append("MMPP (Fruta) (USD/kg)")
-
-    # Agregar Gastos Totales si existe
-    if "Gastos Totales (USD/kg)" in df_calc.columns:
-        costos_components.append("Gastos Totales (USD/kg)")
-    
-    # Calcular costos totales
-    if costos_components:
-        df_calc["Costos Totales (USD/kg)"] = df_calc[costos_components].sum(axis=1)
-    
-    # 6. Recalcular EBITDA usando COSTOS TOTALES
-    if "PrecioVenta (USD/kg)" in df_calc.columns and "Costos Totales (USD/kg)" in df_calc.columns:
-        # Asegurar que los valores sean numéricos válidos
-        precio = pd.to_numeric(df_calc["PrecioVenta (USD/kg)"], errors='coerce').fillna(0.0)
-        costos = pd.to_numeric(df_calc["Costos Totales (USD/kg)"], errors='coerce').fillna(0.0)
-        
-        # Los costos ya están en valor absoluto (negativos), pero para el cálculo EBITDA los convertimos a positivos
-        costos_abs = abs(costos)
-        
-        df_calc["EBITDA (USD/kg)"] = precio - costos_abs
-        
-    return df_calc
 
 def recalculate_table(edited_df: pd.DataFrame, filtered_skus: list) -> pd.DataFrame:
     """
@@ -370,53 +252,30 @@ def validate_calculations(df: pd.DataFrame) -> dict:
     return validation
 # ===================== Función para Aplicar Ajustes Universales =====================
 def apply_universal_adjustments(df: pd.DataFrame, adjustments: dict) -> pd.DataFrame:
-    """
-    Aplica ajustes universales a un DataFrame y recalcula totales.
-    
-    Args:
-        df: DataFrame al que aplicar ajustes
-        adjustments: Diccionario con ajustes universales
-        
-    Returns:
-        DataFrame con ajustes aplicados y totales recalculados
-    """
     if not adjustments:
         return df
-    
+
     df_adjusted = df.copy()
-    
-    # Debug: mostrar información de entrada
-    st.write(f"🔍 **Debug apply_universal_adjustments**:")
-    st.write(f"  - DataFrame de entrada: {len(df)} filas")
-    st.write(f"  - Ajustes a aplicar: {list(adjustments.keys())}")
-    
-    # Aplicar cada ajuste universal
-    for cost_column, adjustment_info in adjustments.items():
-        if cost_column in df_adjusted.columns:
-            st.write(f"  - Aplicando ajuste a {cost_column}: {adjustment_info}")
-            
-            if adjustment_info["type"] == "percentage":
-                # Aplicar ajuste porcentual manteniendo el signo negativo de los costos
-                before_values = df_adjusted[cost_column].head(3).tolist()
-                df_adjusted[cost_column] = df_adjusted[cost_column] * (1 + adjustment_info["value"] / 100)
-                after_values = df_adjusted[cost_column].head(3).tolist()
-                st.write(f"    - Valores antes: {before_values}")
-                st.write(f"    - Valores después: {after_values}")
-            else:  # dollars
-                # Aplicar ajuste en dólares manteniendo el signo negativo de los costos
-                before_values = df_adjusted[cost_column].head(3).tolist()
-                df_adjusted[cost_column] = adjustment_info["value"]
-                after_values = df_adjusted[cost_column].head(3).tolist()
-                st.write(f"    - Valores antes: {before_values}")
-                st.write(f"    - Valores después: {after_values}")
+
+    for cost_column, adj in adjustments.items():
+        if cost_column not in df_adjusted.columns:
+            st.write(f"⚠️ Columna {cost_column} no encontrada")
+            continue
+
+        # Mascara de SKUs a los que sí aplicará el ajuste (si viene lista, respétala)
+        applied_skus = adj.get("applied_skus")
+        if applied_skus:
+            mask = df_adjusted["SKU"].astype(str).isin([str(s) for s in applied_skus])
         else:
-            st.write(f"  - ⚠️ Columna {cost_column} no encontrada en DataFrame")
-    
-    # Recalcular totales después de aplicar ajustes
-    st.write(f"  - Recalculando totales...")
+            mask = slice(None)  # todos
+
+        if adj["type"] == "percentage":
+            df_adjusted.loc[mask, cost_column] = df_adjusted.loc[mask, cost_column] * (1 + adj["value"] / 100)
+        else:  # "dollars" = nuevo valor absoluto
+            df_adjusted.loc[mask, cost_column] = adj["value"]
+
+    # Recalcular totales con la misma definición de build_detalle (ver B)
     df_adjusted = recalculate_totals(df_adjusted)
-    st.write(f"  - Final: {len(df_adjusted)} filas")
-    
     return df_adjusted
 
 # ===================== Configuración de la página =====================
@@ -825,7 +684,7 @@ with tab_sku:
                             min_value=0.0,
                             max_value=10.0,
                             value=0.0,
-                            step=0.01,
+                            step=0.001,
                             format="%.3f",
                             help="Nuevo valor en dólares por kg"
                         )
@@ -835,7 +694,7 @@ with tab_sku:
                             min_value=-10.0,
                             max_value=0.0,
                             value=0.0,
-                            step=0.01,
+                            step=0.001,
                             format="%.3f",
                             help="Nuevo valor en dólares por kg"
                         )
@@ -869,38 +728,22 @@ with tab_sku:
                     
                     # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
                     # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
-                    
-                    # Debug: mostrar información antes de aplicar ajustes
-                    st.write(f"🔍 **Debug**: Aplicando ajuste a {selected_cost}")
-                    st.write(f"🔍 **Debug**: df_base tiene {len(df_base)} filas")
-                    st.write(f"🔍 **Debug**: Tipo de ajuste: {adjustment_type}")
-                    st.write(f"🔍 **Debug**: Valor del ajuste: {adjustment_value}")
-                    
                     df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
-                    
-                    # Debug: mostrar información después de aplicar ajustes
-                    st.write(f"🔍 **Debug**: Después de apply_universal_adjustments: {len(df_current_updated)} filas")
                     
                     # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
                     if "Costos Totales (USD/kg)" in df_current_updated.columns:
                         before_filter = len(df_current_updated)
                         df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
                         after_filter = len(df_current_updated)
-                        st.write(f"🔍 **Debug**: Filtrado SKUs sin costos: {before_filter} → {after_filter} filas")
                     
                     # Recalcular totales en sim.df
                     df_current_updated = recalculate_totals(df_current_updated)
-                    
-                    # Debug: mostrar información final
-                    st.write(f"🔍 **Debug**: Final: {len(df_current_updated)} filas en sim.df")
-                    
+                                        
                     # Guardar en sim.df
                     st.session_state["sim.df"] = df_current_updated.copy()
                     
                     # Marcar como dirty
                     st.session_state["sim.dirty"] = True
-                    
-                    st.success(f"✅ Ajuste universal aplicado a {len(filtered_skus)} SKUs filtrados y guardado en sesión")
                     st.rerun()
         
         # Mostrar ajustes universales activos
@@ -957,8 +800,7 @@ with tab_sku:
                             st.session_state["sim.dirty"] = True
                             
                             # Eliminar el ajuste
-                            del st.session_state["sim.overrides_row"][cost_column]
-                            st.success(f"✅ Ajuste de {cost_column} eliminado - Valores originales restaurados")
+                            del st.session_state["sim.overrides_row"][cost_column]                            
                             st.rerun()
             
                             # Botón para limpiar todos los ajustes
@@ -1493,7 +1335,7 @@ with tab_sku:
     """)
 
 with tab_precio_frutas:
-    st.subheader("🍓 Simulador de Precios de Frutas")
+    st.header("🍓 Simulador de Precios de Frutas")
     
     # Verificar que los datos de frutas estén disponibles
     receta_df = st.session_state.get("fruta.receta_df")
@@ -1515,53 +1357,53 @@ with tab_precio_frutas:
     # Inicializar fruit_overrides si no existe
     st.session_state.setdefault("sim.fruit_overrides", {})
     
-    # ===================== Información General de Frutas =====================
-    st.header("📊 Información General de Frutas")
+    # # ===================== Información General de Frutas =====================
+    # st.header("📊 Información General de Frutas")
     
     # Obtener parámetros actuales (con overrides aplicados)
     from src.simulator_fruit import get_adjusted_fruit_params, get_fruit_summary_table
     
     params_actuales = get_adjusted_fruit_params(info_df, st.session_state["sim.fruit_overrides"])
     
-    # Mostrar resumen general
-    col1, col2, col3, col4 = st.columns(4)
+    # # Mostrar resumen general
+    # col1, col2, col3, col4 = st.columns(4)
     
-    with col1:
-        total_frutas = len(params_actuales)
-        st.metric(
-            "Total de Frutas",
-            total_frutas,
-            help="Número total de frutas disponibles"
-        )
+    # with col1:
+    #     total_frutas = len(params_actuales)
+    #     st.metric(
+    #         "Total de Frutas",
+    #         total_frutas,
+    #         help="Número total de frutas disponibles"
+    #     )
     
-    with col2:
-        precio_promedio = params_actuales["PrecioAjustadoUSD_kg"].mean()
-        st.metric(
-            "Precio Promedio",
-            f"${precio_promedio:.3f}",
-            help="Precio promedio por kg de todas las frutas"
-        )
+    # with col2:
+    #     precio_promedio = params_actuales["PrecioAjustadoUSD_kg"].mean()
+    #     st.metric(
+    #         "Precio Promedio",
+    #         f"${precio_promedio:.3f}",
+    #         help="Precio promedio por kg de todas las frutas"
+    #     )
     
-    with col3:
-        eficiencia_promedio = params_actuales["EficienciaAjustada"].mean()
-        st.metric(
-            "Eficiencia Promedio",
-            f"{eficiencia_promedio:.1%}",
-            help="Eficiencia promedio de todas las frutas"
-        )
+    # with col3:
+    #     eficiencia_promedio = params_actuales["EficienciaAjustada"].mean()
+    #     st.metric(
+    #         "Eficiencia Promedio",
+    #         f"{eficiencia_promedio:.1%}",
+    #         help="Eficiencia promedio de todas las frutas"
+    #     )
     
-    with col4:
-        # Contar frutas con overrides aplicados
-        frutas_con_overrides = len([ov for ov in st.session_state["sim.fruit_overrides"].values() if ov])
-        st.metric(
-            "Frutas Ajustadas",
-            frutas_con_overrides,
-            f"{frutas_con_overrides}/{total_frutas}",
-            help="Número de frutas con ajustes de precio aplicados"
-        )
+    # with col4:
+    #     # Contar frutas con overrides aplicados
+    #     frutas_con_overrides = len([ov for ov in st.session_state["sim.fruit_overrides"].values() if ov])
+    #     st.metric(
+    #         "Frutas Ajustadas",
+    #         frutas_con_overrides,
+    #         f"{frutas_con_overrides}/{total_frutas}",
+    #         help="Número de frutas con ajustes de precio aplicados"
+    #     )
     
     # ===================== Ajustes de Precio y Eficiencia =====================
-    st.header("⚙️ Ajustes de Precio y Eficiencia")
+    # st.subheader("⚙️ Ajustes de Precio y Eficiencia")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
@@ -1616,7 +1458,7 @@ with tab_precio_frutas:
                 nuevo_precio = st.number_input(
                     "Nuevo precio (USD/kg):",
                     min_value=0.0, max_value=100.0, value=float(precio_actual),
-                    step=0.01, format="%.3f",
+                    step=0.001, format="%.3f",
                     help="Nuevo valor en dólares por kg"
                 )
                 cambio_pct = ((nuevo_precio / precio_actual) - 1) * 100 if precio_actual else 0.0
@@ -1700,7 +1542,6 @@ with tab_precio_frutas:
                     receta_df,
                     info_df,
                     st.session_state["sim.fruit_overrides"],
-                    recalc_cb=recalculate_totals
                 )
                 
                 # Marcar como dirty
@@ -1753,7 +1594,6 @@ with tab_precio_frutas:
                             receta_df,
                             info_df,
                             st.session_state["sim.fruit_overrides"],
-                            recalc_cb=recalculate_totals
                         )
                         
                         # Marcar como dirty
@@ -1763,7 +1603,7 @@ with tab_precio_frutas:
                         st.rerun()
         
         # Botón para limpiar todos
-        if st.button("🧹 Limpiar Todos los Ajustes", type="secondary", width='stretch'):
+        if st.button("Limpiar Todos los Ajustes", type="secondary"):
             # Tomar snapshot antes de aplicar cambios masivos
             sim_snapshot_push()
             
@@ -1777,7 +1617,6 @@ with tab_precio_frutas:
                     receta_df,
                     info_df,
                     {},
-                    recalc_cb=recalculate_totals
                 )
                 
                 # Marcar como dirty
@@ -2495,9 +2334,9 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
         st.subheader("💰 Contribución por fruta (USD/kg)")
         st.dataframe(
-            det[["Name","Fruta_id","Contribucion Original (USD/kg)","Porcentaje Original","Contribucion Óptima (USD/kg)","Porcentaje Óptimo","Precio","Eficiencia"]]
+            det[["Name","Contribucion Original (USD/kg)","Porcentaje Original","Contribucion Óptima (USD/kg)","Porcentaje Óptimo"]]
                 .sort_values("Contribucion Óptima (USD/kg)", ascending=False)
-                .style.format({"Contribucion Original (USD/kg)":"{:.3f}","% Original":"{:.2f}%","Contribucion Óptima (USD/kg)":"{:.3f}","% Óptimo":"{:.2f}%","Precio":"{:.3f}","Eficiencia":"{:.3f}"}),
+                .style.format({"Contribucion Original (USD/kg)":"{:.3f}","Porcentaje Original":"{:.2f}%","Contribucion Óptima (USD/kg)":"{:.3f}","Porcentaje Óptimo":"{:.2f}%","Precio":"{:.3f}","Eficiencia":"{:.3f}"}),
             width='stretch', hide_index=True
         )
 

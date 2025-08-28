@@ -323,7 +323,7 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
 # -------- Mostrar resultados --------
 st.subheader("Márgenes actuales (unitarios)")
 base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Proceso Granel (USD/kg)",
-    "Almacenaje","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+    "Almacenaje MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
 view_base = df_filtrado[base_cols].copy()
 view_base.set_index("SKU-Cliente", inplace=True)
 view_base = view_base.sort_index()
@@ -331,7 +331,8 @@ styled_view_base = view_base.style
 config = columns_config(editable=False)
 
 # Aplicar negritas a las columnas de totales
-total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)"]
+total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+"Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
 existing_total_columns = [col for col in total_columns if col in view_base.columns]
 
 if existing_total_columns:
@@ -369,16 +370,16 @@ if expand:
     dim_candidatas = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
     dim_cols = [c for c in dim_candidatas if c in det.columns]
     orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
-                    "MO Indirecta","MO Total","Materiales Cajas y Bolsas","Materiales Indirectos","Materiales Total",
-                    "Laboratorio","Mantención","Servicios Generales","Utilities","Fletes Internos","Comex","Guarda PT","Almacenaje",
-                    "Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Gastos Totales (USD/kg)",
-                    "Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+                    "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
+                    "Laboratorio","Mantención","Servicios Generales","Utilities","Fletes Internos","Comex","Guarda PT",
+                    "Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Almacenaje MMPP",
+                    "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
     # Si falta, recalcúlala si están los componentes
     if "Gastos Totales (USD/kg)" not in det.columns:
         comp = [
             "Retail Costos Directos (USD/kg)",
             "Retail Costos Indirectos (USD/kg)",
-            "Almacenaje",
+            "Almacenaje MMPP",
             "Proceso Granel (USD/kg)",
         ]
         if all(c in det.columns for c in comp):

@@ -6,6 +6,7 @@ Calcula MMPP (Fruta) por SKU basado en recetas y precios de fruta.
 import numpy as np
 import pandas as pd
 from typing import Dict, Tuple, Optional
+from src.data_io import recalculate_totals
 
 
 def validate_fruit_inputs(receta_df: pd.DataFrame, info_df: pd.DataFrame) -> Tuple[bool, str]:
@@ -124,9 +125,8 @@ def compute_mmpp_fruta_per_sku(receta_df: pd.DataFrame, params_df: pd.DataFrame)
     merged = r.merge(params_df, on="Fruta_id", how="left")
     merged["contrib_pos"] = (
         pd.to_numeric(merged["PrecioAjustadoUSD_kg"], errors="coerce").fillna(0.0) *
-        merged["Porcentaje"] / 
-        pd.to_numeric(merged["EficienciaAjustada"], errors="coerce").fillna(1.0).replace(0, 0.01)
-    )
+        (merged["Porcentaje"] /100) / 
+        pd.to_numeric(merged["EficienciaAjustada"], errors="coerce").fillna(1.0).replace(0, 0.01))
     
     per_sku = merged.groupby("SKU", as_index=False)["contrib_pos"].sum()
     per_sku["MMPP (Fruta) (USD/kg)"] = -per_sku["contrib_pos"]
@@ -134,37 +134,28 @@ def compute_mmpp_fruta_per_sku(receta_df: pd.DataFrame, params_df: pd.DataFrame)
     return per_sku[["SKU", "MMPP (Fruta) (USD/kg)"]]
 
 
-def apply_fruit_overrides_to_sim(sim_df: pd.DataFrame,
-                                receta_df: pd.DataFrame,
-                                info_df: pd.DataFrame,
-                                fruit_overrides: Dict,
-                                recalc_cb) -> pd.DataFrame:
-    """
-    Recalcula MMPP (Fruta) (USD/kg) en sim_df usando receta + info + overrides de precio.
-    Luego invoca recalc_cb(sim_df) para refrescar totales (EBITDA, etc).
-    
-    Args:
-        sim_df: DataFrame de simulación
-        receta_df: DataFrame de recetas
-        info_df: DataFrame de información de fruta
-        fruit_overrides: Diccionario de overrides
-        recalc_cb: Callback para recalcular totales
-        
-    Returns:
-        DataFrame de simulación actualizado
-    """
-    params = get_adjusted_fruit_params(info_df, fruit_overrides)
-    mmpp = compute_mmpp_fruta_per_sku(receta_df, params)
-    mmpp["SKU"] = mmpp["SKU"].astype(int)
-    
-    out = sim_df.copy()
-    out = out.drop(columns=["MMPP (Fruta) (USD/kg)"], errors="ignore")
-    out = out.merge(mmpp, on="SKU", how="left")
-    out["MMPP (Fruta) (USD/kg)"] = pd.to_numeric(out["MMPP (Fruta) (USD/kg)"], errors="coerce").fillna(0.0)
-    
-    # Recalcular totales
-    out = recalc_cb(out)
-    return out
+def apply_fruit_overrides_to_sim(df_sim, receta_df, info_df, fruit_overrides):
+    df_out = df_sim.copy()
+
+    # 1) Construir params de fruta con overrides ya aplicados (precio/eficiencia)
+    params = get_adjusted_fruit_params(info_df, fruit_overrides)  # debe devolver PrecioAjustadoUSD_kg y EficienciaAjustada
+
+    # 2) Recalcular MMPP (Fruta) y Almacenaje MMPP por SKU con esos params
+    mmpp_df = compute_mmpp_fruta_per_sku(receta_df, params)  # devuelve columnas: ["SKU","MMPP (Fruta) (USD/kg)","Almacenaje MMPP"]
+
+    # 3) Merge SIN crear sufijos… actualizando columnas en su nombre canónico
+    for col in ["MMPP (Fruta) (USD/kg)"]:
+        if col in mmpp_df.columns:
+            # aseguramos signo: costos siempre NEGATIVOS
+            mmpp_df[col] = -mmpp_df[col].abs()
+
+            # actualizamos por map en vez de merge con sufijo
+            m = mmpp_df.set_index("SKU")[col]
+            df_out[col] = df_out["SKU"].astype(str).map(m.reindex(m.index.astype(str))).fillna(df_out.get(col))
+
+    # 4) Recalcular totales con la MISMA definición que usas en build_detalle()
+    df_out = recalculate_totals(df_out)
+    return df_out
 
 
 def get_fruit_summary_table(info_df: pd.DataFrame, 
