@@ -39,86 +39,87 @@ ensure_session_state()
 st.title(ST_TITLE)
 
 # ===================== Carga de datos (con persistencia) =====================
-with st.sidebar:
-    st.header("1) Subir archivo maestro (.xlsx)")
-    
-    # Verificar si ya hay datos en la sesión
-    if "hist.uploaded_file" in st.session_state and st.session_state["hist.uploaded_file"] is not None:
-        st.write(f"📁 Archivo: {st.session_state['hist.uploaded_file'].name}")
-        
-        if st.button("🔄 Recargar archivo"):
-            reset_keys_by_type = {
-                "none": [
-                    "hist.df",
-                    "hist.df_filtered",
-                    "hist.last_loaded_at",
-                    "hist.skus_excluidos",
-                    "hist.uploaded_file",
-                    "hist.file_bytes",
-                    "sim.df",
-                    "sim.df_filtered",
-                    "sim.override_upload",
-                    "sim.last_saved_path",
-                    "sim.last_saved_at",
-                    "fruta.receta_df",
-                    "fruta.info_df",
-                    "export.last_saved_path",
-                ],
-                "dict": [
-                    "hist.filters",
-                    "sim.filters",
-                    "sim.overrides_row",
-                    "sim.fruit_overrides",
-                ],
-                "list": [
-                    "sim.undo_stack",
-                    "sim.redo_stack",
-                    "ui.selected_rows",
-                    "ui.messages",
-                ],
-                "other": {
-                    "sim.override_pct_cost": 0.0,
-                    "sim.dirty": False,
-                    "ui.debug": False,
-                    "ui.active_tab": "Histórico",
-                    "ui.top_n": 10,
+with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.subheader("1) Subir archivo maestro (.xlsx)")
+        # Verificar si ya hay datos en la sesión
+        if "hist.uploaded_file" in st.session_state and st.session_state["hist.uploaded_file"] is not None:
+            st.write(f"📁 Archivo: {st.session_state['hist.uploaded_file'].name}")
+            
+            if st.button("🔄 Recargar archivo"):
+                reset_keys_by_type = {
+                    "none": [
+                        "hist.df",
+                        "hist.df_filtered",
+                        "hist.last_loaded_at",
+                        "hist.skus_excluidos",
+                        "hist.uploaded_file",
+                        "hist.file_bytes",
+                        "sim.df",
+                        "sim.df_filtered",
+                        "sim.override_upload",
+                        "sim.last_saved_path",
+                        "sim.last_saved_at",
+                        "fruta.receta_df",
+                        "fruta.info_df",
+                        "export.last_saved_path",
+                    ],
+                    "dict": [
+                        "hist.filters",
+                        "sim.filters",
+                        "sim.overrides_row",
+                        "sim.fruit_overrides",
+                    ],
+                    "list": [
+                        "sim.undo_stack",
+                        "sim.redo_stack",
+                        "ui.selected_rows",
+                        "ui.messages",
+                    ],
+                    "other": {
+                        "sim.override_pct_cost": 0.0,
+                        "sim.dirty": False,
+                        "ui.debug": False,
+                        "ui.active_tab": "Histórico",
+                        "ui.top_n": 10,
+                    }
                 }
-            }
-            # Reinicia a None
-            for key in reset_keys_by_type.get("none", []):
-                st.session_state[key] = None
+                # Reinicia a None
+                for key in reset_keys_by_type.get("none", []):
+                    st.session_state[key] = None
 
-            # Reinicia a diccionarios vacíos
-            for key in reset_keys_by_type.get("dict", []):
-                st.session_state[key] = {}
+                # Reinicia a diccionarios vacíos
+                for key in reset_keys_by_type.get("dict", []):
+                    st.session_state[key] = {}
 
-            # Reinicia a listas vacías
-            for key in reset_keys_by_type.get("list", []):
-                st.session_state[key] = []
-                
-            # Reinicia a otros valores específicos
-            for key, value in reset_keys_by_type.get("other", {}).items():
-                st.session_state[key] = value
-            st.rerun()
-    else:
-        up = st.file_uploader("Selecciona tu Excel con hojas: " + ", ".join(REQ_SHEETS.keys()),
-                                type=["xlsx"], accept_multiple_files=False, key="file_uploader_home")
-        
-        if up is not None:
-            # Guardar archivo en sesión
-            st.session_state["hist.uploaded_file"] = up
-            st.session_state["hist.file_bytes"] = up.read()
-            st.rerun()
+                # Reinicia a listas vacías
+                for key in reset_keys_by_type.get("list", []):
+                    st.session_state[key] = []
+                    
+                # Reinicia a otros valores específicos
+                for key, value in reset_keys_by_type.get("other", {}).items():
+                    st.session_state[key] = value
+                st.rerun()
+        else:
+            up = st.file_uploader("Selecciona tu Excel con hojas: " + ", ".join(REQ_SHEETS.keys()),
+                                    type=["xlsx"], accept_multiple_files=False, key="file_uploader_home")
+            
+            if up is not None:
+                # Guardar archivo en sesión
+                st.session_state["hist.uploaded_file"] = up
+                st.session_state["hist.file_bytes"] = up.read()
+                st.rerun()
+    with col2:
+        st.subheader("2) Parámetros de precio vigente")
+        modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
+        ref_ym = None
+        if modo == "to_date":
+            # Selecciona una fecha (Año-Mes) para construir YYYYMM
+            ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1), key="ref_date_home")
+            ref_ym = ref_date.year*100 + ref_date.month
     
     st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
-
-    st.header("2) Parámetros de precio vigente")
-    modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
-    ref_ym = None
-    if modo == "to_date":
-        # Selecciona una fecha (Año-Mes) para construir YYYYMM
-        ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1), key="ref_date_home")
-        ref_ym = ref_date.year*100 + ref_date.month
 
     st.markdown("---")
     st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
@@ -174,85 +175,79 @@ if 'detalle' not in locals() or detalle is None:
     st.info("💡 Por favor, sube tu archivo Excel primero")
     st.stop()
 
-# -------- Filtros sin orden (cascada dinámica) --------
-st.subheader("Filtros")
+# ===================== Sidebar - Filtros Dinámicos (igual a Simulación) =====================
+st.sidebar.header("🔍 Filtros Dinámicos")
 
-# Posibles nombres (alias) por campo lógico
+# Base de Históricos
+df_base_hist = st.session_state["hist.df"].copy()
+
+# Aliases igual que en Simulación (puedes ampliarlos si quieres)
 FIELD_ALIASES = {
-    "Marca": ["Marca"],
-    "Cliente": ["Cliente", "Cliente ID", "Customer", "ClienteID"],
+    "Marca": ["Marca", "Brand"],
+    "Cliente": ["Cliente", "Customer", "Cliente ID", "ClienteID"],
     "Especie": ["Especie", "Species"],
     "Condicion": ["Condicion", "Condición", "Condition"],
-    "SKU": ["SKU"]
+    "SKU": ["SKU"],
 }
 
-# Resolver alias -> columna real presente en detalle
 def resolve_columns(df, aliases_map):
     resolved = {}
     cols_lower = {c.lower(): c for c in df.columns}
     for logical, options in aliases_map.items():
-        found = None
         for opt in options:
             c = cols_lower.get(opt.lower())
             if c is not None:
-                found = c
+                resolved[logical] = c
                 break
-        if found:
-            resolved[logical] = found
     return resolved
 
-RESOLVED = resolve_columns(detalle, FIELD_ALIASES)
-
-# Lista final de filtros (solo los que existen en la data)
-FILTER_FIELDS = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED]
+RESOLVED_HIST = resolve_columns(df_base_hist, FIELD_ALIASES)
+FILTER_FIELDS_HIST = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED_HIST]
 
 def _norm_series(s: pd.Series):
     return s.fillna("(Vacío)").astype(str).str.strip()
 
-def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
+def _apply_filters_hist(df: pd.DataFrame, selections: dict, skip_key=None):
     out = df.copy()
     for logical, sel in selections.items():
         if logical == skip_key or not sel:
             continue
-        real_col = RESOLVED[logical]
-        # Mapea el placeholder "(Vacío)" a vacío real
+        real_col = RESOLVED_HIST[logical]
         valid = [x if x != "(Vacío)" else "" for x in sel]
         out = out[out[real_col].fillna("").astype(str).str.strip().isin(valid)]
     return out
 
-def _current_selections():
+def _current_selections_hist():
     selections = {}
-    for logical in FILTER_FIELDS:
-        selections[logical] = st.session_state.get(f"ms_{logical}", [])
+    for logical in FILTER_FIELDS_HIST:
+        selections[logical] = st.session_state.get(f"ms_hist_{logical}", [])
     return selections
 
-# Guardar filtros en hist.filters
-st.session_state["hist.filters"] = _current_selections()
+# Guarda filtros en hist.filters
+st.session_state["hist.filters"] = _current_selections_hist()
 
-cols = st.columns(len(FILTER_FIELDS) if FILTER_FIELDS else 1)
-
-# Multiselects con opciones dependientes del resto, en cualquier orden
-SELECTIONS = _current_selections()
-for i, logical in enumerate(FILTER_FIELDS):
-    with cols[i]:
-        real_col = RESOLVED[logical]
-        df_except = _apply_filters(detalle, SELECTIONS, skip_key=logical)
+# Render de filtros en filas (sidebar)
+if FILTER_FIELDS_HIST:
+    SELECTIONS_HIST = _current_selections_hist()
+    for logical in FILTER_FIELDS_HIST:
+        real_col = RESOLVED_HIST[logical]
+        df_except = _apply_filters_hist(df_base_hist, SELECTIONS_HIST, skip_key=logical)
         opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
-        current = [x for x in SELECTIONS.get(logical, []) if x in opts]
-        st.multiselect(logical, options=opts, default=current, key=f"ms_{logical}")
+        current = [x for x in SELECTIONS_HIST.get(logical, []) if x in opts]
+        st.sidebar.multiselect(logical, options=opts, default=current, key=f"ms_hist_{logical}")
+else:
+    st.sidebar.info("No hay campos disponibles para filtrar")
 
-# Releer selecciones ya actualizadas por los widgets y aplicar
-SELECTIONS = _current_selections()
-df_filtrado = _apply_filters(detalle, SELECTIONS).copy()
+# Releer selecciones actualizadas y aplicar
+SELECTIONS_HIST = _current_selections_hist()
+df_filtrado = _apply_filters_hist(df_base_hist, SELECTIONS_HIST).copy()
 
-# Orden por SKU-Cliente si existe y sin índice
-sku_cliente_col = "SKU-Cliente"
-if sku_cliente_col in df_filtrado.columns:
-    df_filtrado = df_filtrado.sort_values([sku_cliente_col]).reset_index(drop=True)
+# Orden y persistencia del filtrado
+if "SKU-Cliente" in df_filtrado.columns:
+    df_filtrado = df_filtrado.sort_values(["SKU-Cliente"]).reset_index(drop=True)
 else:
     df_filtrado = df_filtrado.reset_index(drop=True)
 
-# Guardar resultado filtrado en hist.df_filtered
 st.session_state["hist.df_filtered"] = df_filtrado.copy()
 
 # -------- Filtrar subproductos (SKUs con costos totales = 0) --------
@@ -268,6 +263,7 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
     skus_excluidos = pd.concat([subproductos, sin_ventas])
     skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first").set_index("SKU-Cliente")
     df_filtrado = df_filtrado[(df_filtrado["Costos Totales (USD/kg)"] != 0) & (df_filtrado["Comex"] != 0)].copy()
+    df_filtrado["EBITDA Pct"] = df_filtrado["EBITDA Pct"] / 100
     
     filtered_count = len(df_filtrado)
     skus_excluidos_count = len(skus_excluidos)
@@ -324,7 +320,7 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
 st.subheader("Márgenes actuales (unitarios)")
 base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Proceso Granel (USD/kg)",
     "Almacenaje MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
-view_base = df_filtrado[base_cols].copy()
+view_base = detalle[base_cols].copy()
 view_base.set_index("SKU-Cliente", inplace=True)
 view_base = view_base.sort_index()
 styled_view_base = view_base.style
@@ -437,7 +433,7 @@ if expand:
     st.dataframe(
         view_base_det, 
         use_container_width=True, 
-        height=700,
+        height="auto",
         column_config=config,
         hide_index=True
     )
@@ -488,45 +484,45 @@ with col2:
 # with col4:
 #     st.metric("Margen Promedio", f"{margen_promedio:.1%}")
 
-# Resumen por marca si existe
-if "Marca" in df_filtrado.columns:
-    st.subheader("📈 EBITDA por Marca")
+# # Resumen por marca si existe
+# if "Marca" in df_filtrado.columns:
+#     st.subheader("📈 EBITDA por Marca")
     
-    marca_summary = df_filtrado.groupby("Marca").agg({
-        "EBITDA (USD/kg)": ["mean", "count"],
-        "EBITDA Pct": "mean"
-    }).round(3)
-    marca_summary.columns = ["EBITDA Promedio (USD/kg)", "Cantidad SKUs", "EBITDA % Promedio"]
+#     marca_summary = df_filtrado.groupby("Marca").agg({
+#         "EBITDA (USD/kg)": ["mean", "count"],
+#         "EBITDA Pct": "mean"
+#     }).round(3)
+#     marca_summary.columns = ["EBITDA Promedio (USD/kg)", "Cantidad SKUs", "EBITDA % Promedio"]
     
-    # Formato correcto para porcentajes
-    st.dataframe(
-        marca_summary.style.format({
-            "EBITDA Promedio (USD/kg)": "{:.3f}",
-            "Cantidad SKUs": "{:.0f}",
-            "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
-        }),
-        use_container_width=True
-    )
+#     # Formato correcto para porcentajes
+#     st.dataframe(
+#         marca_summary.style.format({
+#             "EBITDA Promedio (USD/kg)": "{:.3f}",
+#             "Cantidad SKUs": "{:.0f}",
+#             "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
+#         }),
+#         use_container_width=True
+#     )
 
-# Resumen por especie si existe
-if "Especie" in df_filtrado.columns:
-    st.subheader("🌱 EBITDA por Especie")
+# # Resumen por especie si existe
+# if "Especie" in df_filtrado.columns:
+#     st.subheader("🌱 EBITDA por Especie")
     
-    especie_summary = df_filtrado.groupby("Especie").agg({
-        "EBITDA (USD/kg)": ["mean", "count"],
-        "EBITDA Pct": "mean"
-    }).round(3)
-    especie_summary.columns = ["EBITDA Promedio (USD/kg)", "Cantidad SKUs", "EBITDA % Promedio"]
+#     especie_summary = df_filtrado.groupby("Especie").agg({
+#         "EBITDA (USD/kg)": ["mean", "count"],
+#         "EBITDA Pct": "mean"
+#     }).round(3)
+#     especie_summary.columns = ["EBITDA Promedio (USD/kg)", "Cantidad SKUs", "EBITDA % Promedio"]
     
-    # Formato correcto para porcentajes
-    st.dataframe(
-        especie_summary.style.format({
-            "EBITDA Promedio (USD/kg)": "{:.3f}",
-            "Cantidad SKUs": "{:.0f}",
-            "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
-        }),
-        use_container_width=True
-    )
+#     # Formato correcto para porcentajes
+#     st.dataframe(
+#         especie_summary.style.format({
+#             "EBITDA Promedio (USD/kg)": "{:.3f}",
+#             "Cantidad SKUs": "{:.0f}",
+#             "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
+#         }),
+#         use_container_width=True
+#     )
 
 # -------- Información de navegación --------
 st.markdown("---")

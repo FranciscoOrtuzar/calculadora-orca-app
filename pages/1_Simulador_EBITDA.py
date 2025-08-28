@@ -1427,11 +1427,11 @@ with tab_precio_frutas:
         eficiencia_actual = fruta_info["Eficiencia"]
         nombre_fruta = fruta_info.get("Name", fruta_id)
         
-        col11, col12 = st.columns(2)
-        with col11:
-            st.info(f"**Precio actual:** ${precio_actual:.3f}/kg")
-        with col12:
-            st.info(f"**Eficiencia actual:** {eficiencia_actual:.1%}")
+        # col11, col12 = st.columns(2)
+        # with col11:
+        st.info(f"**Precio actual:** ${precio_actual:.3f}/kg")
+        # with col12:
+        #     st.info(f"**Eficiencia actual:** {eficiencia_actual:.1%}")
 
     with col2:
         st.subheader("Ajuste de Precio y Eficiencia")
@@ -1473,8 +1473,6 @@ with tab_precio_frutas:
                 help="Eficiencia debe estar entre 0.01 y 1.0"
             )
             cambio_eficiencia = ((nueva_eficiencia / eficiencia_actual) - 1) * 100 if eficiencia_actual else 0.0
-            st.info(f"**Cambio en eficiencia:** {cambio_eficiencia:+.1f}%")
-
             override_data = {"efficiency": {"type": "absolute", "value": nueva_eficiencia}}
 
         # --- SELECTORES ABAJO (actualizan estado y relanzan) ---
@@ -1625,540 +1623,145 @@ with tab_precio_frutas:
                 st.success("✅ Todos los ajustes de frutas eliminados")
                 st.rerun()
     
-    # ===================== Tabla de Frutas =====================
-    st.subheader("🍎 Tabla de Frutas Disponibles")
-    
-    # Crear tabla con información detallada
-    tabla_frutas = params_actuales.copy()
-    
-    # Agregar columnas calculadas
-    tabla_frutas["Cambio_Precio_%"] = (
-        (tabla_frutas["PrecioAjustadoUSD_kg"] / tabla_frutas["PrecioBaseUSD_kg"] - 1) * 100
-    )
-    tabla_frutas["Cambio_Precio_%"] = tabla_frutas["Cambio_Precio_%"].round(2)
-    
-    # Agregar información de SKUs afectados
-    skus_por_fruta = receta_df.groupby("Fruta_id")["SKU"].nunique().reset_index()
-    tabla_frutas = tabla_frutas.merge(skus_por_fruta, on="Fruta_id", how="left")
-    tabla_frutas = tabla_frutas.rename(columns={"SKU": "SKUs_Afectados", "FrutaNombre": "Name"})
-    tabla_frutas["SKUs_Afectados"] = tabla_frutas["SKUs_Afectados"].fillna(0)
-    
-    
-    # Ordenar por número de SKUs afectados
-    tabla_frutas = tabla_frutas.sort_values("SKUs_Afectados", ascending=False)
-    
-    # Mostrar tabla con formato
-    columnas_mostrar = [
-        "Name", "PrecioBaseUSD_kg", "PrecioAjustadoUSD_kg", 
-        "Cambio_Precio_%", "EficienciaBase", "EficienciaAjustada", "SKUs_Afectados"
+    # ===================== Frutas: Resumen Único + Gráficos Útiles =====================
+    st.header("🍎 Resumen de Frutas")
+
+    # 1) Tabla base de resumen (solo usamos SKUsAfectados; ignoramos contribución)
+    tabla_resumen = get_fruit_summary_table(
+        info_df, receta_df, st.session_state.get("sim.fruit_overrides", {}), skus_visibles=None
+    ).rename(columns={"FrutaNombre": "Name"})
+
+    # 2) Enriquecer con cambio de precio (%)
+    base = params_actuales.rename(columns={"FrutaNombre":"Name"})[
+        ["Fruta_id","Name","PrecioBaseUSD_kg","PrecioAjustadoUSD_kg","EficienciaBase","EficienciaAjustada"]
     ]
-    
+    frutas = base.merge(
+        tabla_resumen[["Fruta_id","SKUsAfectados"]],
+        on="Fruta_id",
+        how="left"
+    )
+
+    frutas["SKUsAfectados"] = frutas["SKUsAfectados"].fillna(0)
+    frutas["Cambio_Precio_%"] = np.where(
+        frutas["PrecioBaseUSD_kg"] > 0,
+        (frutas["PrecioAjustadoUSD_kg"] / frutas["PrecioBaseUSD_kg"] - 1) * 100,
+        0.0
+    )
+
+    # 3) KPIs rápidos (sin contribución)
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric("Frutas", len(frutas))
+    with k2:
+        # total SKUs únicos: suma por fruta puede contar un SKU más de una vez si usa varias frutas.
+        # mantenemos el nombre “(únicos)” pero aclaración: es “por fruta”.
+        st.metric("SKUs Afectados (por fruta)", int(frutas["SKUsAfectados"].sum()))
+    with k3:
+        st.metric("ΔPrecio Promedio", f"{frutas['Cambio_Precio_%'].mean():+.1f}%")
+    with k4:
+        if not frutas.empty:
+            top_idx = frutas["SKUsAfectados"].astype(float).idxmax()
+            st.metric("Fruta más usada", frutas.loc[top_idx, "Name"])
+        else:
+            st.metric("Fruta más usada", "—")
+
+    # 4) Tabla única (ordenada por SKUs afectados desc, precio desc)
+    cols_tabla = [
+        "Name", "PrecioBaseUSD_kg", "PrecioAjustadoUSD_kg", "Cambio_Precio_%", "SKUsAfectados"
+    ]
+    frutas_view = (frutas
+        .sort_values(["SKUsAfectados","PrecioAjustadoUSD_kg"], ascending=[False, False])
+        [cols_tabla]
+    )
+
     st.dataframe(
-        tabla_frutas[columnas_mostrar].style.format({
+        frutas_view.style.format({
             "PrecioBaseUSD_kg": "{:.3f}",
             "PrecioAjustadoUSD_kg": "{:.3f}",
             "Cambio_Precio_%": "{:+.1f}%",
             "EficienciaBase": "{:.1%}",
             "EficienciaAjustada": "{:.1%}",
-            "SKUs_Afectados": "{:.0f}"
-        }),
-        width='stretch',
-        hide_index=True
-    )
-    
-    # Expander con estadísticas adicionales
-    with st.expander("📊 Estadísticas Adicionales de Frutas", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🏆 Top 5 Frutas por SKUs Afectados")
-            top_frutas_skus = tabla_frutas.nlargest(5, "SKUs_Afectados")
-            for _, fruta in top_frutas_skus.iterrows():
-                st.write(f"• **{fruta['Name']}**: {fruta['SKUs_Afectados']:.0f} SKUs")
-            
-            st.subheader("💰 Top 5 Frutas por Precio")
-            top_frutas_precio = tabla_frutas.nlargest(5, "PrecioAjustadoUSD_kg")
-            for _, fruta in top_frutas_precio.iterrows():
-                st.write(f"• **{fruta['Name']}**: ${fruta['PrecioAjustadoUSD_kg']:.3f}/kg")
-        
-        with col2:
-            st.subheader("📈 Distribución de Precios")
-            precio_min = tabla_frutas["PrecioAjustadoUSD_kg"].min()
-            precio_max = tabla_frutas["PrecioAjustadoUSD_kg"].max()
-            precio_std = tabla_frutas["PrecioAjustadoUSD_kg"].std()
-            
-            st.write(f"• **Rango**: ${precio_min:.3f} - ${precio_max:.3f}/kg")
-            st.write(f"• **Desviación estándar**: ${precio_std:.3f}/kg")
-            
-            st.subheader("⚡ Distribución de Eficiencias")
-            efic_min = tabla_frutas["EficienciaAjustada"].min()
-            efic_max = tabla_frutas["EficienciaAjustada"].max()
-            efic_std = tabla_frutas["EficienciaAjustada"].std()
-            
-            st.write(f"• **Rango**: {efic_min:.1%} - {efic_max:.1%}")
-            st.write(f"• **Desviación estándar**: {efic_std:.1%}")
-        
-        # Gráfico de distribución de precios
-        st.subheader("📊 Distribución de Precios por Fruta")
-        try:
-            import plotly.express as px
-            
-            fig_precios = px.histogram(
-                tabla_frutas,
-                x="PrecioAjustadoUSD_kg",
-                nbins=10,
-                title="Distribución de Precios de Frutas",
-                labels={"PrecioAjustadoUSD_kg": "Precio (USD/kg)", "count": "Número de Frutas"}
-            )
-            
-            fig_precios.update_layout(
-                showlegend=False,
-                bargap=0.1
-            )
-            
-            st.plotly_chart(fig_precios, width='stretch')
-            
-        except ImportError:
-            st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
-
-    # ===================== Impacto en Tiempo Real =====================
-    if st.session_state["sim.fruit_overrides"]:
-        st.subheader("📊 Impacto en Tiempo Real")
-        
-        with st.expander("🔍 Detalle del Impacto de los Ajustes", expanded=False):
-            # Calcular impacto total
-            impacto_total = 0
-            frutas_ajustadas = []
-            
-            for fid, override in st.session_state["sim.fruit_overrides"].items():
-                if "price" in override:
-                    # Obtener información de la fruta
-                    fruta_info = info_df[info_df["Fruta_id"] == fid].iloc[0]
-                    precio_base = fruta_info["Precio"]
-                    nombre_fruta = fruta_info.get("Name", fid)
-                    
-                    # Calcular nuevo precio
-                    if override["price"]["type"] == "percentage":
-                        nuevo_precio = precio_base * (1 + override["price"]["value"] / 100)
-                        cambio_pct = override["price"]["value"]
-                    else:
-                        nuevo_precio = override["price"]["value"]
-                        cambio_pct = ((nuevo_precio / precio_base) - 1) * 100
-                    
-                    # Calcular impacto en SKUs
-                    skus_afectados = receta_df[receta_df["Fruta_id"] == fid]["SKU"].nunique()
-                    
-                    # Calcular contribución total de esta fruta
-                    receta_fruta = receta_df[receta_df["Fruta_id"] == fid]
-                    contrib_base = (precio_base * receta_fruta["Porcentaje"] / fruta_info["Eficiencia"]).sum()
-                    contrib_nueva = (nuevo_precio * receta_fruta["Porcentaje"] / fruta_info["Eficiencia"]).sum()
-                    impacto_fruta = contrib_nueva - contrib_base
-                    
-                    impacto_total += impacto_fruta
-                    
-                    frutas_ajustadas.append({
-                        "Fruta": nombre_fruta,
-                        "Precio_Base": precio_base,
-                        "Precio_Nuevo": nuevo_precio,
-                        "Cambio_%": cambio_pct,
-                        "SKUs_Afectados": skus_afectados,
-                        "Impacto_USD": impacto_fruta
-                    })
-            
-            # Mostrar resumen del impacto
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric(
-                    "Frutas Ajustadas",
-                    len(frutas_ajustadas),
-                    help="Número total de frutas con ajustes aplicados"
-                )
-            
-            with col2:
-                st.metric(
-                    "SKUs Total Afectados",
-                    sum([f["SKUs_Afectados"] for f in frutas_ajustadas]),
-                    help="Total de SKUs afectados por los ajustes"
-                )
-            
-            with col3:
-                st.metric(
-                    "Impacto Total",
-                    f"${impacto_total:.3f}",
-                    help="Impacto total en USD de todos los ajustes"
-                )
-            
-            # Tabla detallada de impacto
-            if frutas_ajustadas:
-                st.subheader("📋 Detalle del Impacto por Fruta")
-                
-                df_impacto = pd.DataFrame(frutas_ajustadas)
-                st.dataframe(
-                    df_impacto.style.format({
-                        "Precio_Base": "{:.3f}",
-                        "Precio_Nuevo": "{:.3f}",
-                        "Cambio_%": "{:+.1f}%",
-                        "SKUs_Afectados": "{:.0f}",
-                        "Impacto_USD": "{:.3f}"
-                    }),
-                    width='stretch',
-                    hide_index=True
-                )
-                
-                # Gráfico de impacto por fruta
-                st.subheader("📊 Impacto por Fruta")
-                try:
-                    import plotly.express as px
-                    
-                    fig_impacto = px.bar(
-                        df_impacto,
-                        x="Fruta",
-                        y="Impacto_USD",
-                        title="Impacto en USD por Fruta",
-                        color="Impacto_USD",
-                        color_continuous_scale="RdYlGn"
-                    )
-                    
-                    fig_impacto.update_layout(
-                        xaxis_title="Fruta",
-                        yaxis_title="Impacto (USD)",
-                        showlegend=False
-                    )
-                    
-                    st.plotly_chart(fig_impacto, width='stretch')
-                    
-                except ImportError:
-                    st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
-    
-    # ===================== Análisis de Impacto =====================
-    st.header("📈 Análisis de Impacto")
-    
-    # Resumen por fruta (SKUs visibles)
-    st.subheader("🍎 Resumen por Fruta (SKUs Visibles)")
-    
-    # Obtener SKUs visibles (usar sim.df_filtered si existe, sino sim.df)
-    if "sim.df_filtered" in st.session_state and st.session_state["sim.df_filtered"] is not None:
-        skus_visibles = st.session_state["sim.df_filtered"]["SKU"].tolist()
-    elif "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
-        skus_visibles = st.session_state["sim.df"]["SKU"].tolist()
-    else:
-        skus_visibles = None
-    
-    # Generar tabla de resumen
-    tabla_resumen = get_fruit_summary_table(info_df, receta_df, st.session_state["sim.fruit_overrides"], skus_visibles)
-    tabla_resumen = tabla_resumen.rename(columns={"FrutaNombre": "Name"})
-    
-    # Mostrar tabla con formato
-    st.dataframe(
-        tabla_resumen.style.format({
-            "PrecioBaseUSD_kg": "{:.3f}",
-            "PrecioAjustadoUSD_kg": "{:.3f}",
-            "EficienciaBase": "{:.3f}",
-            "EficienciaAjustada": "{:.3f}",
             "SKUsAfectados": "{:.0f}",
-            "Contrib_total_USDkg": "{:.3f}"
         }),
-        width='stretch',
-        hide_index=True
+        use_container_width=True, hide_index=True
     )
-    
-    # Gráfico de contribución por fruta
-    st.subheader("📊 Contribución por Fruta")
-    
+
+    # 5) Expander: Insights rápidos de frutas (sin contribución)
+    with st.expander("📊 Insights rápidos de frutas", expanded=False):
+        f = frutas.copy()
+        f["SKUsAfectados"] = f["SKUsAfectados"].fillna(0)
+
+        colL, colR = st.columns(2)
+
+        # ---------- Columna izquierda ----------
+        with colL:
+            st.subheader("🏆 Top 5 por SKUs únicos")
+            top_skus = f.sort_values("SKUsAfectados", ascending=False).head(5)
+            if top_skus.empty:
+                st.write("No hay datos.")
+            else:
+                for _, r in top_skus.iterrows():
+                    st.write(f"• **{r['Name']}** — {int(r['SKUsAfectados'])} SKUs")
+
+            st.subheader("📈 Stats de precios (USD/kg)")
+            p = f["PrecioAjustadoUSD_kg"].dropna()
+            if not p.empty:
+                st.write(
+                    f"• **Rango**: ${p.min():.3f} — ${p.max():.3f}/kg\n\n"
+                    f"• **p25/mediana/p75**: ${p.quantile(0.25):.3f} / ${p.median():.3f} / ${p.quantile(0.75):.3f}/kg\n\n"
+                    f"• **Desv. estándar (σ)**: ${p.std(ddof=1):.3f}/kg"
+                )
+        # ---------- Columna derecha ----------
+        with colR:
+            st.subheader("💰 Top 5 precios más altos")
+            top_precio = f.sort_values("PrecioAjustadoUSD_kg", ascending=False).head(5)
+            for _, r in top_precio.iterrows():
+                st.write(f"• **{r['Name']}** — ${r['PrecioAjustadoUSD_kg']:.3f}/kg")
+
+            st.subheader("🧊 Top 5 precios más bajos (>0)")
+            low_precio = f[f["PrecioAjustadoUSD_kg"] > 0].sort_values("PrecioAjustadoUSD_kg", ascending=True).head(5)
+            for _, r in low_precio.iterrows():
+                st.write(f"• **{r['Name']}** — ${r['PrecioAjustadoUSD_kg']:.3f}/kg")
+
+
+    # 6) Gráfico A: Top N por SKUs afectados (barra)
     try:
         import plotly.express as px
-        
-        # Preparar datos para el gráfico
-        df_grafico = tabla_resumen.copy()
-        df_grafico["Contrib_abs"] = df_grafico["Contrib_total_USDkg"].abs()
-        
-        fig_contrib = px.bar(
-            df_grafico,
+        topN = st.slider("Top N para gráfico de SKUs afectados", 5, min(25, len(frutas_view)), 10)
+        g = frutas_view.head(topN).copy()
+
+        fig_bar = px.bar(
+            g,
             x="Name",
-            y="Contrib_abs",
-            title="Contribución Total por Fruta (USD/kg)",
-            color="Contrib_total_USDkg",
-            color_continuous_scale="Reds",
-            labels={"Contrib_abs": "Contribución (USD/kg)", "Name": "Fruta"}
+            y="SKUsAfectados",
+            title="Top N frutas por SKUs afectados",
+            labels={"Name": "Fruta", "SKUsAfectados": "SKUs afectados"},
+            text="SKUsAfectados"
         )
-        
-        fig_contrib.update_layout(
-            showlegend=False,
-            xaxis_tickangle=-45
-        )
-        
-        st.plotly_chart(fig_contrib, width='stretch')
-        
+        fig_bar.update_layout(xaxis_tickangle=-30, height=420, showlegend=False)
+        st.plotly_chart(fig_bar, use_container_width=True)
     except ImportError:
-        st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
-    
-    # Detalle por fruta
-    st.subheader("🔍 Detalle por Fruta")
-    
-    # Selector de fruta
-    frutas_disponibles = tabla_resumen["Name"].tolist()
-    if frutas_disponibles:
-        fruta_seleccionada = st.selectbox(
-            "Selecciona una fruta para ver detalles:",
-            options=frutas_disponibles,
-            key="fruta_detalle_selector"
-        )
-        
-        if fruta_seleccionada:
-            # Obtener Fruta_id de la fruta seleccionada
-            fruta_id_seleccionada = tabla_resumen[tabla_resumen["Name"] == fruta_seleccionada]["Fruta_id"].iloc[0]
-            
-            # Filtrar receta por la fruta seleccionada y SKUs visibles
-            receta_fruta = receta_df[receta_df["Fruta_id"] == fruta_id_seleccionada]
-            if skus_visibles:
-                receta_fruta = receta_fruta[receta_fruta["SKU"].isin(skus_visibles)]
-            
-            # Obtener información adicional de los SKUs desde sim.df
-            if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
-                skus_info = st.session_state["sim.df"][["SKU", "Descripcion", "Marca", "Cliente", "MMPP (Fruta) (USD/kg)", "EBITDA (USD/kg)"]].copy()
-                
-                # Merge con la receta para obtener porcentaje y contribución
-                detalle_fruta = receta_fruta.merge(skus_info, on="SKU", how="left")
-                
-                # Calcular contribución individual
-                detalle_fruta["Contrib_Individual"] = (
-                    detalle_fruta["Porcentaje"] * 
-                    detalle_fruta["MMPP (Fruta) (USD/kg)"].abs() / 
-                    detalle_fruta["Porcentaje"].sum()
-                )
-                
-                # Mostrar tabla de detalle
-                st.subheader(f"SKUs que usan {fruta_seleccionada}")
-                
-                # Formatear tabla
-                tabla_detalle = detalle_fruta[["SKU", "Descripcion", "Marca", "Cliente", "Porcentaje", "MMPP (Fruta) (USD/kg)", "EBITDA (USD/kg)", "Contrib_Individual"]]
-                
-                st.dataframe(
-                    tabla_detalle.style.format({
-                        "Porcentaje": "{:.2f}%",
-                        "MMPP (Fruta) (USD/kg)": "{:.3f}",
-                        "EBITDA (USD/kg)": "{:.3f}",
-                        "Contrib_Individual": "{:.3f}"
-                    }),
-                    width='stretch',
-                    hide_index=True
-                )
-                
-                # Estadísticas del SKU
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric(
-                        "SKUs Afectados",
-                        len(detalle_fruta),
-                        help="Número de SKUs que usan esta fruta"
-                    )
-                
-                with col2:
-                    st.metric(
-                        "Porcentaje Promedio",
-                        f"{detalle_fruta['Porcentaje'].mean():.1f}%",
-                        help="Porcentaje promedio de esta fruta en los SKUs"
-                    )
-                
-                with col3:
-                    st.metric(
-                        "Impacto Total en EBITDA",
-                        f"${detalle_fruta['EBITDA (USD/kg)'].sum():.3f}",
-                        help="Suma del EBITDA de todos los SKUs afectados"
-                    )
-                
-                # Gráfico de contribución por SKU
-                st.subheader(f"📊 Contribución de {fruta_seleccionada} por SKU")
-                
-                try:
-                    import plotly.express as px
-                    
-                    fig_sku = px.bar(
-                        detalle_fruta,
-                        x="SKU",
-                        y="Contrib_Individual",
-                        title=f"Contribución de {fruta_seleccionada} por SKU",
-                        labels={"Contrib_Individual": "Contribución (USD/kg)", "SKU": "SKU"}
-                    )
-                    
-                    fig_sku.update_layout(
-                        xaxis_tickangle=-45,
-                        showlegend=False
-                    )
-                    
-                    st.plotly_chart(fig_sku, width='stretch')
-                    
-                except ImportError:
-                    st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
-            else:
-                st.warning("No hay datos de simulación disponibles para mostrar detalles de SKUs.")
-    else:
-        st.info("No hay frutas disponibles para mostrar detalles.")
-    
-    # ===================== Impacto en SKUs Específicos =====================
-    if st.session_state["sim.fruit_overrides"]:
-        st.header("🎯 Impacto en SKUs Específicos")
-        
-        with st.expander("📊 Análisis Detallado del Impacto en SKUs", expanded=False):
-            # Calcular impacto por SKU
-            impacto_por_sku = []
-            
-            for fid, override in st.session_state["sim.fruit_overrides"].items():
-                if "price" in override:
-                    # Obtener información de la fruta
-                    fruta_info = info_df[info_df["Fruta_id"] == fid].iloc[0]
-                    precio_base = fruta_info["Precio"]
-                    nombre_fruta = fruta_info.get("Name", fid)
-                    
-                    # Calcular nuevo precio
-                    if override["price"]["type"] == "percentage":
-                        nuevo_precio = precio_base * (1 + override["price"]["value"] / 100)
-                    else:
-                        nuevo_precio = override["price"]["value"]
-                    
-                    # Obtener SKUs que usan esta fruta
-                    skus_fruta = receta_df[receta_df["Fruta_id"] == fid]
-                    
-                    for _, receta_sku in skus_fruta.iterrows():
-                        sku = receta_sku["SKU"]
-                        porcentaje = receta_sku["Porcentaje"]
-                        eficiencia = fruta_info["Eficiencia"]
-                        
-                        # Calcular contribución base y nueva
-                        contrib_base = (precio_base * porcentaje / eficiencia)
-                        contrib_nueva = (nuevo_precio * porcentaje / eficiencia)
-                        impacto_sku = contrib_nueva - contrib_base
-                        
-                        # Obtener información adicional del SKU si está disponible
-                        sku_info = {}
-                        if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
-                            sku_row = st.session_state["sim.df"][st.session_state["sim.df"]["SKU"] == sku]
-                            if not sku_row.empty:
-                                sku_info = {
-                                    "Descripcion": sku_row["Descripcion"].iloc[0],
-                                    "Marca": sku_row["Marca"].iloc[0],
-                                    "Cliente": sku_row["Cliente"].iloc[0],
-                                    "EBITDA_Base": sku_row["EBITDA (USD/kg)"].iloc[0]
-                                }
-                        
-                        impacto_por_sku.append({
-                            "SKU": sku,
-                            "Fruta": nombre_fruta,
-                            "Porcentaje": porcentaje,
-                            "Precio_Base": precio_base,
-                            "Precio_Nuevo": nuevo_precio,
-                            "Contrib_Base": contrib_base,
-                            "Contrib_Nueva": contrib_nueva,
-                            "Impacto": impacto_sku,
-                            **sku_info
-                        })
-            
-            if impacto_por_sku:
-                # Crear DataFrame
-                df_impacto_sku = pd.DataFrame(impacto_por_sku)
-                
-                # Mostrar resumen
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric(
-                        "SKUs Afectados",
-                        df_impacto_sku["SKU"].nunique(),
-                        help="Total de SKUs afectados por los ajustes"
-                    )
-                
-                with col2:
-                    st.metric(
-                        "Impacto Promedio por SKU",
-                        f"${df_impacto_sku['Impacto'].mean():.3f}",
-                        help="Impacto promedio por SKU"
-                    )
-                
-                with col3:
-                    st.metric(
-                        "Impacto Total",
-                        f"${df_impacto_sku['Impacto'].sum():.3f}",
-                        help="Impacto total de todos los ajustes"
-                    )
-                
-                with col4:
-                    st.metric(
-                        "SKUs con Mayor Impacto",
-                        len(df_impacto_sku[df_impacto_sku["Impacto"] > df_impacto_sku["Impacto"].mean()]),
-                        help="SKUs con impacto superior al promedio"
-                    )
-                
-                # Top 10 SKUs con mayor impacto
-                st.subheader("🏆 Top 10 SKUs con Mayor Impacto")
-                top_impacto = df_impacto_sku.nlargest(10, "Impacto")
-                
-                st.dataframe(
-                    top_impacto[["SKU", "Fruta", "Porcentaje", "Impacto"]].style.format({
-                        "Porcentaje": "{:.2f}%",
-                        "Impacto": "{:.3f}"
-                    }),
-                    width='stretch',
-                    hide_index=True
-                )
-                
-                # Gráfico de impacto por SKU
-                st.subheader("📊 Impacto por SKU")
-                
-                try:
-                    import plotly.express as px
-                    
-                    # Top 20 SKUs para el gráfico
-                    top_20 = df_impacto_sku.nlargest(20, "Impacto")
-                    
-                    fig_impacto_sku = px.bar(
-                        top_20,
-                        x="SKU",
-                        y="Impacto",
-                        color="Fruta",
-                        title="Top 20 SKUs por Impacto de Ajustes de Frutas",
-                        labels={"Impacto": "Impacto (USD/kg)", "SKU": "SKU"}
-                    )
-                    
-                    fig_impacto_sku.update_layout(
-                        xaxis_tickangle=-45,
-                        showlegend=True
-                    )
-                    
-                    st.plotly_chart(fig_impacto_sku, width='stretch')
-                    
-                except ImportError:
-                    st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
-                
-                # Tabla completa de impacto
-                st.subheader("📋 Tabla Completa de Impacto por SKU")
-                
-                # Filtrar columnas disponibles
-                columnas_disponibles = [col for col in df_impacto_sku.columns if col in df_impacto_sku.columns]
-                
-                st.dataframe(
-                    df_impacto_sku[columnas_disponibles].style.format({
-                        "Porcentaje": "{:.2f}%",
-                        "Precio_Base": "{:.3f}",
-                        "Precio_Nuevo": "{:.3f}",
-                        "Contrib_Base": "{:.3f}",
-                        "Contrib_Nueva": "{:.3f}",
-                        "Impacto": "{:.3f}"
-                    }),
-                    width='stretch',
-                    hide_index=True
-                )
-                
-                # Botón de descarga
-                csv = df_impacto_sku.to_csv(index=False)
-                st.download_button(
-                    label="📥 Descargar Análisis de Impacto (CSV)",
-                    data=csv,
-                    file_name=f"impacto_frutas_skus_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-    
+        st.info("Para ver gráficos, instala plotly: `pip install plotly`")
+
+# 7) Gráfico B: Dispersión Precio vs Eficiencia (tamaño = SKUs, color = ΔPrecio%)
+# try:
+#     import plotly.express as px
+#     fig_scatter = px.scatter(
+#         frutas,
+#         x="PrecioAjustadoUSD_kg", y="EficienciaAjustada",
+#         size=frutas["SKUsAfectados"].fillna(0).clip(lower=0.1),  # que no desaparezcan
+#         color="Cambio_Precio_%",
+#         hover_data=["Name","SKUsAfectados"],
+#         labels={"PrecioAjustadoUSD_kg":"Precio (USD/kg)","EficienciaAjustada":"Eficiencia"},
+#         color_continuous_scale="RdBu_r"
+#     )
+#     fig_scatter.update_layout(
+#         title="Precio vs. Eficiencia (tamaño = SKUs afectados, color = ΔPrecio%)",
+#         height=420, showlegend=False
+#     )
+#     st.plotly_chart(fig_scatter, use_container_width=True)
+# except ImportError:
+#     pass
     # ===================== Información del Simulador =====================
     st.header("📚 Información del Simulador de Frutas")
     
@@ -2512,11 +2115,12 @@ with tab_receta:
         # Calcular estadísticas por fruta
         stats_fruta = receta_filtrada.groupby("Fruta_id").agg({
             "SKU": "nunique",
-            "Porcentaje": ["mean", "sum", "count"]
+            "Porcentaje": "mean",
+            "Óptimo": ["mean", "sum"],
         }).reset_index()
         
         # Flatten column names
-        stats_fruta.columns = ["Fruta_id", "SKUs_Usados", "Porcentaje_Promedio", "Porcentaje_Total", "Recetas_Total"]
+        stats_fruta.columns = ["Fruta_id", "SKUs_Usados", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Porcentaje Óptimo Total"]
         
         # Enriquecer con información de frutas
         stats_fruta = stats_fruta.merge(
@@ -2528,21 +2132,31 @@ with tab_receta:
         # Calcular contribución total por fruta
         stats_fruta["Contribucion_Total"] = (
             stats_fruta["Precio"] * 
-            stats_fruta["Porcentaje_Total"] / 
+            stats_fruta["Porcentaje Óptimo Total"] / 100 / 
             stats_fruta["Eficiencia"]
         )
         
+        view_fruta = stats_fruta[["Name", "SKUs_Usados", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Precio"]]
+        view_fruta.sort_values(by="SKUs_Usados", ascending=False, inplace=True)
+        
         # Mostrar tabla de estadísticas
         st.dataframe(
-            stats_fruta.style.format({
+            view_fruta.style.format({
                 "SKUs_Usados": "{:.0f}",
-                "Porcentaje_Promedio": "{:.2f}%",
-                "Porcentaje_Total": "{:.1f}%",
-                "Recetas_Total": "{:.0f}",
+                "Porcentaje Original Promedio": "{:.2f}%",
+                "Porcentaje Óptimo Promedio": "{:.2f}%",
+                "Porcentaje Óptimo Total": "{:.1f}%",
                 "Precio": "{:.3f}",
                 "Eficiencia": "{:.3f}",
                 "Contribucion_Total": "{:.3f}"
             }),
+            column_config={
+                "Name": st.column_config.TextColumn(width="small"),
+                "SKUs_Usados": st.column_config.NumberColumn(width="small"),
+                "Porcentaje Original Promedio": st.column_config.NumberColumn(width="small", help="Este porcentaje considera los monoproductos"),
+                "Porcentaje Óptimo Promedio": st.column_config.NumberColumn(width="small", help="Este porcentaje considera los monoproductos"),
+                "Precio": st.column_config.NumberColumn(width="small"),
+            },
             width='stretch',
             hide_index=True
         )

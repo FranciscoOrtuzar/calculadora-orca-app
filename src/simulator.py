@@ -388,46 +388,96 @@ def create_ebitda_chart(df: pd.DataFrame, top_n: int = 20) -> alt.Chart:
     
     return chart
 
-def create_margin_distribution_chart(df: pd.DataFrame) -> alt.Chart:
+def create_margin_distribution_chart(
+    df: pd.DataFrame,
+    *,
+    col_candidates=("EBITDA Pct", "MargenPct"),
+    method="iqr",           # "iqr" | "quantile"
+    iqr_k=1.5,              # factor para IQR
+    q_low=0.01, q_high=0.99,# percentiles si method="quantile"
+    maxbins=30,             # bins del histograma
+    clip_label=True         # mostrar en el título el recorte aplicado
+) -> alt.Chart | None:
     """
-    Crea gráfico de distribución de márgenes.
-    
-    Args:
-        df: DataFrame con márgenes
-        
-    Returns:
-        Chart de Altair
+    Histograma robusto de márgenes, recortando outliers SOLO para la visualización.
     """
-    if df.empty:
+    if df is None or df.empty:
         return None
-    
-    # Buscar columna de margen disponible
-    margin_column = "EBITDA Pct" if "EBITDA Pct" in df.columns else "MargenPct"
-    
-    if margin_column not in df.columns:
+
+    # 1) Detectar la columna de margen
+    margin_column = next((c for c in col_candidates if c in df.columns), None)
+    if margin_column is None:
         return None
-    
-    # Crear bins para el histograma
-    chart_data = df.copy()
-    chart_data["MargenBin"] = pd.cut(
-        chart_data[margin_column], 
-        bins=20, 
-        labels=False
-    )
-    
-    chart = alt.Chart(chart_data).mark_bar().encode(
-        x=alt.X(f"{margin_column}:Q", title="Margen (%)", bin=alt.Bin(maxbins=20)),
+
+    # 2) Serie limpia
+    s = pd.to_numeric(df[margin_column], errors="coerce").dropna()
+    if s.empty:
+        return None
+
+    # 3) Calcular límites robustos
+    if method == "iqr":
+        q1, q3 = s.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        lo = q1 - iqr_k * iqr
+        hi = q3 + iqr_k * iqr
+    else:  # "quantile"
+        lo, hi = s.quantile([q_low, q_high])
+
+    # Evitar lo > hi por datos degenerados
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        lo, hi = s.min(), s.max()
+
+    # 4) Filtrar SOLO para el gráfico
+    mask = (s >= lo) & (s <= hi)
+    clipped = (~mask).sum()
+    chart_data = pd.DataFrame({margin_column: s[mask]})
+
+    # 5) Estadísticos (de la serie original, no recortada)
+    mean_val = float(s.mean())
+    med_val  = float(s.median())
+
+    # 6) Construir histograma
+    base = alt.Chart(chart_data)
+
+    hist = base.mark_bar().encode(
+        x=alt.X(f"{margin_column}:Q",
+                title="Margen (%)",
+                bin=alt.Bin(maxbins=maxbins)),
         y=alt.Y("count():Q", title="Número de SKUs"),
         tooltip=[
             alt.Tooltip(f"{margin_column}:Q", title="Margen %", bin=True),
             alt.Tooltip("count():Q", title="Número de SKUs")
         ]
-    ).properties(
-        title="Distribución de Márgenes",
-        width=600,
-        height=300
     )
-    
+
+    # 7) Líneas de media y mediana (sobre la escala recortada)
+    mean_rule = alt.Chart(pd.DataFrame({margin_column: [mean_val]})).mark_rule(strokeWidth=2).encode(
+        x=alt.X(f"{margin_column}:Q"),
+        color=alt.value("#555")
+    )
+    mean_text = mean_rule.mark_text(align="left", dx=5, dy=-5).encode(
+        text=alt.value(f"Media: {mean_val:.1f}%")
+    )
+
+    med_rule = alt.Chart(pd.DataFrame({margin_column: [med_val]})).mark_rule(strokeDash=[4,4], strokeWidth=2).encode(
+        x=alt.X(f"{margin_column}:Q"),
+        color=alt.value("#999")
+    )
+    med_text = med_rule.mark_text(align="left", dx=5, dy=12).encode(
+        text=alt.value(f"Mediana: {med_val:.1f}%")
+    )
+
+    # 8) Título con nota de recorte (opcional)
+    title = "Distribución de Márgenes"
+    if clip_label and clipped > 0:
+        title += f" (recortado a [{lo:.1f}%, {hi:.1f}%], {clipped} outliers fuera)"
+
+    chart = (hist + mean_rule + mean_text + med_rule + med_text).properties(
+        title=title,
+        width=600,
+        height=320
+    )
+
     return chart
 
 # ===================== Export =====================
