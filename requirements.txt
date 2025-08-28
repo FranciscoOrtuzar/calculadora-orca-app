@@ -1,6 +1,47 @@
+# =============================================================================
+# CALCULADORA VF - Requirements
+# =============================================================================
+# Este archivo contiene todas las dependencias necesarias para ejecutar
+# la aplicación de simulación de EBITDA por SKU con funcionalidades de frutas
+# =============================================================================
+
+# =============================================================================
+# CORE STREAMLIT & DATA PROCESSING
+# =============================================================================
 streamlit>=1.49.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-altair>=5.0.0
-numpy>=1.24.0
+pandas>=2.3.2
+numpy>=2.3.2
+
+# =============================================================================
+# VISUALIZACIÓN Y GRÁFICOS
+# =============================================================================
 plotly>=6.3.0
+altair>=5.5.0
+
+# =============================================================================
+# EXCEL Y ARCHIVOS
+# =============================================================================
+openpyxl>=3.1.5
+xlrd>=2.0.2
+
+# =============================================================================
+# UTILIDADES Y MANIPULACIÓN DE DATOS
+# =============================================================================
+pathlib2>=2.3.7.post1
+
+# =============================================================================
+# VALIDACIÓN Y TIPOS (OPCIONALES PARA DESARROLLO)
+# =============================================================================
+# typing-extensions>=4.5.0  # Descomenta si usas Python < 3.8
+
+# =============================================================================
+# NOTAS DE INSTALACIÓN:
+# =============================================================================
+# 1. Instalar con: pip install -r requirements.txt
+# 2. Para desarrollo: pip install -r requirements.txt[dev]
+# 3. Versiones mínimas probadas en Python 3.9+
+# 4. Streamlit incluye pandas y numpy como dependencias automáticas
+# 5. Plotly es necesario para gráficos de frutas y análisis
+# 6. Altair es necesario para gráficos del simulador principal
+# 7. OpenPyXL es necesario para archivos Excel (.xlsx)
+# 8. XLRD es necesario para archivos Excel legacy (.xls)
