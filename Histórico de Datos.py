@@ -474,7 +474,7 @@ with col1:
     st.metric("Total SKUs", total_skus, help="SKUs con costos reales (excluyendo subproductos)")
     # Información sobre subproductos excluidos en los KPIs
     if len(subproductos) > 0:
-        st.caption(f"⚠️ {len(subproductos)} subproductos excluidos (costos = 0)")
+        st.caption(f"⚠️ {len(skus_excluidos)} skus excluidos (costos o ventas = 0)")
 
 with col2:
     st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
