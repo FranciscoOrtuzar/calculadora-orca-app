@@ -320,7 +320,8 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
 st.subheader("Márgenes actuales (unitarios)")
 base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Proceso Granel (USD/kg)",
     "Almacenaje MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
-view_base = detalle[base_cols].copy()
+skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
+view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
 view_base.set_index("SKU-Cliente", inplace=True)
 view_base = view_base.sort_index()
 styled_view_base = view_base.style
