@@ -400,7 +400,6 @@ if expand:
     view_base_det = view_base_det.style
     
     # Aplicar negritas a las columnas de totales
-    total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)"]
     existing_total_columns = [col for col in total_columns if col in view_base_det.data.columns]
     
     if existing_total_columns:
