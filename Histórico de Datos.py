@@ -322,6 +322,7 @@ base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Cond
     "Almacenaje MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
 skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
 view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
+view_base = view_base[base_cols].copy()
 view_base.set_index("SKU-Cliente", inplace=True)
 view_base = view_base.sort_index()
 styled_view_base = view_base.style
