@@ -1929,11 +1929,17 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
             total = det["Contribucion Original (USD/kg)"].sum()
             st.metric("MMPP (Fruta) Simulado - Original", f"{total:.3f} USD/kg")
         with c4:
-            total = det["Contribucion Óptima (USD/kg)"].sum()
-            st.metric("MMPP (Fruta) Simulado - Óptimo", f"{total:.3f} USD/kg")
+            if det["Contribucion Óptima (USD/kg)"].sum() > 0:
+                total = det["Contribucion Óptima (USD/kg)"].sum()
+                st.metric("MMPP (Fruta) Simulado - Óptimo", f"{total:.3f} USD/kg")
+            else:
+                st.metric("MMPP (Fruta) Simulado - Óptimo", "No hay óptimo", help="Producto no considerado para 2026")
         with c5:
-            total = (det["Contribucion Original (USD/kg)"] - det["Contribucion Óptima (USD/kg)"]).sum()
-            st.metric("MMPP (Fruta) Simulado - Diferencia", f"{total:.3f} USD/kg")
+            if det["Contribucion Óptima (USD/kg)"].sum() > 0:
+                total = (det["Contribucion Original (USD/kg)"] - det["Contribucion Óptima (USD/kg)"]).sum()
+                st.metric("MMPP (Fruta) Simulado - Diferencia", f"{total:.3f} USD/kg")
+            else:
+                st.metric("MMPP (Fruta) Simulado - Diferencia", "No hay óptimo", help="Producto no considerado para 2026")
 
         st.subheader("💰 Contribución por fruta (USD/kg)")
         st.dataframe(
