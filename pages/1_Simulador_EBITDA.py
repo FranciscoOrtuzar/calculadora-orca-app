@@ -637,115 +637,106 @@ with tab_sku:
         filtered_skus = df_filtered["SKU"].tolist()
         detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
         
-        # Identificar columnas de costos (excluyendo dimensiones y totales)
-        dimension_cols = ["SKU","SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Removido SKU-Cliente
-        total_cols = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
-        intermediate_cols = ["PrecioVenta (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                            "MO Total", "Materiales Total", "MMPP Total (USD/kg)"]
+        adj_columns = ["Proceso Granel (USD/kg)", "Almacenaje MMPP", "MO Directa", "MO Indirecta",
+    "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
+    "Fletes Internos", "Comex", "Guarda PT", "PrecioVenta (USD/kg)"]
         
-        # Columnas de costos individuales
-        cost_columns = [col for col in detalle_filtrado.columns 
-                        if col not in dimension_cols + total_cols + intermediate_cols]
-        adj_columns = cost_columns.copy()
-        adj_columns.append("PrecioVenta (USD/kg)")
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
         
-        if cost_columns:
-            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-            
-            with col1:
-                selected_cost = st.selectbox(
-                    "Seleccionar costo a ajustar:",
-                    options=adj_columns,
-                    help="Selecciona el costo específico que quieres ajustar universalmente"
+        with col1:
+            selected_cost = st.selectbox(
+                "Seleccionar costo a ajustar:",
+                options=adj_columns,
+                help="Selecciona el costo específico que quieres ajustar universalmente"
+            )
+        
+        with col2:
+            adjustment_type = st.selectbox(
+                "Tipo de ajuste:",
+                options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
+                help="Ajuste por porcentaje o nuevo valor en dólares por kg"
+            )
+        
+        with col3:
+            if adjustment_type == "Porcentaje (%)":
+                adjustment_value = st.number_input(
+                    "Valor del ajuste:",
+                    min_value=-100.0,
+                    max_value=1000.0,
+                    value=0.0,
+                    step=0.5,
+                    format="%.1f",
+                    help="Porcentaje de cambio (-100 a +1000)"
                 )
-            
-            with col2:
-                adjustment_type = st.selectbox(
-                    "Tipo de ajuste:",
-                    options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
-                    help="Ajuste por porcentaje o nuevo valor en dólares por kg"
-                )
-            
-            with col3:
-                if adjustment_type == "Porcentaje (%)":
+            else:
+                if selected_cost == "PrecioVenta (USD/kg)":
                     adjustment_value = st.number_input(
-                        "Valor del ajuste:",
-                        min_value=-100.0,
-                        max_value=1000.0,
+                        "Nuevo valor:",
+                        min_value=0.0,
+                        max_value=10.0,
                         value=0.0,
-                        step=0.5,
-                        format="%.1f",
-                        help="Porcentaje de cambio (-100 a +1000)"
+                        step=0.001,
+                        format="%.3f",
+                        help="Nuevo valor en dólares por kg"
                     )
                 else:
-                    if selected_cost == "PrecioVenta (USD/kg)":
-                        adjustment_value = st.number_input(
-                            "Nuevo valor:",
-                            min_value=0.0,
-                            max_value=10.0,
-                            value=0.0,
-                            step=0.001,
-                            format="%.3f",
-                            help="Nuevo valor en dólares por kg"
-                        )
-                    else:
-                        adjustment_value = st.number_input(
-                            "Nuevo valor:",
-                            min_value=-10.0,
-                            max_value=0.0,
-                            value=0.0,
-                            step=0.001,
-                            format="%.3f",
-                            help="Nuevo valor en dólares por kg"
-                        )
-            
-            with col4:
-                if st.button("Aplicar Ajuste", type="primary"):
-                    # Tomar snapshot antes de aplicar cambios masivos
-                    sim_snapshot_push()
-                    
-                    # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN (NO modificar hist.df)
-                    adjustment_key = f"{selected_cost}"
-                    
-                    # IMPORTANTE: Guardar valores originales desde hist.df (NO editable)
-                    original_values = {}
-                    for sku in filtered_skus:
-                        if sku in st.session_state["hist.df"]["SKU"].values:
-                            idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
-                            original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
-                    
-                    # Inicializar sim.overrides_row si no existe
-                    if "sim.overrides_row" not in st.session_state:
-                        st.session_state["sim.overrides_row"] = {}
-                    
-                    st.session_state["sim.overrides_row"][adjustment_key] = {
-                        "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
-                        "value": adjustment_value,
-                        "applied_skus": filtered_skus.copy(),  # Guardar SKUs afectados
-                        "original_values": original_values,  # Guardar valores originales
-                        "timestamp": pd.Timestamp.now()
-                    }
-                    
-                    # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
-                    # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
-                    df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
-                    
-                    # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
-                    if "Costos Totales (USD/kg)" in df_current_updated.columns:
-                        before_filter = len(df_current_updated)
-                        df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
-                        after_filter = len(df_current_updated)
-                    
-                    # Recalcular totales en sim.df
-                    df_current_updated = recalculate_totals(df_current_updated)
-                                        
-                    # Guardar en sim.df
-                    st.session_state["sim.df"] = df_current_updated.copy()
-                    
-                    # Marcar como dirty
-                    st.session_state["sim.dirty"] = True
-                    st.rerun()
+                    adjustment_value = st.number_input(
+                        "Nuevo valor:",
+                        min_value=-10.0,
+                        max_value=0.0,
+                        value=0.0,
+                        step=0.001,
+                        format="%.3f",
+                        help="Nuevo valor en dólares por kg"
+                    )
         
+        with col4:
+            if st.button("Aplicar Ajuste", type="primary"):
+                # Tomar snapshot antes de aplicar cambios masivos
+                sim_snapshot_push()
+                
+                # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN (NO modificar hist.df)
+                adjustment_key = f"{selected_cost}"
+                
+                # IMPORTANTE: Guardar valores originales desde hist.df (NO editable)
+                original_values = {}
+                for sku in filtered_skus:
+                    if sku in st.session_state["hist.df"]["SKU"].values:
+                        idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
+                        original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
+                
+                # Inicializar sim.overrides_row si no existe
+                if "sim.overrides_row" not in st.session_state:
+                    st.session_state["sim.overrides_row"] = {}
+                
+                st.session_state["sim.overrides_row"][adjustment_key] = {
+                    "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
+                    "value": adjustment_value,
+                    "applied_skus": filtered_skus.copy(),  # Guardar SKUs afectados
+                    "original_values": original_values,  # Guardar valores originales
+                    "timestamp": pd.Timestamp.now()
+                }
+                
+                # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
+                # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
+                df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
+                
+                # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
+                if "Costos Totales (USD/kg)" in df_current_updated.columns:
+                    before_filter = len(df_current_updated)
+                    df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
+                    after_filter = len(df_current_updated)
+                
+                # Recalcular totales en sim.df
+                df_current_updated = recalculate_totals(df_current_updated)
+                                    
+                # Guardar en sim.df
+                st.session_state["sim.df"] = df_current_updated.copy()
+                
+                # Marcar como dirty
+                st.session_state["sim.dirty"] = True
+                st.rerun()
+    
         # Mostrar ajustes universales activos
         if st.session_state.get("sim.overrides_row"):
             st.subheader("Ajustes Universales Activos")
