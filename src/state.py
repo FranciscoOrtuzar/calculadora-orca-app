@@ -13,6 +13,11 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.df_filtered", None)
     st.session_state.setdefault("hist.last_loaded_at", None)
     st.session_state.setdefault("hist.skus_excluidos", None)
+    st.session_state.setdefault("hist.ebitda_mensual", None)
+    st.session_state.setdefault("hist.granel", None)
+    st.session_state.setdefault("hist.ebitda_total", None)
+    st.session_state.setdefault("hist.granel_ponderado", None)
+    st.session_state.setdefault("hist.df_optimo", None)
 
     # Simulación
     st.session_state.setdefault("sim.df", None)

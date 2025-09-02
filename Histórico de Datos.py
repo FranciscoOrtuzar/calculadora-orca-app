@@ -13,10 +13,43 @@ from pathlib import Path
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config
+from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel
 from src.state import ensure_session_state, session_state_table
 import pandas as pd
 import numpy as np
+import locale
+
+# Configurar locale para formato europeo/latinoamericano
+try:
+    locale.setlocale(locale.LC_ALL, 'es_ES.UTF-8')  # Para Linux/Mac
+except:
+    try:
+        locale.setlocale(locale.LC_ALL, 'Spanish_Spain.1252')  # Para Windows
+    except:
+        pass  # Si no funciona, usar formato por defecto
+
+def format_currency_european(value, decimals=0):
+    """Formatea un número como moneda con punto para miles y coma para decimales"""
+    if pd.isna(value):
+        return "N/A"
+    
+    # Usar locale si está disponible
+    try:
+        if decimals == 0:
+            return f"${locale.format_string('%.0f', value, grouping=True)}"
+        else:
+            return f"${locale.format_string(f'%.{decimals}f', value, grouping=True)}"
+    except:
+        # Fallback: formato manual
+        if decimals == 0:
+            return f"${value:,.0f}".replace(",", ".")
+        else:
+            formatted = f"{value:,.{decimals}f}"
+            parts = formatted.split(".")
+            if len(parts) == 2:
+                return f"${parts[0].replace(',', '.')},{parts[1]}"
+            else:
+                return f"${parts[0].replace(',', '.')}"
 
 # ===================== Config básica =====================
 ST_TITLE = "Datos Históricos de Precios y Costos Octubre 2024 - Junio 2025 (MVP)"
@@ -130,7 +163,28 @@ if st.session_state["hist.df"] is None:
         try:
             with st.spinner("Procesando archivo..."):
                 detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym)
+                dettale_optimo = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, optimo=True)
+                ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
+                df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
+                st.session_state["hist.granel_ponderado"] = df_granel_ponderado
+                st.session_state["hist.granel"] = df_granel
+                st.session_state["hist.ebitda_mensual"] = ebitda_mensual
+                ebitda_mensual = ebitda_mensual.dropna(subset=["SKU-Cliente"])
+                ebitda_mensual = ebitda_mensual[ebitda_mensual["SKU-Cliente"] != "nan"]
+                st.session_state["hist.ebitda_total"] = ebitda_mensual["EBITDA (USD)"].sum()
+                volumenes = ebitda_mensual.groupby(["SKU-Cliente"])["KgEmbarcados"].sum().reset_index()
+                ebitdas = ebitda_mensual.groupby(["SKU-Cliente"])["EBITDA (USD)"].sum().reset_index()
+                detalle = detalle.merge(volumenes, how="left", on="SKU-Cliente")
+                detalle = detalle.merge(ebitdas, how="left", on="SKU-Cliente")
                 st.session_state["hist.df"] = detalle
+                st.session_state["hist.df_optimo"] = dettale_optimo
+                st.success(f"✅ Factos procesados: {len(detalle)} SKUs, {len(ebitda_mensual)} meses")
+                # st.dataframe(ebitda_mensual, use_container_width=True, hide_index=True)
+                # st.dataframe(costos_mensuales, use_container_width=True, hide_index=True)
+                # st.dataframe(volumen_mensual, use_container_width=True, hide_index=True)
+                # st.dataframe(precios_mensuales, use_container_width=True, hide_index=True)
+                # st.dataframe(df_granel, use_container_width=True, hide_index=True)
+                # st.stop()
                 
                 # Cargar datos de fruta si están disponibles
                 try:
@@ -316,148 +370,303 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
                 key="download_subproductos_sin_ventas_home"
             )
 
-# -------- Mostrar resultados --------
-st.subheader("Márgenes actuales (unitarios)")
-base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Proceso Granel (USD/kg)",
-    "Almacenaje MMPP","Gastos Totales (USD/kg)","MMPP (Fruta) (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
-skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
-view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
-view_base = view_base[base_cols].copy()
-view_base.set_index("SKU-Cliente", inplace=True)
-view_base = view_base.sort_index()
-styled_view_base = view_base.style
-config = columns_config(editable=False)
+# ===================== Pestañas del Histórico =====================
+tab_retail, tab_granel = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)"])
 
-# Aplicar negritas a las columnas de totales
-total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
-"Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
-existing_total_columns = [col for col in total_columns if col in view_base.columns]
-
-if existing_total_columns:
-    styled_view_base = styled_view_base.set_properties(
-        subset=existing_total_columns,
-        **{"font-weight": "bold", "background-color": "#f8f9fa"}
-    )
-
-# Aplicar estilos a columnas EBITDA
-ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-existing_ebitda_columns = [col for col in ebitda_columns if col in view_base.columns]
-
-if existing_ebitda_columns:
-    styled_view_base = styled_view_base.set_properties(
-        subset=existing_ebitda_columns,
-        **{"font-weight": "bold", "background-color": "#fff7ed"}
-    )
-
-st.dataframe(
-    styled_view_base,
-    use_container_width=True, 
-    height="auto",
-    column_config=config,
-    hide_index=True
-)
-
-# --- Toggle: ver detalle de costos respetando los filtros vigentes ---
-expand = st.toggle("🔎 Expandir costos por SKU (temporada)", value=False)
-
-if expand:
-    # 1) Toma los SKUs actualmente visibles (ya filtrados arriba)
+with tab_retail:
+    # -------- Mostrar resultados Retail --------
+    st.subheader("Márgenes actuales (unitarios)")
+    base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
+    "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
+    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","EBITDA (USD)"]
     skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
-    det = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
-    # 3) Mueve atributos DIM a la izquierda
-    dim_candidatas = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
-    dim_cols = [c for c in dim_candidatas if c in det.columns]
-    orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
-                    "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
-                    "Laboratorio","Mantención","Servicios Generales","Utilities","Fletes Internos","Comex","Guarda PT",
-                    "Retail Costos Directos (USD/kg)","Retail Costos Indirectos (USD/kg)","Almacenaje MMPP",
-                    "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
-    # Si falta, recalcúlala si están los componentes
-    if "Gastos Totales (USD/kg)" not in det.columns:
-        comp = [
-            "Retail Costos Directos (USD/kg)",
-            "Retail Costos Indirectos (USD/kg)",
-            "Almacenaje MMPP",
-            "Proceso Granel (USD/kg)",
-        ]
-        if all(c in det.columns for c in comp):
-            det["Gastos Totales (USD/kg)"] = sum(
-                pd.to_numeric(det[c], errors="coerce") for c in comp
-            )
-    # Filtrar solo las columnas que realmente existen en el DataFrame
-    last_cols = [c for c in orden_cols if c not in dim_cols and c in det.columns]
-    det = det[dim_cols + last_cols]
-
-    # 4) Orden y formato
-    det = det.sort_values(["SKU-Cliente"]).reset_index(drop=True)
-    view_base_det = det.copy()
-    
-    # Asegurar que el índice SKU-Cliente sea único antes de aplicar estilos
-    view_base_det = view_base_det.drop_duplicates(subset=["SKU-Cliente"], keep="first")
-    view_base_det.set_index("SKU-Cliente", inplace=True)
-    
-    # Aplicar estilos de formato y negritas a columnas importantes
-    view_base_det = view_base_det.style
-    
+    ebitda_mensual = st.session_state["hist.ebitda_mensual"]
+    st.dataframe(ebitda_mensual)
+    view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
+    view_base = view_base[base_cols].copy()
+    view_base.set_index("SKU-Cliente", inplace=True)
+    view_base = view_base.sort_index()
+    config = columns_config(editable=False)
+    styled_view_base = view_base.style
     # Aplicar negritas a las columnas de totales
-    existing_total_columns = [col for col in total_columns if col in view_base_det.data.columns]
-    
+    total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+    "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
+    existing_total_columns = [col for col in total_columns if col in view_base.columns]
+
     if existing_total_columns:
-        view_base_det = view_base_det.set_properties(
+        styled_view_base = styled_view_base.set_properties(
             subset=existing_total_columns,
             **{"font-weight": "bold", "background-color": "#f8f9fa"}
         )
-    
+
     # Aplicar estilos a columnas EBITDA
     ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-    existing_ebitda_columns = [col for col in ebitda_columns if col in view_base_det.data.columns]
-    
+    existing_ebitda_columns = [col for col in ebitda_columns if col in view_base.columns]
+
     if existing_ebitda_columns:
-        view_base_det = view_base_det.set_properties(
+        styled_view_base = styled_view_base.set_properties(
             subset=existing_ebitda_columns,
             **{"font-weight": "bold", "background-color": "#fff7ed"}
         )
 
-    # Aplicar formato numérico al Styler
-    fmt_cols = {}
-    for c in det.columns:
-        if c not in (["SKU", "SKU-Cliente"] + dim_cols):
-            if "Pct" in c or "Porcentaje" in c:
-                fmt_cols[c] = "{:.1%}"  # Formato de porcentaje
-            elif np.issubdtype(det[c].dtype, np.number):
-                fmt_cols[c] = "{:.3f}"   # Formato numérico
-
-    # Aplicar formato al Styler existente
-    view_base_det = view_base_det.format(fmt_cols)
-
-    st.subheader("Detalle de costos por SKU (temporada)")
     st.dataframe(
-        view_base_det, 
+        styled_view_base,
         use_container_width=True, 
         height="auto",
         column_config=config,
         hide_index=True
     )
 
-    # 5) Descargar
-    def to_excel_download(df: pd.DataFrame, filename="export.xlsx"):
-        # Asegura que las columnas SKU y SKU-Cliente estén presentes y al inicio
-        cols = list(df.columns)
-        for col in ["SKU", "SKU-Cliente"]:
-            if col in cols:
-                cols.remove(col)
-        export_cols = [c for c in ["SKU", "SKU-Cliente"] if c in df.columns] + cols
-        df_export = df[export_cols].copy()
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-            df_export.to_excel(xw, index=False, sheet_name="data")
-        st.download_button("⬇️ Descargar Excel", data=buf.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_detalle")
+    # --- Toggle: ver detalle de costos respetando los filtros vigentes ---
+    expand = st.toggle("🔎 Expandir costos por SKU (temporada)", value=False)
 
-    to_excel_download(det, "costos_detalle_temporada.xlsx")
+    if expand:
+        # 1) Toma los SKUs actualmente visibles (ya filtrados arriba)
+        skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
+        det = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
+        # 3) Mueve atributos DIM a la izquierda
+        dim_candidatas = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
+        dim_cols = [c for c in dim_candidatas if c in det.columns]
+        orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
+                        "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
+                        "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
+                        "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
+                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+        # Si falta, recalcúlala si están los componentes
+        if "Gastos Totales (USD/kg)" not in det.columns:
+            comp = [
+                "Retail Costos Directos (USD/kg)",
+                "Retail Costos Indirectos (USD/kg)",
+                "Almacenaje MMPP",
+                "Proceso Granel (USD/kg)",
+            ]
+            if all(c in det.columns for c in comp):
+                det["Gastos Totales (USD/kg)"] = sum(
+                    pd.to_numeric(det[c], errors="coerce") for c in comp
+                )
+        # Filtrar solo las columnas que realmente existen en el DataFrame
+        last_cols = [c for c in orden_cols if c not in dim_cols and c in det.columns]
+        det = det[dim_cols + last_cols]
 
-    # Descargar versión resumida
-    if "hist.costos_resumen" in st.session_state:
-        to_excel_download(st.session_state["hist.costos_resumen"], "costos_resumen_temporada.xlsx")
+        # 4) Orden y formato
+        det = det.sort_values(["SKU-Cliente"]).reset_index(drop=True)
+        view_base_det = det.copy()
+        
+        # Asegurar que el índice SKU-Cliente sea único antes de aplicar estilos
+        view_base_det = view_base_det.drop_duplicates(subset=["SKU-Cliente"], keep="first")
+        view_base_det.set_index("SKU-Cliente", inplace=True)
+        
+        # Aplicar estilos de formato y negritas a columnas importantes
+        view_base_det = view_base_det.style
+        
+        # Aplicar negritas a las columnas de totales
+        existing_total_columns = [col for col in total_columns if col in view_base_det.data.columns]
+        
+        if existing_total_columns:
+            view_base_det = view_base_det.set_properties(
+                subset=existing_total_columns,
+                **{"font-weight": "bold", "background-color": "#f8f9fa"}
+            )
+        
+        # Aplicar estilos a columnas EBITDA
+        ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+        existing_ebitda_columns = [col for col in ebitda_columns if col in view_base_det.data.columns]
+        
+        if existing_ebitda_columns:
+            view_base_det = view_base_det.set_properties(
+                subset=existing_ebitda_columns,
+                **{"font-weight": "bold", "background-color": "#fff7ed"}
+            )
+
+        # Aplicar formato numérico al Styler
+        fmt_cols = {}
+        for c in det.columns:
+            if c not in (["SKU", "SKU-Cliente"] + dim_cols):
+                if "Pct" in c or "Porcentaje" in c:
+                    fmt_cols[c] = "{:.1%}"  # Formato de porcentaje
+                elif np.issubdtype(det[c].dtype, np.number):
+                    fmt_cols[c] = "{:.3f}"   # Formato numérico
+
+        # Aplicar formato al Styler existente
+        view_base_det = view_base_det.format(fmt_cols)
+
+        st.subheader("Detalle de costos por SKU (temporada)")
+        st.dataframe(
+            view_base_det, 
+            use_container_width=True, 
+            height="auto",
+            column_config=config,
+            hide_index=True
+        )
+
+        # 5) Descargar
+        def to_excel_download(df: pd.DataFrame, filename="export.xlsx"):
+            # Asegura que las columnas SKU y SKU-Cliente estén presentes y al inicio
+            cols = list(df.columns)
+            for col in ["SKU", "SKU-Cliente"]:
+                if col in cols:
+                    cols.remove(col)
+            export_cols = [c for c in ["SKU", "SKU-Cliente"] if c in df.columns] + cols
+            df_export = df[export_cols].copy()
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+                df_export.to_excel(xw, index=False, sheet_name="data")
+            st.download_button("⬇️ Descargar Excel", data=buf.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_excel_detalle")
+
+        to_excel_download(det, "costos_detalle_temporada.xlsx")
+
+        # Descargar versión resumida
+        if "hist.costos_resumen" in st.session_state:
+            to_excel_download(st.session_state["hist.costos_resumen"], "costos_resumen_temporada.xlsx")
+
+with tab_granel:
+    st.subheader("🌾 Análisis de Costos de Granel por Fruta")
+    
+    # Verificar que los datos de granel estén disponibles
+    granel_ponderado = st.session_state.get("hist.granel_ponderado")
+    info_fruta = st.session_state.get("fruta.info_df")
+    precio_fruta = info_fruta[["Precio","Fruta_id"]]
+    eficiencia = info_fruta[["Eficiencia", "Fruta_id"]]
+    # Agregar columnas de precio y eficiencia
+    granel_ponderado = granel_ponderado.merge(precio_fruta, how="left", on="Fruta_id")
+    granel_ponderado = granel_ponderado.merge(eficiencia, how="left", on="Fruta_id")
+    # Calcular MMPP Total
+    granel_ponderado["MMPP Total"] = granel_ponderado["Precio"] / granel_ponderado["Eficiencia"]
+    # Calcular Costos Directos y Costos Indirectos
+    granel_ponderado["Costos Directos"] = granel_ponderado["MO Directa"] + granel_ponderado["Materiales Directos"] + granel_ponderado["Laboratorio"] + granel_ponderado["Mantencion y Maquinaria"]
+    granel_ponderado["Costos Indirectos"] = granel_ponderado["MO Indirecta"] + granel_ponderado["Materiales Indirectos"]
+    if granel_ponderado is None or granel_ponderado.empty:
+        st.error("❌ **No hay datos de granel disponibles**")
+        st.info("💡 **Para ver los datos de granel, asegúrate de que tu archivo Excel contenga la hoja 'FACT_GRANEL_POND'**")
+    else:
+        st.success(f"✅ Datos de granel cargados: {len(granel_ponderado)} frutas")
+        
+        # Mostrar tabla de granel
+        st.subheader("📊 Costos de Granel por Fruta")
+        
+        # Aplicar formato a la tabla
+        granel_display = granel_ponderado.copy()
+        
+        # Formatear columnas numéricas
+        numeric_cols = [col for col in granel_display.columns if col not in ["Fruta_id", "Fruta"]]
+        for col in numeric_cols:
+            granel_display[col] = pd.to_numeric(granel_display[col], errors='coerce')
+        
+        order_cols = ["Fruta_id", "Fruta", "Precio", "Eficiencia", "MMPP Total", "MO Directa", "MO Indirecta",
+        "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
+        "Costos Directos", "Costos Indirectos", "Servicios Generales"]
+        granel_display = granel_display[order_cols]
+        #Formato
+        fmt_num = {col: "{:.3f}" for col in numeric_cols}
+        fmt_pct = {"Eficiencia": "{:.1%}"} if "Eficiencia" in granel_display.columns else {}
+
+        fmt = fmt_num | fmt_pct
+        # Mostrar tabla con formato
+        st.dataframe(
+            granel_display.style.format(fmt),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # KPIs de granel
+        st.subheader("📈 KPIs de Granel")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Frutas", len(granel_ponderado))
+        
+        with col2:
+            if "MO Total" in granel_ponderado.columns:
+                mo_promedio = granel_ponderado["MO Total"].mean()
+                st.metric("MO Promedio", f"${mo_promedio:.3f}/kg")
+            else:
+                st.metric("MO Promedio", "N/A")
+        
+        with col3:
+            if "Materiales Total" in granel_ponderado.columns:
+                mat_promedio = granel_ponderado["Materiales Total"].mean()
+                st.metric("Materiales Promedio", f"${mat_promedio:.3f}/kg")
+            else:
+                st.metric("Materiales Promedio", "N/A")
+        
+        with col4:
+            if "Laboratorio" in granel_ponderado.columns:
+                lab_promedio = granel_ponderado["Laboratorio"].mean()
+                st.metric("Laboratorio Promedio", f"${lab_promedio:.3f}/kg")
+            else:
+                st.metric("Laboratorio Promedio", "N/A")
+        
+        # Análisis por tipo de costo
+        st.subheader("📊 Análisis por Tipo de Costo")
+        
+        # Crear gráfico de barras si hay datos
+        try:
+            import plotly.express as px
+            
+            # Preparar datos para el gráfico
+            cost_types = [col for col in granel_ponderado.columns if col not in ["Fruta_id", "Fruta"]]
+            
+            if cost_types:
+                # Calcular promedios por tipo de costo
+                cost_averages = []
+                for cost_type in cost_types:
+                    avg_cost = granel_ponderado[cost_type].mean()
+                    cost_averages.append({
+                        "Tipo de Costo": cost_type,
+                        "Costo Promedio (USD/kg)": abs(avg_cost)  # Valor absoluto para visualización
+                    })
+                
+                cost_df = pd.DataFrame(cost_averages)
+                
+                # Crear gráfico de barras
+                fig = px.bar(
+                    cost_df,
+                    x="Tipo de Costo",
+                    y="Costo Promedio (USD/kg)",
+                    title="Costos Promedio por Tipo (USD/kg)",
+                    color="Costo Promedio (USD/kg)",
+                    color_continuous_scale="Blues"
+                )
+                
+                fig.update_layout(
+                    xaxis_tickangle=-45,
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+        except ImportError:
+            st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
+        
+        # Descarga de datos de granel
+        st.subheader("📥 Descarga de Datos")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Descargar datos de granel
+            csv_granel = granel_ponderado.to_csv(index=False)
+            st.download_button(
+                label="📥 Descargar Datos de Granel (CSV)",
+                data=csv_granel,
+                file_name="costos_granel_por_fruta.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            # Descargar Excel
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+                granel_ponderado.to_excel(xw, index=False, sheet_name="Granel")
+            st.download_button(
+                label="📥 Descargar Excel",
+                data=buf.getvalue(),
+                file_name="costos_granel_por_fruta.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
 
 # -------- KPIs y Resumen --------
 st.subheader("📊 Resumen Ejecutivo")
@@ -467,10 +676,12 @@ total_skus = len(df_filtrado)
 skus_rentables = len(df_filtrado[df_filtrado["EBITDA (USD/kg)"] > 0])
 ebitda_promedio = df_filtrado["EBITDA (USD/kg)"].mean()
 margen_promedio = df_filtrado["EBITDA Pct"].mean()
+ebitda_total = st.session_state["hist.ebitda_total"]
+ebitda_actual = df_filtrado["EBITDA (USD)"].sum()
 
 # Mostrar KPIs en columnas
-col1, col2 = st.columns([1,1])
-# col1, col2, col3, col4 = st.columns(4)
+# col1, col2 = st.columns([1,1])
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("Total SKUs", total_skus, help="SKUs con costos reales (excluyendo subproductos)")
     # Información sobre subproductos excluidos en los KPIs
@@ -480,10 +691,10 @@ with col1:
 with col2:
     st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
 
-# with col3:
-#     st.metric("EBITDA Promedio", f"${ebitda_promedio:.3f}/kg", help="EBITDA promedio no contiene subproductos")
-# with col4:
-#     st.metric("Margen Promedio", f"{margen_promedio:.1%}")
+with col3:
+    st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
+with col4:
+    st.metric("EBITDA Activo", format_currency_european(ebitda_actual, 0), help="EBITDA de SKUs visibles (no contiene subproductos)")
 
 # # Resumen por marca si existe
 # if "Marca" in df_filtrado.columns:

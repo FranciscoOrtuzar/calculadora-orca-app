@@ -51,20 +51,20 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
     Aplica overrides de PRECIO por fruta.
     Overrides esperados por fruta_id:
     {"price": {"type": "percentage"|"dollars", "value": float}}
-    Eficiencia NO se ajusta aquí (queda base). Clip: Precio>=0, Eficiencia en [0.01, 1.0].
+    Rendimiento NO se ajusta aquí (queda base). Clip: Precio>=0, Rendimiento en [0.01, 1.0].
     
     Args:
-        info_df: DataFrame base con [Fruta_id, Precio, Eficiencia, Name]
+        info_df: DataFrame base con [Fruta_id, Precio, Rendimiento, Name]
         fruit_overrides: Diccionario de overrides por Fruta_id
         
     Returns:
         DataFrame con columnas:
-        [Fruta_id, FrutaNombre, PrecioBaseUSD_kg, EficienciaBase, PrecioAjustadoUSD_kg, EficienciaAjustada]
+        [Fruta_id, FrutaNombre, PrecioBaseUSD_kg, RendimientoBase, PrecioAjustadoUSD_kg, RendimientoAjustado, CostoEfectivoBase, CostoEfectivoAjustado]
     """
     params = info_df.copy()
     params = params.rename(columns={
         "Precio": "PrecioBaseUSD_kg",
-        "Eficiencia": "EficienciaBase"
+        "Rendimiento": "RendimientoBase"
     })
     if "Name" not in params.columns:
         params["FrutaNombre"] = params["Fruta_id"]
@@ -73,11 +73,14 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
 
     # Sanitizar base
     params["PrecioBaseUSD_kg"] = pd.to_numeric(params["PrecioBaseUSD_kg"], errors="coerce").fillna(0.0).clip(lower=0.0)
-    params["EficienciaBase"] = pd.to_numeric(params["EficienciaBase"], errors="coerce").fillna(1.0).clip(0.01, 1.0)
+    params["RendimientoBase"] = pd.to_numeric(params["RendimientoBase"], errors="coerce").fillna(1.0).clip(0.01, 1.0)
+    params["CostoEfectivoBase"] = params["PrecioBaseUSD_kg"] / params["RendimientoBase"]
+
 
     # Precio ajustado = base por defecto
     params["PrecioAjustadoUSD_kg"] = params["PrecioBaseUSD_kg"]
-    params["EficienciaAjustada"] = params["EficienciaBase"]
+    params["RendimientoAjustado"] = params["RendimientoBase"]
+    params["CostoEfectivoAjustado"] = params["CostoEfectivoBase"]
 
     overrides = fruit_overrides or {}
     if overrides:
@@ -92,17 +95,20 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
                     params.loc[mask, "PrecioAjustadoUSD_kg"] = (
                         params.loc[mask, "PrecioBaseUSD_kg"] * (1.0 + pct/100.0)
                     )
+                    params.loc[mask, "CostoEfectivoAjustado"] = params.loc[mask, "PrecioAjustadoUSD_kg"] / params.loc[mask, "RendimientoAjustado"]
                 elif price_ov.get("type") == "dollars":
                     val = max(0.0, float(price_ov.get("value", 0.0)))
                     params.loc[mask, "PrecioAjustadoUSD_kg"] = val
+                    params.loc[mask, "CostoEfectivoAjustado"] = params.loc[mask, "PrecioAjustadoUSD_kg"] / params.loc[mask, "RendimientoAjustado"]
 
     # Clips defensivos
     params["PrecioAjustadoUSD_kg"] = params["PrecioAjustadoUSD_kg"].clip(lower=0.0)
-    params["EficienciaAjustada"] = params["EficienciaAjustada"].clip(0.01, 1.0)
+    params["RendimientoAjustado"] = params["RendimientoAjustado"].clip(0.01, 1.0)
+    params["CostoEfectivoAjustado"] = params["CostoEfectivoAjustado"].clip(lower=0.0)
     
     return params[[
-        "Fruta_id", "FrutaNombre", "PrecioBaseUSD_kg", "EficienciaBase",
-        "PrecioAjustadoUSD_kg", "EficienciaAjustada"
+        "Fruta_id", "FrutaNombre", "PrecioBaseUSD_kg", "RendimientoBase",
+        "PrecioAjustadoUSD_kg", "RendimientoAjustado", "CostoEfectivoBase", "CostoEfectivoAjustado"
     ]]
 
 
@@ -126,7 +132,7 @@ def compute_mmpp_fruta_per_sku(receta_df: pd.DataFrame, params_df: pd.DataFrame)
     merged["contrib_pos"] = (
         pd.to_numeric(merged["PrecioAjustadoUSD_kg"], errors="coerce").fillna(0.0) *
         (merged["Porcentaje"] /100) / 
-        pd.to_numeric(merged["EficienciaAjustada"], errors="coerce").fillna(1.0).replace(0, 0.01))
+        pd.to_numeric(merged["RendimientoAjustado"], errors="coerce").fillna(1.0).replace(0, 0.01))
     
     per_sku = merged.groupby("SKU", as_index=False)["contrib_pos"].sum()
     per_sku["MMPP (Fruta) (USD/kg)"] = -per_sku["contrib_pos"]
@@ -173,7 +179,7 @@ def get_fruit_summary_table(info_df: pd.DataFrame,
         
     Returns:
         DataFrame resumen con columnas:
-        [Fruta_id, FrutaNombre, PrecioBase, PrecioAjustado, EficienciaBase, SKUsAfectados, Contrib_total_USDkg]
+        [Fruta_id, FrutaNombre, PrecioBase, PrecioAjustado, RendimientoBase, SKUsAfectados, Contrib_total_USDkg]
     """
     # Filtrar por SKUs visibles si se especifica
     if skus_visibles:
@@ -190,13 +196,13 @@ def get_fruit_summary_table(info_df: pd.DataFrame,
     
     # Calcular contribuciones
     receta_con_params = receta_filtrada.merge(
-        params_df[["Fruta_id", "PrecioAjustadoUSD_kg", "EficienciaAjustada"]], 
+        params_df[["Fruta_id", "PrecioAjustadoUSD_kg", "RendimientoAjustado"]], 
         on="Fruta_id", how="left"
     )
     receta_con_params["contrib_pos"] = (
         receta_con_params["PrecioAjustadoUSD_kg"] * 
         receta_con_params["Porcentaje"] / 
-        receta_con_params["EficienciaAjustada"]
+        receta_con_params["RendimientoAjustado"]
     )
     
     contrib_por_fruta = receta_con_params.groupby("Fruta_id")["contrib_pos"].sum().reset_index()

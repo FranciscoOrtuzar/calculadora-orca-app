@@ -535,795 +535,881 @@ else:
 tab_sku, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
-    # ===================== Bloque 1 - Carga de Planilla =====================
-    with st.expander("📁 **Carga de Planilla (SKU-CostoNuevo)**", expanded=False):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            uploaded_file = st.file_uploader(
-                "Subir archivo con SKU y CostoNuevo",
-                type=["xlsx", "csv"],
-                help="El archivo debe contener las columnas: SKU, CostoNuevo"
-            )
-        with col2:
-            if uploaded_file is not None:
-                # Validar archivo
-                is_valid, message, df_upload = validate_upload_file(uploaded_file)
-                
-                if is_valid:
-                    st.success(f"✅ {message}")
-                    
-                    # Mostrar preview del archivo
-                    with st.expander("📋 Preview del archivo"):
-                        st.dataframe(df_upload.head(10), width='stretch')
-                    
-                    # Botón para aplicar overrides
-                    if st.button("🚀 Aplicar Overrides", type="primary"):
-                        # Tomar snapshot antes de aplicar cambios masivos
-                        sim_snapshot_push()
-                        
-                        # Aplicar overrides desde archivo sobre los datos filtrados
-                        df_with_upload, updated_count = apply_upload_overrides(df_global, df_upload)
-                        
-                        # Guardar en sesión
-                        st.session_state.df_current = df_with_upload
-                        st.session_state.upload_applied = True
-                        
-                        st.success(f"✅ Se aplicaron overrides a {updated_count} SKUs")
-                        st.rerun()
-                else:
-                    st.error(f"❌ {message}")
-            else:
-                st.info("📤 Selecciona un archivo para aplicar overrides")
-
-    # ===================== Estado de la sesión =====================
-    # Si hay datos en sesión, aplicarlos sobre los filtros actuales
-    if st.session_state.get("sim.override_upload") and "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
-        # Aplicar los overrides de sesión sobre los datos filtrados
-        df_current = st.session_state["sim.df"].copy()
-        # Asegurar que solo se muestren los SKUs filtrados
-        filtered_skus = st.session_state["sim.df_filtered"]["SKU"].tolist()
-        df_current = df_current[df_current["SKU"].isin(filtered_skus)].copy()
-    else:
-        df_current = df_global.copy()
-
-    # Filtrar SKUs sin costos totales en df_current para análisis de EBITDA más preciso
-    if "Costos Totales (USD/kg)" in df_current.columns:
-        original_count = len(df_current)
-        df_current = df_current[df_current["Costos Totales (USD/kg)"] != 0].copy()
-        filtered_count = len(df_current)
-        if original_count > filtered_count and st.session_state.get("show_cost_filter_info", True):
-            with st.container():
-                col1, col2 = st.columns([20, 1])
-                with col1:
-                    st.info(f"🔍 **Filtrado de datos simulados**: Se excluyeron {original_count - filtered_count} SKUs sin costos totales para un análisis de EBITDA más preciso")
-                with col2:
-                    if st.button("✕", key="close_cost_filter_info", help="Cerrar aviso"):
-                        st.session_state.show_cost_filter_info = False
-                        st.rerun()
-
-    # Verificar si hay ajustes universales aplicados y actualizar df_current
-    if st.session_state.get("sim.overrides_row"):
-        # Aplicar ajustes universales a los datos filtrados
-        df_current_with_adjustments = df_current.copy()
-        
-        for cost_column, adjustment_info in st.session_state["sim.overrides_row"].items():
-            if cost_column in df_current_with_adjustments.columns:
-                if adjustment_info["type"] == "percentage":
-                    df_current_with_adjustments[cost_column] = df_current_with_adjustments[cost_column] * (1 + adjustment_info["value"] / 100)
-                else:  # dollars
-                    df_current_with_adjustments[cost_column] = adjustment_info["value"]
-
-        
-        # Recalcular totales después de aplicar ajustes
-        df_current_with_adjustments = recalculate_totals(df_current_with_adjustments)
-        
-        # Filtrar SKUs sin costos totales después de aplicar ajustes universales
-        if "Costos Totales (USD/kg)" in df_current_with_adjustments.columns:
-            df_current_with_adjustments = df_current_with_adjustments[df_current_with_adjustments["Costos Totales (USD/kg)"] != 0].copy()
-        
-        df_current = df_current_with_adjustments.copy()
-
-    # ===================== Bloque 2 - Tabla Editable con Todos los Costos =====================
-    st.header("Detalle de Costos Simulados")
-
-
-    # ===================== Ajustes Universales =====================
-    st.subheader("⚙️ Ajustes Universales por Costo")
-
-    # Obtener datos del detalle si están disponibles en la sesión
-    if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
-        detalle_data = st.session_state["hist.df"].copy()
-        # Filtrar por SKUs actuales
-        filtered_skus = df_filtered["SKU"].tolist()
-        detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
-        
-        adj_columns = ["Proceso Granel (USD/kg)", "Almacenaje MMPP", "MO Directa", "MO Indirecta",
-    "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
-    "Fletes Internos", "Comex", "Guarda PT", "PrecioVenta (USD/kg)"]
-        
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-        
-        with col1:
-            selected_cost = st.selectbox(
-                "Seleccionar costo a ajustar:",
-                options=adj_columns,
-                help="Selecciona el costo específico que quieres ajustar universalmente"
-            )
-        
-        with col2:
-            adjustment_type = st.selectbox(
-                "Tipo de ajuste:",
-                options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
-                help="Ajuste por porcentaje o nuevo valor en dólares por kg"
-            )
-        
-        with col3:
-            if adjustment_type == "Porcentaje (%)":
-                adjustment_value = st.number_input(
-                    "Valor del ajuste:",
-                    min_value=-100.0,
-                    max_value=1000.0,
-                    value=0.0,
-                    step=0.5,
-                    format="%.1f",
-                    help="Porcentaje de cambio (-100 a +1000)"
+    tab_real, tab_optimos = st.tabs(["🔍 Real", "🏆 Óptimos"])
+    with tab_real:
+        # ===================== Bloque 1 - Carga de Planilla =====================
+        with st.expander("📁 **Carga de Planilla (SKU-CostoNuevo)**", expanded=False):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                uploaded_file = st.file_uploader(
+                    "Subir archivo con SKU y CostoNuevo",
+                    type=["xlsx", "csv"],
+                    help="El archivo debe contener las columnas: SKU, CostoNuevo"
                 )
-            else:
-                if selected_cost == "PrecioVenta (USD/kg)":
-                    adjustment_value = st.number_input(
-                        "Nuevo valor:",
-                        min_value=0.0,
-                        max_value=10.0,
-                        value=0.0,
-                        step=0.001,
-                        format="%.3f",
-                        help="Nuevo valor en dólares por kg"
-                    )
+            with col2:
+                if uploaded_file is not None:
+                    # Validar archivo
+                    is_valid, message, df_upload = validate_upload_file(uploaded_file)
+                    
+                    if is_valid:
+                        st.success(f"✅ {message}")
+                        
+                        # Mostrar preview del archivo
+                        with st.expander("📋 Preview del archivo"):
+                            st.dataframe(df_upload.head(10), width='stretch')
+                        
+                        # Botón para aplicar overrides
+                        if st.button("🚀 Aplicar Overrides", type="primary"):
+                            # Tomar snapshot antes de aplicar cambios masivos
+                            sim_snapshot_push()
+                            
+                            # Aplicar overrides desde archivo sobre los datos filtrados
+                            df_with_upload, updated_count = apply_upload_overrides(df_global, df_upload)
+                            
+                            # Guardar en sesión
+                            st.session_state.df_current = df_with_upload
+                            st.session_state.upload_applied = True
+                            
+                            st.success(f"✅ Se aplicaron overrides a {updated_count} SKUs")
+                            st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
                 else:
-                    adjustment_value = st.number_input(
-                        "Nuevo valor:",
-                        min_value=-10.0,
-                        max_value=0.0,
-                        value=0.0,
-                        step=0.001,
-                        format="%.3f",
-                        help="Nuevo valor en dólares por kg"
-                    )
-        
-        with col4:
-            if st.button("Aplicar Ajuste", type="primary"):
-                # Tomar snapshot antes de aplicar cambios masivos
-                sim_snapshot_push()
-                
-                # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN (NO modificar hist.df)
-                adjustment_key = f"{selected_cost}"
-                
-                # IMPORTANTE: Guardar valores originales desde hist.df (NO editable)
-                original_values = {}
-                for sku in filtered_skus:
-                    if sku in st.session_state["hist.df"]["SKU"].values:
-                        idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
-                        original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
-                
-                # Inicializar sim.overrides_row si no existe
-                if "sim.overrides_row" not in st.session_state:
-                    st.session_state["sim.overrides_row"] = {}
-                
-                st.session_state["sim.overrides_row"][adjustment_key] = {
-                    "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
-                    "value": adjustment_value,
-                    "applied_skus": filtered_skus.copy(),  # Guardar SKUs afectados
-                    "original_values": original_values,  # Guardar valores originales
-                    "timestamp": pd.Timestamp.now()
-                }
-                
-                # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
-                # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
-                df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
-                
-                # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
-                if "Costos Totales (USD/kg)" in df_current_updated.columns:
-                    before_filter = len(df_current_updated)
-                    df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
-                    after_filter = len(df_current_updated)
-                
-                # Recalcular totales en sim.df
-                df_current_updated = recalculate_totals(df_current_updated)
-                                    
-                # Guardar en sim.df
-                st.session_state["sim.df"] = df_current_updated.copy()
-                
-                # Marcar como dirty
-                st.session_state["sim.dirty"] = True
-                st.rerun()
-    
-        # Mostrar ajustes universales activos
-        if st.session_state.get("sim.overrides_row"):
-            st.subheader("Ajustes Universales Activos")
-            
-                    # Información sobre restauración (con botón de cierre)
-            if st.session_state.get("ui.messages") and any("restoration_info" in msg for msg in st.session_state["ui.messages"]):
+                    st.info("📤 Selecciona un archivo para aplicar overrides")
+
+        # ===================== Estado de la sesión =====================
+        # Si hay datos en sesión, aplicarlos sobre los filtros actuales
+        if st.session_state.get("sim.override_upload") and "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
+            # Aplicar los overrides de sesión sobre los datos filtrados
+            df_current = st.session_state["sim.df"].copy()
+            # Asegurar que solo se muestren los SKUs filtrados
+            filtered_skus = st.session_state["sim.df_filtered"]["SKU"].tolist()
+            df_current = df_current[df_current["SKU"].isin(filtered_skus)].copy()
+        else:
+            df_current = df_global.copy()
+
+        # Filtrar SKUs sin costos totales en df_current para análisis de EBITDA más preciso
+        if "Costos Totales (USD/kg)" in df_current.columns:
+            original_count = len(df_current)
+            df_current = df_current[df_current["Costos Totales (USD/kg)"] != 0].copy()
+            filtered_count = len(df_current)
+            if original_count > filtered_count and st.session_state.get("show_cost_filter_info", True):
                 with st.container():
                     col1, col2 = st.columns([20, 1])
                     with col1:
-                        st.info("💡 **Restauración automática**: Al eliminar un ajuste, se restauran automáticamente los valores originales del detalle histórico.")
+                        st.info(f"🔍 **Filtrado de datos simulados**: Se excluyeron {original_count - filtered_count} SKUs sin costos totales para un análisis de EBITDA más preciso")
                     with col2:
-                        if st.button("✕", key="close_restoration_info", help="Cerrar aviso"):
-                            # Marcar mensaje como leído
-                            st.session_state["ui.messages"] = [msg for msg in st.session_state["ui.messages"] if "restoration_info" not in msg]
+                        if st.button("✕", key="close_cost_filter_info", help="Cerrar aviso"):
+                            st.session_state.show_cost_filter_info = False
                             st.rerun()
+
+        # Verificar si hay ajustes universales aplicados y actualizar df_current
+        if st.session_state.get("sim.overrides_row"):
+            # Aplicar ajustes universales a los datos filtrados
+            df_current_with_adjustments = df_current.copy()
             
             for cost_column, adjustment_info in st.session_state["sim.overrides_row"].items():
-                adjustment_type_str = "Porcentaje" if adjustment_info["type"] == "percentage" else "Dólares"
-                value_str = f"{adjustment_info['value']:+.1f}%" if adjustment_info["type"] == "percentage" else f"{adjustment_info['value']:+.3f} USD/kg"
-                skus_count = len(adjustment_info["applied_skus"])
-                timestamp = adjustment_info["timestamp"].strftime("%H:%M:%S")
-                
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                with col1:
-                    st.write(f"**{cost_column}**: {value_str}")
-                with col2:
-                    st.write(f"**SKUs**: {skus_count}")
-                with col3:
-                    st.write(f"**Tipo**: {adjustment_type_str}")
-                with col4:
-                    if st.button("🗑️", key=f"remove_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
-                        # IMPORTANTE: NO modificar hist.df - solo actualizar sim.df
-                        if "sim.df" in st.session_state:
-                            # Aplicar los ajustes universales restantes a df_base completo
-                            remaining_adjustments = {k: v for k, v in st.session_state["sim.overrides_row"].items() if k != cost_column}
-                            if remaining_adjustments:
-                                # Aplicar ajustes restantes a df_base
-                                df_current_updated = apply_universal_adjustments(df_base, remaining_adjustments)
-                                
-                                # IMPORTANTE: Excluir SKUs sin costos totales
-                                if "Costos Totales (USD/kg)" in df_current_updated.columns:
-                                    df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
-                                
-                                # Recalcular totales
-                                df_current_updated = recalculate_totals(df_current_updated)
-                                st.session_state["sim.df"] = df_current_updated.copy()
-                            else:
-                                # Sin ajustes, usar df_base original (que ya excluye SKUs sin costos)
-                                st.session_state["sim.df"] = df_base.copy()
-                            
-                            # Marcar como dirty
-                            st.session_state["sim.dirty"] = True
-                            
-                            # Eliminar el ajuste
-                            del st.session_state["sim.overrides_row"][cost_column]                            
-                            st.rerun()
+                if cost_column in df_current_with_adjustments.columns:
+                    if adjustment_info["type"] == "percentage":
+                        df_current_with_adjustments[cost_column] = df_current_with_adjustments[cost_column] * (1 + adjustment_info["value"] / 100)
+                    else:  # dollars
+                        df_current_with_adjustments[cost_column] = adjustment_info["value"]
+
             
-                            # Botón para limpiar todos los ajustes
-            if st.button("Limpiar todos los ajustes", type="secondary"):
-                # Tomar snapshot antes de aplicar cambios masivos
-                sim_snapshot_push()
-                
-                # Restaurar sim.df a df_base original (que ya excluye SKUs sin costos)
-                st.session_state["sim.df"] = df_base.copy()
-                st.session_state["sim.overrides_row"] = {}
-                st.session_state["sim.dirty"] = True
-                
-                st.success("✅ Todos los ajustes universales eliminados")
-                st.rerun()
-        
-    
-        # Verificar que sim.df esté disponible
-        if "sim.df" not in st.session_state or st.session_state["sim.df"] is None:
-            st.error("❌ **No hay datos de simulación disponibles**")
-            st.info("💡 **Para usar la tabla editable, primero debes:**")
-            st.info("1. 📁 Cargar datos en la página Home")
-            st.info("2. 🔄 Regresar al simulador")
-            st.stop()
-        
-        # Preparar datos para la tabla editable usando sim.df (que incluye ajustes universales)
-        # Obtener datos de simulación si están disponibles en la sesión
-        if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
-            # Usar sim.df que ya incluye los ajustes universales aplicados
-            sim_data = st.session_state["sim.df"].copy()
+            # Recalcular totales después de aplicar ajustes
+            df_current_with_adjustments = recalculate_totals(df_current_with_adjustments)
+            
+            # Filtrar SKUs sin costos totales después de aplicar ajustes universales
+            if "Costos Totales (USD/kg)" in df_current_with_adjustments.columns:
+                df_current_with_adjustments = df_current_with_adjustments[df_current_with_adjustments["Costos Totales (USD/kg)"] != 0].copy()
+            
+            df_current = df_current_with_adjustments.copy()
+
+        # ===================== Bloque 2 - Tabla Editable con Todos los Costos =====================
+        st.header("Detalle de Costos Simulados")
+
+        # ===================== Ajustes Universales =====================
+        st.subheader("⚙️ Ajustes Universales por Costo")
+
+        # Obtener datos del detalle si están disponibles en la sesión
+        if "hist.df" in st.session_state and st.session_state["hist.df"] is not None:
+            detalle_data = st.session_state["hist.df"].copy()
             # Filtrar por SKUs actuales
-            filtered_skus = st.session_state["sim.df_filtered"]["SKU"].tolist()
+            filtered_skus = df_filtered["SKU"].tolist()
+            detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
+            
+            adj_columns = ["Proceso Granel (USD/kg)", "Almacenaje MMPP", "MO Directa", "MO Indirecta",
+        "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
+        "Fletes Internos", "Comex", "Guarda PT", "PrecioVenta (USD/kg)"]
+            
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+            
+            with col1:
+                selected_cost = st.selectbox(
+                    "Seleccionar costo a ajustar:",
+                    options=adj_columns,
+                    help="Selecciona el costo específico que quieres ajustar universalmente"
+                )
+            
+            with col2:
+                adjustment_type = st.selectbox(
+                    "Tipo de ajuste:",
+                    options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
+                    help="Ajuste por porcentaje o nuevo valor en dólares por kg"
+                )
+            
+            with col3:
+                if adjustment_type == "Porcentaje (%)":
+                    adjustment_value = st.number_input(
+                        "Valor del ajuste:",
+                        min_value=-100.0,
+                        max_value=1000.0,
+                        value=0.0,
+                        step=0.5,
+                        format="%.1f",
+                        help="Porcentaje de cambio (-100 a +1000)"
+                    )
+                else:
+                    if selected_cost == "PrecioVenta (USD/kg)":
+                        adjustment_value = st.number_input(
+                            "Nuevo valor:",
+                            min_value=0.0,
+                            max_value=10.0,
+                            value=0.0,
+                            step=0.001,
+                            format="%.3f",
+                            help="Nuevo valor en dólares por kg"
+                        )
+                    else:
+                        adjustment_value = st.number_input(
+                            "Nuevo valor:",
+                            min_value=-10.0,
+                            max_value=0.0,
+                            value=0.0,
+                            step=0.001,
+                            format="%.3f",
+                            help="Nuevo valor en dólares por kg"
+                        )
+            
+            with col4:
+                if st.button("Aplicar Ajuste", type="primary"):
+                    # Tomar snapshot antes de aplicar cambios masivos
+                    sim_snapshot_push()
+                    
+                    # GUARDAR EL AJUSTE UNIVERSAL EN LA SESIÓN (NO modificar hist.df)
+                    adjustment_key = f"{selected_cost}"
+                    
+                    # IMPORTANTE: Guardar valores originales desde hist.df (NO editable)
+                    original_values = {}
+                    for sku in filtered_skus:
+                        if sku in st.session_state["hist.df"]["SKU"].values:
+                            idx_original = st.session_state["hist.df"][st.session_state["hist.df"]["SKU"] == sku].index[0]
+                            original_values[sku] = st.session_state["hist.df"].loc[idx_original, selected_cost]
+                    
+                    # Inicializar sim.overrides_row si no existe
+                    if "sim.overrides_row" not in st.session_state:
+                        st.session_state["sim.overrides_row"] = {}
+                    
+                    st.session_state["sim.overrides_row"][adjustment_key] = {
+                        "type": "percentage" if adjustment_type == "Porcentaje (%)" else "dollars",
+                        "value": adjustment_value,
+                        "applied_skus": filtered_skus.copy(),  # Guardar SKUs afectados
+                        "original_values": original_values,  # Guardar valores originales
+                        "timestamp": pd.Timestamp.now()
+                    }
+                    
+                    # ACTUALIZAR sim.df para que se refleje en la tabla editable y KPIs
+                    # IMPORTANTE: Aplicar ajustes universales a df_base completo (no solo filtrado)
+                    df_current_updated = apply_universal_adjustments(df_base, st.session_state["sim.overrides_row"])
+                    
+                    # IMPORTANTE: Excluir SKUs sin costos totales (igual que en df_base)
+                    if "Costos Totales (USD/kg)" in df_current_updated.columns:
+                        before_filter = len(df_current_updated)
+                        df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
+                        after_filter = len(df_current_updated)
+                    
+                    # Recalcular totales en sim.df
+                    df_current_updated = recalculate_totals(df_current_updated)
+                                        
+                    # Guardar en sim.df
+                    st.session_state["sim.df"] = df_current_updated.copy()
+                    
+                    # Marcar como dirty
+                    st.session_state["sim.dirty"] = True
+                    st.rerun()
+
+            # Mostrar ajustes universales activos
+            if st.session_state.get("sim.overrides_row"):
+                st.subheader("Ajustes Universales Activos")
+                
+                        # Información sobre restauración (con botón de cierre)
+                if st.session_state.get("ui.messages") and any("restoration_info" in msg for msg in st.session_state["ui.messages"]):
+                    with st.container():
+                        col1, col2 = st.columns([20, 1])
+                        with col1:
+                            st.info("💡 **Restauración automática**: Al eliminar un ajuste, se restauran automáticamente los valores originales del detalle histórico.")
+                        with col2:
+                            if st.button("✕", key="close_restoration_info", help="Cerrar aviso"):
+                                # Marcar mensaje como leído
+                                st.session_state["ui.messages"] = [msg for msg in st.session_state["ui.messages"] if "restoration_info" not in msg]
+                                st.rerun()
+                
+                for cost_column, adjustment_info in st.session_state["sim.overrides_row"].items():
+                    adjustment_type_str = "Porcentaje" if adjustment_info["type"] == "percentage" else "Dólares"
+                    value_str = f"{adjustment_info['value']:+.1f}%" if adjustment_info["type"] == "percentage" else f"{adjustment_info['value']:+.3f} USD/kg"
+                    skus_count = len(adjustment_info["applied_skus"])
+                    timestamp = adjustment_info["timestamp"].strftime("%H:%M:%S")
+                    
+                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                    with col1:
+                        st.write(f"**{cost_column}**: {value_str}")
+                    with col2:
+                        st.write(f"**SKUs**: {skus_count}")
+                    with col3:
+                        st.write(f"**Tipo**: {adjustment_type_str}")
+                    with col4:
+                        if st.button("🗑️", key=f"remove_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
+                            # IMPORTANTE: NO modificar hist.df - solo actualizar sim.df
+                            if "sim.df" in st.session_state:
+                                # Aplicar los ajustes universales restantes a df_base completo
+                                remaining_adjustments = {k: v for k, v in st.session_state["sim.overrides_row"].items() if k != cost_column}
+                                if remaining_adjustments:
+                                    # Aplicar ajustes restantes a df_base
+                                    df_current_updated = apply_universal_adjustments(df_base, remaining_adjustments)
+                                    
+                                    # IMPORTANTE: Excluir SKUs sin costos totales
+                                    if "Costos Totales (USD/kg)" in df_current_updated.columns:
+                                        df_current_updated = df_current_updated[df_current_updated["Costos Totales (USD/kg)"] != 0].copy()
+                                    
+                                    # Recalcular totales
+                                    df_current_updated = recalculate_totals(df_current_updated)
+                                    st.session_state["sim.df"] = df_current_updated.copy()
+                                else:
+                                    # Sin ajustes, usar df_base original (que ya excluye SKUs sin costos)
+                                    st.session_state["sim.df"] = df_base.copy()
+                                
+                                # Marcar como dirty
+                                st.session_state["sim.dirty"] = True
+                                
+                                # Eliminar el ajuste
+                                del st.session_state["sim.overrides_row"][cost_column]                            
+                                st.rerun()
+                
+                                # Botón para limpiar todos los ajustes
+                if st.button("Limpiar todos los ajustes", type="secondary"):
+                    # Tomar snapshot antes de aplicar cambios masivos
+                    sim_snapshot_push()
+                    
+                    # Restaurar sim.df a df_base original (que ya excluye SKUs sin costos)
+                    st.session_state["sim.df"] = df_base.copy()
+                    st.session_state["sim.overrides_row"] = {}
+                    st.session_state["sim.dirty"] = True
+                    
+                    st.success("✅ Todos los ajustes universales eliminados")
+                    st.rerun()
+            
+
+            # Verificar que sim.df esté disponible
+            if "sim.df" not in st.session_state or st.session_state["sim.df"] is None:
+                st.error("❌ **No hay datos de simulación disponibles**")
+                st.info("💡 **Para usar la tabla editable, primero debes:**")
+                st.info("1. 📁 Cargar datos en la página Home")
+                st.info("2. 🔄 Regresar al simulador")
+                st.stop()
+            
+            # Preparar datos para la tabla editable usando sim.df (que incluye ajustes universales)
+            # Obtener datos de simulación si están disponibles en la sesión
+            if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
+                # Usar sim.df que ya incluye los ajustes universales aplicados
+                sim_data = st.session_state["sim.df"].copy()
+                # Filtrar por SKUs actuales
+                filtered_skus = st.session_state["sim.df_filtered"]["SKU-Cliente"].tolist()
+                
+                # Identificar columnas de costos (excluyendo dimensiones y totales)
+                # Nota: SKU-Cliente se incluye en dimension_cols para el procesamiento pero se oculta en la tabla
+                dimension_cols = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]
+
+                orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
+                        "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
+                        "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
+                        "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
+                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+        
+                # Mover columnas dimensionales al inicio
+                display_order = dimension_cols + orden_cols
+                available_display_cols = [col for col in display_order if col in sim_data.columns]
+                
+                # Crear DataFrame para edición
+                df_edit = sim_data[available_display_cols].copy()
+                df_edit = df_edit[df_edit["SKU-Cliente"].isin(filtered_skus)]
+                        
+                # Configurar columnas editables (solo costos individuales, no totales)
+                editable_columns = columns_config(editable=True)
+                # Aplicar estilos antes de mostrar la tabla editable (igual que en datos históricos)
+                df_edit_styled = df_edit.copy()
+                
+                # ESTABLECER EL ÍNDICE ANTES de aplicar estilos
+                df_edit_styled = df_edit_styled.set_index("SKU-Cliente")
+                
+                # IMPORTANTE: Guardar una copia del DataFrame original (con índice) ANTES de convertir a Styler
+                df_edit_original = df_edit_styled.copy()
+                
+                # Aplicar formato numérico ANTES de convertir a Styler
+                fmt_cols = {}
+                for c in df_edit_styled.columns:
+                    if c not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+                        if "Pct" in c or "Porcentaje" in c:
+                            fmt_cols[c] = "{:.1%}"  # Formato de porcentaje
+                        elif np.issubdtype(df_edit_styled[c].dtype, np.number):
+                            fmt_cols[c] = "{:.3f}"   # Formato numérico
+                
+                # Aplicar formato numérico al DataFrame
+                if fmt_cols:
+                    df_edit_styled = df_edit_styled.style.format(fmt_cols)
+                
+                # Aplicar negritas a las columnas de totales
+                total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)",
+                "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
+                existing_total_columns = [col for col in total_columns if col in df_edit.columns]
+                
+                if existing_total_columns:
+                    df_edit_styled = df_edit_styled.set_properties(
+                        subset=existing_total_columns,
+                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                    )
+                
+                # Aplicar estilos a columnas EBITDA
+                ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+                existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit.columns]
+                
+                if existing_ebitda_columns:
+                    df_edit_styled = df_edit_styled.set_properties(
+                        subset=existing_ebitda_columns,
+                        **{"font-weight": "bold", "background-color": "#fff7ed"}
+                    )
+                
+                # El DataFrame ya tiene el índice establecido, solo aplicar estilos
+                df_edit_final = df_edit_styled
+                
+                edited_df = st.dataframe(
+                    df_edit_final,
+                    column_config=editable_columns,
+                    width='stretch',
+                    height="auto",
+                    key="data_editor_detalle",
+                    hide_index=True
+                )
+                
+                # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
+                # if not edited_df.equals(df_edit_original):
+                #     st.info("🔍 Cambios detectados en la tabla editable")
+                    
+                #     # Restaurar índice para procesamiento
+                #     edited_df_reset = edited_df.reset_index()
+                    
+                #     # Guardar historial de cambios ANTES de procesar
+                #     changes_detected = 0
+                    
+                #     # Comparar contra hist.df (valores originales) para detectar cambios
+                #     if "hist.df" in st.session_state:
+                #         hist_df = st.session_state["hist.df"]
+                        
+                #         # Convertir filtered_skus a strings para que coincida con los DataFrames
+                #         filtered_skus_str = [str(sku) for sku in filtered_skus]
+                        
+                #         # Buscar cambios por SKU comparando contra valores originales
+                #         for sku in filtered_skus_str:
+                #             # Buscar el SKU en hist.df (valores originales)
+                #             mask_hist = hist_df["SKU"] == sku
+                #             mask_edited = edited_df_reset["SKU"] == sku
+                            
+                #             if mask_hist.any() and mask_edited.any():
+                #                 # Obtener las filas correspondientes
+                #                 original_row = hist_df[mask_hist].iloc[0]
+                #                 edited_row = edited_df_reset[mask_edited].iloc[0]
+                                
+                #                 # Comparar columnas numéricas (excluyendo dimensiones)
+                #                 for col in edited_df_reset.columns:
+                #                     if col not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+                #                         try:
+                #                             # Verificar que la columna existe en ambos DataFrames
+                #                             if col in original_row and col in edited_row:
+                #                                 original_value = original_row[col]
+                #                                 edited_value = edited_row[col]
+                                                
+                #                                 # Si hay cambio, guardar en historial
+                #                                 if abs(original_value - edited_value) > 1e-6:  # Tolerancia para floats
+                #                                     save_edit_history(sku, col, original_value, edited_value)
+                #                                     changes_detected += 1
+                #                             else:
+                #                                 st.warning(f"⚠️ Columna {col} no encontrada en uno de los DataFrames")
+                #                         except (IndexError, KeyError, TypeError) as e:
+                #                             st.warning(f"⚠️ Error comparando {sku} - {col}: {e}")
+                #                             continue
+                #             else:
+                #                 st.warning(f"⚠️ SKU {sku} no encontrado en uno de los DataFrames")
+                #     else:
+                #         st.warning("⚠️ No hay datos históricos disponibles para comparar cambios")
+                    
+                #     if changes_detected > 0:
+                #         st.success(f"✅ {changes_detected} cambios detectados y guardados en historial")
+                        
+                #         # Validar y corregir signos antes de procesar
+                #         edited_df_reset = validate_and_correct_signs(edited_df_reset)
+                        
+                #         # IMPORTANTE: Recalcular totales directamente en edited_df_reset
+                #         edited_df_recalculated = recalculate_totals(edited_df_reset)
+                        
+                #         # Actualizar solo sim.df (NO modificar hist.df)
+                #         if "sim.df" in st.session_state:
+                #             st.session_state["sim.df"] = edited_df_recalculated.copy()
+                #             st.session_state["sim.dirty"] = True
+                        
+                #         st.success("✅ EBITDA recalculado automáticamente")
+                        
+                #         # Forzar actualización de la vista automáticamente
+                #         st.rerun()
+                #     else:
+                #         st.warning("⚠️ No se detectaron cambios específicos")
+                # else:
+                #     st.info("ℹ️ No hay cambios en la tabla editable")
+                
+                # Mostrar historial de cambios y opciones de reversión
+                if "sim.edit_history" in st.session_state and st.session_state["sim.edit_history"]:
+                    st.subheader("📝 Historial de Cambios Individuales")
+                    
+                    # Agrupar cambios por SKU para mejor visualización
+                    changes_by_sku = {}
+                    for change_key, change_info in st.session_state["sim.edit_history"].items():
+                        sku = change_info["sku"]
+                        if sku not in changes_by_sku:
+                            changes_by_sku[sku] = []
+                        changes_by_sku[sku].append(change_info)
+                    
+                    # Mostrar cambios agrupados por SKU
+                    for sku, changes in changes_by_sku.items():
+                        with st.expander(f"🔧 SKU: {sku} ({len(changes)} cambios)", expanded=False):
+                            for change in changes:
+                                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                                
+                                with col1:
+                                    st.write(f"**{change['column']}**: {change['old_value']:.3f} → {change['new_value']:.3f}")
+                                
+                                with col2:
+                                    st.write(f"**{change['timestamp'].strftime('%H:%M:%S')}**")
+                                
+                                with col3:
+                                    st.write(f"**{change['new_value'] - change['old_value']:+.3f}**")
+                                
+                                with col4:
+                                    if st.button("↩️", key=f"revert_{change_key}_{sku}_{change['column']}", 
+                                                help=f"Revertir {change['column']} a {change['old_value']:.3f}"):
+                                        if revert_edit(sku, change['column']):
+                                            st.success(f"✅ {change['column']} revertido a {change['old_value']:.3f}")
+                                            st.rerun()
+                                        else:
+                                            st.error(f"❌ No se pudo revertir {change['column']}")
+                            
+                            # Botón para revertir todos los cambios de este SKU
+                            if st.button("🔄 Revertir Todos los Cambios", key=f"revert_all_{sku}", type="secondary"):
+                                reverted_count = 0
+                                for change in changes:
+                                    if revert_edit(sku, change['column']):
+                                        reverted_count += 1
+                                
+                                if reverted_count > 0:
+                                    st.success(f"✅ {reverted_count} cambios revertidos para {sku}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ No se pudieron revertir los cambios para {sku}")
+                
+                # Botón para revertir todos los cambios
+                if st.button("🗑️ Revertir Todos los Cambios", type="secondary", 
+                        help="Revierte todos los cambios individuales a sus valores originales"):
+                    # Tomar snapshot antes de aplicar cambios masivos
+                    sim_snapshot_push()
+                    
+                    reverted_total = 0
+                    for change_key, change_info in list(st.session_state["sim.edit_history"].items()):
+                        if revert_edit(change_info['sku'], change_info['column']):
+                            reverted_total += 1
+                    
+                    if reverted_total > 0:
+                        st.success(f"✅ {reverted_total} cambios revertidos en total")
+                        st.rerun()
+                    else:
+                        st.error("❌ No se pudieron revertir los cambios")
+            else:
+                st.error("❌ **No hay datos disponibles para el simulador**")
+                st.info("💡 **Para usar el simulador, primero debes:**")
+                st.info("1. 📁 Ir a la página **Inicio**")
+                st.info("2. 📤 Cargar tu archivo Excel con los datos base")
+                st.info("3. 🔄 Regresar al simulador")
+
+                # Botón para ir a Inicio
+                if st.button("Ir a Inicio", type="primary", width='stretch'):
+                    st.switch_page("Inicio.py")
+                
+                st.stop()
+
+        # ===================== KPIs =====================
+        # Información sobre subproductos excluidos en la vista principal
+        if 'subproductos' in locals() and len(subproductos) > 0:
+            if st.session_state.get("ui.messages") and any("subproductos_main" in msg for msg in st.session_state["ui.messages"]):
+                
+                # Información detallada sobre subproductos
+                with st.expander(f"📋 **Detalles de Subproductos Excluidos** ({len(subproductos)} SKUs)", expanded=False):
+                    st.write("**¿Por qué se excluyen estos SKUs?**")
+                    st.write("Los SKUs con costos totales = 0 no pueden generar EBITDA real y distorsionan el análisis financiero.")
+                    
+                    # Estadísticas de subproductos
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if "Marca" in subproductos.columns:
+                            marca_counts = subproductos["Marca"].value_counts()
+                            st.write("**Por Marca:**")
+                            for marca, count in marca_counts.head(3).items():
+                                st.write(f"- {marca}: {count}")
+                    
+                    with col2:
+                        if "Cliente" in subproductos.columns:
+                            cliente_counts = subproductos["Cliente"].value_counts()
+                            st.write("**Por Cliente:**")
+                            for cliente, count in cliente_counts.head(3).items():
+                                st.write(f"- {cliente}: {count}")
+                    
+                    with col3:
+                        if "Especie" in subproductos.columns:
+                            especie_counts = subproductos["Especie"].value_counts()
+                            st.write("**Por Especie:**")
+                            for especie, count in especie_counts.head(3).items():
+                                st.write(f"- {especie}: {count}")
+                    
+                    # Tabla completa de subproductos
+                    st.write("**Lista completa de subproductos excluidos:**")
+                    st.dataframe(
+                        subproductos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Costos Totales (USD/kg)"]],
+                        width='stretch'
+                    )
+                    
+                    # Botón de exportación
+                    csv_subproductos = subproductos.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Descargar Lista Completa de Subproductos (CSV)",
+                        data=csv_subproductos,
+                        file_name="subproductos_excluidos_completo.csv",
+                        mime="text/csv",
+                        width='stretch',
+                        key="download_subproductos_sim_2"
+                    )
+
+        st.header("📊 KPIs")
+
+        # Calcular KPIs
+        try:
+            kpis = calculate_kpis(df_current)
+            
+            # Mostrar KPIs en métricas
+            # col1, col2, col3, col4 = st.columns(4)
+            col2, col3 = st.columns(2)
+
+            # with col1:
+            #     st.metric(
+            #         "EBITDA Promedio (USD/kg)",
+            #         f"${kpis['EBITDA Promedio (USD/kg)']:.3f}",
+            #         help="EBITDA promedio por kilogramo"
+            #     )
+            
+            with col2:
+                st.metric(
+                    "Total SKUs",
+                    kpis['Total SKUs'],
+                    help="Número total de SKUs en la simulación (excluyendo subproductos sin costos)"
+                )
+                
+                # Información sobre subproductos excluidos en los KPIs
+                if 'subproductos' in locals() and len(subproductos) > 0:
+                    st.caption(f"⚠️ {len(subproductos)} subproductos excluidos (costos = 0)")
+            
+            with col3:
+                st.metric(
+                    "SKUs Rentables",
+                    kpis['SKUs Rentables'],
+                    f"{kpis['SKUs Rentables']}/{kpis['Total SKUs']}",
+                    help="Número de SKUs con EBITDA positivo"
+                )
+            
+            # with col4:
+            #     st.metric(
+            #         "Margen Promedio (%)",
+            #         f"{kpis['EBITDA Promedio (%)']:.1f}%",
+            #         help="Margen promedio como porcentaje del precio"
+            #     )
+                
+        except Exception as e:
+            st.error(f"❌ Error calculando KPIs: {e}")
+            st.info("💡 Verifica que las columnas de EBITDA estén presentes en los datos")
+
+        # ===================== Top y Bottom SKUs =====================
+        st.header(" Top 5 y Bottom 5 SKUs por EBITDA")
+
+        try:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Top 5 SKUs")
+                top_skus, _ = get_top_bottom_skus(df_current, 5)
+                if not top_skus.empty:
+                    # Formatear las columnas correctamente
+                    display_columns = ["SKU", "Cliente", "Marca"]
+                    
+                    # Buscar columnas de EBITDA disponibles
+                    ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in top_skus.columns else "EBITDAUSD_kg"
+                    ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in top_skus.columns else "MargenPct"
+                    
+                    if ebitda_column in top_skus.columns:
+                        display_columns.append(ebitda_column)
+                    if ebitda_pct_column in top_skus.columns:
+                        display_columns.append(ebitda_pct_column)
+                    
+                    # Filtrar columnas que existen
+                    available_display_cols = [col for col in display_columns if col in top_skus.columns]
+                    
+                    st.dataframe(
+                        top_skus[available_display_cols].style.format({
+                            ebitda_column: "{:.3f}" if ebitda_column in top_skus.columns else None,
+                            ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in top_skus.columns else None
+                        }),
+                        width='stretch'
+                    )
+                else:
+                    st.info("No hay datos para mostrar")
+            
+            with col2:
+                st.subheader("Bottom 5 SKUs")
+                _, bottom_skus = get_top_bottom_skus(df_current, 5)
+                if not bottom_skus.empty:
+                    # Formatear las columnas correctamente
+                    display_columns = ["SKU", "Cliente", "Marca"]
+                    
+                    # Buscar columnas de EBITDA disponibles
+                    ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in bottom_skus.columns else "EBITDAUSD_kg"
+                    ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in bottom_skus.columns else "MargenPct"
+                    
+                    if ebitda_column in bottom_skus.columns:
+                        display_columns.append(ebitda_column)
+                    if ebitda_pct_column in bottom_skus.columns:
+                        display_columns.append(ebitda_pct_column)
+                    
+                    # Filtrar columnas que existen
+                    available_display_cols = [col for col in display_columns if col in bottom_skus.columns]
+                    
+                    st.dataframe(
+                        bottom_skus[available_display_cols].style.format({
+                            ebitda_column: "{:.3f}" if ebitda_column in bottom_skus.columns else None,
+                            ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in bottom_skus.columns else None
+                        }),
+                        width='stretch'
+                    )
+                else:
+                    st.info("No hay datos para mostrar")
+                    
+        except Exception as e:
+            st.error(f"❌ Error obteniendo top/bottom SKUs: {e}")
+            st.info("💡 Verifica que las columnas de EBITDA estén presentes en los datos")
+
+        # ===================== Gráficos =====================
+        st.header("📈 Gráficos")
+
+        # Configuración del gráfico
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            top_n = st.number_input(
+                "Número de SKUs a mostrar",
+                min_value=5,
+                max_value=50,
+                value=20,
+                step=5,
+                help="Número de SKUs con mayor EBITDA para mostrar en el gráfico"
+            )
+
+        with col2:
+            st.write("")
+
+        # Gráfico de EBITDA por SKU
+        try:
+            ebitda_chart = create_ebitda_chart(df_current, top_n)
+            if ebitda_chart:
+                st.altair_chart(ebitda_chart)
+            else:
+                st.warning("⚠️ No se pudo crear el gráfico de EBITDA")
+        except Exception as e:
+            st.error(f"❌ Error creando gráfico de EBITDA: {e}")
+
+        # Gráfico de distribución de márgenes
+        st.subheader("📊 Distribución de Márgenes")
+        try:
+            margin_chart = create_margin_distribution_chart(df_current)
+            if margin_chart:
+                st.altair_chart(margin_chart)
+            else:
+                st.warning("⚠️ No se pudo crear el gráfico de distribución")
+        except Exception as e:
+            st.error(f"❌ Error creando gráfico de distribución: {e}")
+
+        # ===================== Export =====================
+        st.header("💾 Exportar Escenario")
+
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            filename_prefix = st.text_input(
+                "Prefijo del archivo:",
+                value="escenario_ebitda",
+                help="Nombre base para el archivo de exportación"
+            )
+
+        with col2:
+            if st.button("📥 Exportar a CSV", type="primary"):
+                try:
+                    # Exportar escenario
+                    export_path = export_escenario(df_current, filename_prefix)
+                    
+                    # Leer archivo para descarga
+                    with open(export_path, 'r', encoding='utf-8') as f:
+                        csv_content = f.read()
+                    
+                    # Botón de descarga
+                    st.download_button(
+                        label="⬇️ Descargar CSV",
+                        data=csv_content,
+                        file_name=export_path.name,
+                        mime="text/csv",
+                        key="download_escenario_csv"
+                    )
+                    
+                    st.success(f"✅ Escenario exportado exitosamente a: {export_path}")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error exportando escenario: {e}")
+
+        # ===================== Información adicional =====================
+        st.markdown("---")
+        st.markdown("""
+        ### 📚 Información del Simulador
+
+        Este simulador te permite:
+
+        1. **Filtrar datos** por Cliente, Marca, Especie y Condición
+        2. **Aplicar overrides globales** con cambios porcentuales en costos
+        3. **Cargar planillas** con nuevos costos por SKU
+        4. **Editar manualmente** precios y costos por fila
+        5. **Analizar EBITDA** y márgenes en tiempo real
+        6. **Visualizar resultados** con gráficos interactivos
+        7. **Exportar escenarios** para análisis posterior
+
+        ### 🔧 Cómo usar
+
+        1. **Carga datos** en la página Home primero
+        2. **Navega al Simulador** para análisis detallado
+        3. **Aplica filtros** en el sidebar para enfocar tu análisis
+        4. **Configura overrides globales** si deseas cambios porcentuales
+        5. **Sube planillas** con nuevos costos para SKUs específicos
+        6. **Edita valores** directamente en la tabla para ajustes finos
+        7. **Analiza KPIs** y gráficos para tomar decisiones
+        8. **Exporta el escenario** para compartir o analizar
+
+        ### 📊 Interpretación de resultados
+
+        - **EBITDA positivo**: El SKU es rentable
+        - **EBITDA negativo**: El SKU genera pérdidas
+        - **Margen alto**: Mayor rentabilidad relativa
+        - **Margen bajo**: Menor rentabilidad relativa
+        """)
+    with tab_optimos:
+        st.header("🏆 Óptimos")
+        # Obtener datos optimos si están disponibles en la sesión
+        if "hist.df_optimo" in st.session_state and st.session_state["hist.df_optimo"] is not None:
+            # Usar hist.optimos que ya incluye los ajustes universales aplicados
+            optimos_data = st.session_state["hist.df_optimo"].copy()
+            # Filtrar por SKUs actuales
+            filtered_skus = st.session_state["sim.df_filtered"]["SKU-Cliente"].tolist()
             
             # Identificar columnas de costos (excluyendo dimensiones y totales)
             # Nota: SKU-Cliente se incluye en dimension_cols para el procesamiento pero se oculta en la tabla
             dimension_cols = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]
-            total_cols = ["Gastos Totales (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
             
-            # Columnas de costos individuales
-            cost_columns = [col for col in sim_data.columns 
-                            if col not in dimension_cols + total_cols]
-            
+            orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
+                        "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
+                        "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
+                        "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
+                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+        
             # Mover columnas dimensionales al inicio
-            display_order = dimension_cols + cost_columns + total_cols
-            available_display_cols = [col for col in display_order if col in sim_data.columns]
+            display_order_optimos = dimension_cols + orden_cols
+            available_display_cols_optimos = [col for col in display_order_optimos if col in optimos_data.columns]
             
             # Crear DataFrame para edición
-            df_edit = sim_data[available_display_cols].copy()
-            df_edit = df_edit[df_edit["SKU"].isin(filtered_skus)]
+            df_optimos = optimos_data[available_display_cols_optimos].copy()
+            df_optimos = df_optimos[df_optimos["SKU-Cliente"].isin(filtered_skus)]
                     
             # Configurar columnas editables (solo costos individuales, no totales)
             editable_columns = columns_config(editable=True)
             # Aplicar estilos antes de mostrar la tabla editable (igual que en datos históricos)
-            df_edit_styled = df_edit.copy()
+            df_optimos_styled = df_optimos.copy()
             
             # ESTABLECER EL ÍNDICE ANTES de aplicar estilos
-            df_edit_styled = df_edit_styled.set_index("SKU-Cliente")
+            df_optimos_styled = df_optimos_styled.set_index("SKU-Cliente")
             
             # IMPORTANTE: Guardar una copia del DataFrame original (con índice) ANTES de convertir a Styler
-            df_edit_original = df_edit_styled.copy()
+            df_optimos_original = df_optimos_styled.copy()
             
             # Aplicar formato numérico ANTES de convertir a Styler
             fmt_cols = {}
-            for c in df_edit_styled.columns:
+            for c in df_optimos_styled.columns:
                 if c not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
                     if "Pct" in c or "Porcentaje" in c:
                         fmt_cols[c] = "{:.1%}"  # Formato de porcentaje
-                    elif np.issubdtype(df_edit_styled[c].dtype, np.number):
+                    elif np.issubdtype(df_optimos_styled[c].dtype, np.number):
                         fmt_cols[c] = "{:.3f}"   # Formato numérico
             
             # Aplicar formato numérico al DataFrame
             if fmt_cols:
-                df_edit_styled = df_edit_styled.style.format(fmt_cols)
+                df_optimos_styled = df_optimos_styled.style.format(fmt_cols)
             
             # Aplicar negritas a las columnas de totales
-            total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)"]
-            existing_total_columns = [col for col in total_columns if col in df_edit.columns]
+            total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)",
+            "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
+            existing_total_columns = [col for col in total_columns if col in df_optimos.columns]
             
             if existing_total_columns:
-                df_edit_styled = df_edit_styled.set_properties(
+                df_optimos_styled = df_optimos_styled.set_properties(
                     subset=existing_total_columns,
                     **{"font-weight": "bold", "background-color": "#f8f9fa"}
                 )
             
             # Aplicar estilos a columnas EBITDA
             ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-            existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit.columns]
+            existing_ebitda_columns = [col for col in ebitda_columns if col in df_optimos.columns]
             
             if existing_ebitda_columns:
-                df_edit_styled = df_edit_styled.set_properties(
+                df_optimos_styled = df_optimos_styled.set_properties(
                     subset=existing_ebitda_columns,
                     **{"font-weight": "bold", "background-color": "#fff7ed"}
                 )
             
             # El DataFrame ya tiene el índice establecido, solo aplicar estilos
-            df_edit_final = df_edit_styled
+            df_optimos_final = df_optimos_styled
             
-            edited_df = st.data_editor(
-                df_edit_final,
+            edited_df = st.dataframe(
+                df_optimos_final,
                 column_config=editable_columns,
                 width='stretch',
                 height="auto",
                 key="data_editor_detalle",
                 hide_index=True
             )
-            
-            # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
-            if not edited_df.equals(df_edit_original):
-                st.info("🔍 Cambios detectados en la tabla editable")
-                
-                # Restaurar índice para procesamiento
-                edited_df_reset = edited_df.reset_index()
-                
-                # Guardar historial de cambios ANTES de procesar
-                changes_detected = 0
-                
-                # Comparar contra hist.df (valores originales) para detectar cambios
-                if "hist.df" in st.session_state:
-                    hist_df = st.session_state["hist.df"]
-                    
-                    # Convertir filtered_skus a strings para que coincida con los DataFrames
-                    filtered_skus_str = [str(sku) for sku in filtered_skus]
-                    
-                    # Buscar cambios por SKU comparando contra valores originales
-                    for sku in filtered_skus_str:
-                        # Buscar el SKU en hist.df (valores originales)
-                        mask_hist = hist_df["SKU"] == sku
-                        mask_edited = edited_df_reset["SKU"] == sku
-                        
-                        if mask_hist.any() and mask_edited.any():
-                            # Obtener las filas correspondientes
-                            original_row = hist_df[mask_hist].iloc[0]
-                            edited_row = edited_df_reset[mask_edited].iloc[0]
-                            
-                            # Comparar columnas numéricas (excluyendo dimensiones)
-                            for col in edited_df_reset.columns:
-                                if col not in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
-                                    try:
-                                        # Verificar que la columna existe en ambos DataFrames
-                                        if col in original_row and col in edited_row:
-                                            original_value = original_row[col]
-                                            edited_value = edited_row[col]
-                                            
-                                            # Si hay cambio, guardar en historial
-                                            if abs(original_value - edited_value) > 1e-6:  # Tolerancia para floats
-                                                save_edit_history(sku, col, original_value, edited_value)
-                                                changes_detected += 1
-                                        else:
-                                            st.warning(f"⚠️ Columna {col} no encontrada en uno de los DataFrames")
-                                    except (IndexError, KeyError, TypeError) as e:
-                                        st.warning(f"⚠️ Error comparando {sku} - {col}: {e}")
-                                        continue
-                        else:
-                            st.warning(f"⚠️ SKU {sku} no encontrado en uno de los DataFrames")
-                else:
-                    st.warning("⚠️ No hay datos históricos disponibles para comparar cambios")
-                
-                if changes_detected > 0:
-                    st.success(f"✅ {changes_detected} cambios detectados y guardados en historial")
-                    
-                    # Validar y corregir signos antes de procesar
-                    edited_df_reset = validate_and_correct_signs(edited_df_reset)
-                    
-                    # IMPORTANTE: Recalcular totales directamente en edited_df_reset
-                    edited_df_recalculated = recalculate_totals(edited_df_reset)
-                    
-                    # Actualizar solo sim.df (NO modificar hist.df)
-                    if "sim.df" in st.session_state:
-                        st.session_state["sim.df"] = edited_df_recalculated.copy()
-                        st.session_state["sim.dirty"] = True
-                    
-                    st.success("✅ EBITDA recalculado automáticamente")
-                    
-                    # Forzar actualización de la vista automáticamente
-                    st.rerun()
-                else:
-                    st.warning("⚠️ No se detectaron cambios específicos")
-            else:
-                st.info("ℹ️ No hay cambios en la tabla editable")
-            
-            # Mostrar historial de cambios y opciones de reversión
-            if "sim.edit_history" in st.session_state and st.session_state["sim.edit_history"]:
-                st.subheader("📝 Historial de Cambios Individuales")
-                
-                # Agrupar cambios por SKU para mejor visualización
-                changes_by_sku = {}
-                for change_key, change_info in st.session_state["sim.edit_history"].items():
-                    sku = change_info["sku"]
-                    if sku not in changes_by_sku:
-                        changes_by_sku[sku] = []
-                    changes_by_sku[sku].append(change_info)
-                
-                # Mostrar cambios agrupados por SKU
-                for sku, changes in changes_by_sku.items():
-                    with st.expander(f"🔧 SKU: {sku} ({len(changes)} cambios)", expanded=False):
-                        for change in changes:
-                            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                            
-                            with col1:
-                                st.write(f"**{change['column']}**: {change['old_value']:.3f} → {change['new_value']:.3f}")
-                            
-                            with col2:
-                                st.write(f"**{change['timestamp'].strftime('%H:%M:%S')}**")
-                            
-                            with col3:
-                                st.write(f"**{change['new_value'] - change['old_value']:+.3f}**")
-                            
-                            with col4:
-                                if st.button("↩️", key=f"revert_{change_key}_{sku}_{change['column']}", 
-                                           help=f"Revertir {change['column']} a {change['old_value']:.3f}"):
-                                    if revert_edit(sku, change['column']):
-                                        st.success(f"✅ {change['column']} revertido a {change['old_value']:.3f}")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ No se pudo revertir {change['column']}")
-                        
-                        # Botón para revertir todos los cambios de este SKU
-                        if st.button("🔄 Revertir Todos los Cambios", key=f"revert_all_{sku}", type="secondary"):
-                            reverted_count = 0
-                            for change in changes:
-                                if revert_edit(sku, change['column']):
-                                    reverted_count += 1
-                            
-                            if reverted_count > 0:
-                                st.success(f"✅ {reverted_count} cambios revertidos para {sku}")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ No se pudieron revertir los cambios para {sku}")
-            
-            # Botón para revertir todos los cambios
-            if st.button("🗑️ Revertir Todos los Cambios", type="secondary", 
-                    help="Revierte todos los cambios individuales a sus valores originales"):
-                # Tomar snapshot antes de aplicar cambios masivos
-                sim_snapshot_push()
-                
-                reverted_total = 0
-                for change_key, change_info in list(st.session_state["sim.edit_history"].items()):
-                    if revert_edit(change_info['sku'], change_info['column']):
-                        reverted_total += 1
-                
-                if reverted_total > 0:
-                    st.success(f"✅ {reverted_total} cambios revertidos en total")
-                    st.rerun()
-                else:
-                    st.error("❌ No se pudieron revertir los cambios")
-        else:
-            st.error("❌ **No hay datos disponibles para el simulador**")
-            st.info("💡 **Para usar el simulador, primero debes:**")
-            st.info("1. 📁 Ir a la página **Inicio**")
-            st.info("2. 📤 Cargar tu archivo Excel con los datos base")
-            st.info("3. 🔄 Regresar al simulador")
-
-            # Botón para ir a Inicio
-            if st.button("Ir a Inicio", type="primary", width='stretch'):
-                st.switch_page("Inicio.py")
-            
-            st.stop()
-
-    # ===================== KPIs =====================
-    # Información sobre subproductos excluidos en la vista principal
-    if 'subproductos' in locals() and len(subproductos) > 0:
-        if st.session_state.get("ui.messages") and any("subproductos_main" in msg for msg in st.session_state["ui.messages"]):
-            
-            # Información detallada sobre subproductos
-            with st.expander(f"📋 **Detalles de Subproductos Excluidos** ({len(subproductos)} SKUs)", expanded=False):
-                st.write("**¿Por qué se excluyen estos SKUs?**")
-                st.write("Los SKUs con costos totales = 0 no pueden generar EBITDA real y distorsionan el análisis financiero.")
-                
-                # Estadísticas de subproductos
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if "Marca" in subproductos.columns:
-                        marca_counts = subproductos["Marca"].value_counts()
-                        st.write("**Por Marca:**")
-                        for marca, count in marca_counts.head(3).items():
-                            st.write(f"- {marca}: {count}")
-                
-                with col2:
-                    if "Cliente" in subproductos.columns:
-                        cliente_counts = subproductos["Cliente"].value_counts()
-                        st.write("**Por Cliente:**")
-                        for cliente, count in cliente_counts.head(3).items():
-                            st.write(f"- {cliente}: {count}")
-                
-                with col3:
-                    if "Especie" in subproductos.columns:
-                        especie_counts = subproductos["Especie"].value_counts()
-                        st.write("**Por Especie:**")
-                        for especie, count in especie_counts.head(3).items():
-                            st.write(f"- {especie}: {count}")
-                
-                # Tabla completa de subproductos
-                st.write("**Lista completa de subproductos excluidos:**")
-                st.dataframe(
-                    subproductos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Costos Totales (USD/kg)"]],
-                    width='stretch'
-                )
-                
-                # Botón de exportación
-                csv_subproductos = subproductos.to_csv(index=False)
-                st.download_button(
-                    label="📥 Descargar Lista Completa de Subproductos (CSV)",
-                    data=csv_subproductos,
-                    file_name="subproductos_excluidos_completo.csv",
-                    mime="text/csv",
-                    width='stretch',
-                    key="download_subproductos_sim_2"
-                )
-
-    st.header("📊 KPIs")
-
-    # Calcular KPIs
-    try:
-        kpis = calculate_kpis(df_current)
-        
-        # Mostrar KPIs en métricas
-        # col1, col2, col3, col4 = st.columns(4)
-        col2, col3 = st.columns(2)
-
-        # with col1:
-        #     st.metric(
-        #         "EBITDA Promedio (USD/kg)",
-        #         f"${kpis['EBITDA Promedio (USD/kg)']:.3f}",
-        #         help="EBITDA promedio por kilogramo"
-        #     )
-        
-        with col2:
-            st.metric(
-                "Total SKUs",
-                kpis['Total SKUs'],
-                help="Número total de SKUs en la simulación (excluyendo subproductos sin costos)"
-            )
-            
-            # Información sobre subproductos excluidos en los KPIs
-            if 'subproductos' in locals() and len(subproductos) > 0:
-                st.caption(f"⚠️ {len(subproductos)} subproductos excluidos (costos = 0)")
-        
-        with col3:
-            st.metric(
-                "SKUs Rentables",
-                kpis['SKUs Rentables'],
-                f"{kpis['SKUs Rentables']}/{kpis['Total SKUs']}",
-                help="Número de SKUs con EBITDA positivo"
-            )
-        
-        # with col4:
-        #     st.metric(
-        #         "Margen Promedio (%)",
-        #         f"{kpis['EBITDA Promedio (%)']:.1f}%",
-        #         help="Margen promedio como porcentaje del precio"
-        #     )
-            
-    except Exception as e:
-        st.error(f"❌ Error calculando KPIs: {e}")
-        st.info("💡 Verifica que las columnas de EBITDA estén presentes en los datos")
-
-    # ===================== Top y Bottom SKUs =====================
-    st.header(" Top 5 y Bottom 5 SKUs por EBITDA")
-
-    try:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Top 5 SKUs")
-            top_skus, _ = get_top_bottom_skus(df_current, 5)
-            if not top_skus.empty:
-                # Formatear las columnas correctamente
-                display_columns = ["SKU", "Cliente", "Marca"]
-                
-                # Buscar columnas de EBITDA disponibles
-                ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in top_skus.columns else "EBITDAUSD_kg"
-                ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in top_skus.columns else "MargenPct"
-                
-                if ebitda_column in top_skus.columns:
-                    display_columns.append(ebitda_column)
-                if ebitda_pct_column in top_skus.columns:
-                    display_columns.append(ebitda_pct_column)
-                
-                # Filtrar columnas que existen
-                available_display_cols = [col for col in display_columns if col in top_skus.columns]
-                
-                st.dataframe(
-                    top_skus[available_display_cols].style.format({
-                        ebitda_column: "{:.3f}" if ebitda_column in top_skus.columns else None,
-                        ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in top_skus.columns else None
-                    }),
-                    width='stretch'
-                )
-            else:
-                st.info("No hay datos para mostrar")
-        
-        with col2:
-            st.subheader("Bottom 5 SKUs")
-            _, bottom_skus = get_top_bottom_skus(df_current, 5)
-            if not bottom_skus.empty:
-                # Formatear las columnas correctamente
-                display_columns = ["SKU", "Cliente", "Marca"]
-                
-                # Buscar columnas de EBITDA disponibles
-                ebitda_column = "EBITDA (USD/kg)" if "EBITDA (USD/kg)" in bottom_skus.columns else "EBITDAUSD_kg"
-                ebitda_pct_column = "EBITDA Pct" if "EBITDA Pct" in bottom_skus.columns else "MargenPct"
-                
-                if ebitda_column in bottom_skus.columns:
-                    display_columns.append(ebitda_column)
-                if ebitda_pct_column in bottom_skus.columns:
-                    display_columns.append(ebitda_pct_column)
-                
-                # Filtrar columnas que existen
-                available_display_cols = [col for col in display_columns if col in bottom_skus.columns]
-                
-                st.dataframe(
-                    bottom_skus[available_display_cols].style.format({
-                        ebitda_column: "{:.3f}" if ebitda_column in bottom_skus.columns else None,
-                        ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in bottom_skus.columns else None
-                    }),
-                    width='stretch'
-                )
-            else:
-                st.info("No hay datos para mostrar")
-                
-    except Exception as e:
-        st.error(f"❌ Error obteniendo top/bottom SKUs: {e}")
-        st.info("💡 Verifica que las columnas de EBITDA estén presentes en los datos")
-
-    # ===================== Gráficos =====================
-    st.header("📈 Gráficos")
-
-    # Configuración del gráfico
-    col1, col2 = st.columns([1, 3])
-
-    with col1:
-        top_n = st.number_input(
-            "Número de SKUs a mostrar",
-            min_value=5,
-            max_value=50,
-            value=20,
-            step=5,
-            help="Número de SKUs con mayor EBITDA para mostrar en el gráfico"
-        )
-
-    with col2:
-        st.write("")
-
-    # Gráfico de EBITDA por SKU
-    try:
-        ebitda_chart = create_ebitda_chart(df_current, top_n)
-        if ebitda_chart:
-            st.altair_chart(ebitda_chart)
-        else:
-            st.warning("⚠️ No se pudo crear el gráfico de EBITDA")
-    except Exception as e:
-        st.error(f"❌ Error creando gráfico de EBITDA: {e}")
-
-    # Gráfico de distribución de márgenes
-    st.subheader("📊 Distribución de Márgenes")
-    try:
-        margin_chart = create_margin_distribution_chart(df_current)
-        if margin_chart:
-            st.altair_chart(margin_chart)
-        else:
-            st.warning("⚠️ No se pudo crear el gráfico de distribución")
-    except Exception as e:
-        st.error(f"❌ Error creando gráfico de distribución: {e}")
-
-    # ===================== Export =====================
-    st.header("💾 Exportar Escenario")
-
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        filename_prefix = st.text_input(
-            "Prefijo del archivo:",
-            value="escenario_ebitda",
-            help="Nombre base para el archivo de exportación"
-        )
-
-    with col2:
-        if st.button("📥 Exportar a CSV", type="primary"):
-            try:
-                # Exportar escenario
-                export_path = export_escenario(df_current, filename_prefix)
-                
-                # Leer archivo para descarga
-                with open(export_path, 'r', encoding='utf-8') as f:
-                    csv_content = f.read()
-                
-                # Botón de descarga
-                st.download_button(
-                    label="⬇️ Descargar CSV",
-                    data=csv_content,
-                    file_name=export_path.name,
-                    mime="text/csv",
-                    key="download_escenario_csv"
-                )
-                
-                st.success(f"✅ Escenario exportado exitosamente a: {export_path}")
-                
-            except Exception as e:
-                st.error(f"❌ Error exportando escenario: {e}")
-
-    # ===================== Información adicional =====================
-    st.markdown("---")
-    st.markdown("""
-    ### 📚 Información del Simulador
-
-    Este simulador te permite:
-
-    1. **Filtrar datos** por Cliente, Marca, Especie y Condición
-    2. **Aplicar overrides globales** con cambios porcentuales en costos
-    3. **Cargar planillas** con nuevos costos por SKU
-    4. **Editar manualmente** precios y costos por fila
-    5. **Analizar EBITDA** y márgenes en tiempo real
-    6. **Visualizar resultados** con gráficos interactivos
-    7. **Exportar escenarios** para análisis posterior
-
-    ### 🔧 Cómo usar
-
-    1. **Carga datos** en la página Home primero
-    2. **Navega al Simulador** para análisis detallado
-    3. **Aplica filtros** en el sidebar para enfocar tu análisis
-    4. **Configura overrides globales** si deseas cambios porcentuales
-    5. **Sube planillas** con nuevos costos para SKUs específicos
-    6. **Edita valores** directamente en la tabla para ajustes finos
-    7. **Analiza KPIs** y gráficos para tomar decisiones
-    8. **Exporta el escenario** para compartir o analizar
-
-    ### 📊 Interpretación de resultados
-
-    - **EBITDA positivo**: El SKU es rentable
-    - **EBITDA negativo**: El SKU genera pérdidas
-    - **Margen alto**: Mayor rentabilidad relativa
-    - **Margen bajo**: Menor rentabilidad relativa
-    """)
 
 with tab_precio_frutas:
     st.header("🍓 Simulador de Precios de Frutas")
@@ -1376,11 +1462,11 @@ with tab_precio_frutas:
     #     )
     
     # with col3:
-    #     eficiencia_promedio = params_actuales["EficienciaAjustada"].mean()
+    #     Rendimiento_promedio = params_actuales["RendimientoAjustada"].mean()
     #     st.metric(
-    #         "Eficiencia Promedio",
-    #         f"{eficiencia_promedio:.1%}",
-    #         help="Eficiencia promedio de todas las frutas"
+    #         "Rendimiento Promedio",
+    #         f"{Rendimiento_promedio:.1%}",
+    #         help="Rendimiento promedio de todas las frutas"
     #     )
     
     # with col4:
@@ -1393,8 +1479,8 @@ with tab_precio_frutas:
     #         help="Número de frutas con ajustes de precio aplicados"
     #     )
     
-    # ===================== Ajustes de Precio y Eficiencia =====================
-    # st.subheader("⚙️ Ajustes de Precio y Eficiencia")
+    # ===================== Ajustes de Precio y Rendimiento =====================
+    # st.subheader("⚙️ Ajustes de Precio y Rendimiento")
     
     col1, col2, col3 = st.columns([2, 2, 1])
     
@@ -1415,20 +1501,20 @@ with tab_precio_frutas:
         # Obtener información de la fruta seleccionada
         fruta_info = info_df[info_df["Fruta_id"] == fruta_id].iloc[0]
         precio_actual = fruta_info["Precio"]
-        eficiencia_actual = fruta_info["Eficiencia"]
+        Rendimiento_actual = fruta_info["Rendimiento"]
         nombre_fruta = fruta_info.get("Name", fruta_id)
         
         # col11, col12 = st.columns(2)
         # with col11:
         st.info(f"**Precio actual:** ${precio_actual:.3f}/kg")
         # with col12:
-        #     st.info(f"**Eficiencia actual:** {eficiencia_actual:.1%}")
+        #     st.info(f"**Rendimiento actual:** {Rendimiento_actual:.1%}")
 
     with col2:
-        st.subheader("Ajuste de Precio y Eficiencia")
+        st.subheader("Ajuste de Precio y Rendimiento")
 
         # --- Estado por defecto de los selectores ---
-        st.session_state.setdefault("fruit.tipo", "Precio")                # "Precio" | "Eficiencia"
+        st.session_state.setdefault("fruit.tipo", "Precio")                # "Precio" | "Rendimiento"
         st.session_state.setdefault("fruit.metodo", "Porcentaje (%)")      # solo aplica a "Precio"
 
         tipo_ajuste = st.session_state["fruit.tipo"]
@@ -1457,14 +1543,14 @@ with tab_precio_frutas:
 
                 override_data = {"price": {"type": "dollars", "value": nuevo_precio}}
         else:
-            nueva_eficiencia = st.number_input(
-                "Nueva eficiencia:",
-                min_value=0.01, max_value=1.0, value=float(eficiencia_actual),
+            nueva_Rendimiento = st.number_input(
+                "Nueva Rendimiento:",
+                min_value=0.01, max_value=1.0, value=float(Rendimiento_actual),
                 step=0.01, format="%.2f",
-                help="Eficiencia debe estar entre 0.01 y 1.0"
+                help="Rendimiento debe estar entre 0.01 y 1.0"
             )
-            cambio_eficiencia = ((nueva_eficiencia / eficiencia_actual) - 1) * 100 if eficiencia_actual else 0.0
-            override_data = {"efficiency": {"type": "absolute", "value": nueva_eficiencia}}
+            cambio_Rendimiento = ((nueva_Rendimiento / Rendimiento_actual) - 1) * 100 if Rendimiento_actual else 0.0
+            override_data = {"efficiency": {"type": "absolute", "value": nueva_Rendimiento}}
 
         # --- SELECTORES ABAJO (actualizan estado y relanzan) ---
         sel1, sel2 = st.columns(2)
@@ -1472,7 +1558,7 @@ with tab_precio_frutas:
         with sel1:
             new_tipo = st.radio(
                 "Tipo de ajuste:",
-                ["Precio", "Eficiencia"],
+                ["Precio", "Rendimiento"],
                 horizontal=True,
                 index=0 if tipo_ajuste == "Precio" else 1,
                 key="fruit.tipo_radio"
@@ -1511,8 +1597,8 @@ with tab_precio_frutas:
                 st.write(f"**Ajuste:** {cambio_pct:+.1f}%")
                 st.write(f"**Precio:** ${precio_actual:.3f} → ${nuevo_precio:.3f}")
         else:
-            st.write(f"**Ajuste:** {cambio_eficiencia:+.1f}%")
-            st.write(f"**Eficiencia:** {eficiencia_actual:.1%} → {nueva_eficiencia:.1%}")
+            st.write(f"**Ajuste:** {cambio_Rendimiento:+.1f}%")
+            st.write(f"**Rendimiento:** {Rendimiento_actual:.1%} → {nueva_Rendimiento:.1%}")
         
         # Botón para aplicar
         if st.button("🚀 Aplicar Ajuste", type="primary", width='stretch'):
@@ -1561,7 +1647,7 @@ with tab_precio_frutas:
                     else:
                         st.write(f"Precio: ${override['price']['value']:.3f}/kg")
                 elif "efficiency" in override:
-                    st.write(f"Eficiencia: {override['efficiency']['value']:.2f}")
+                    st.write(f"Rendimiento: {override['efficiency']['value']:.2f}")
             
             with col3:
                 # Mostrar impacto en SKUs
@@ -1623,8 +1709,15 @@ with tab_precio_frutas:
     ).rename(columns={"FrutaNombre": "Name"})
 
     # 2) Enriquecer con cambio de precio (%)
-    base = params_actuales.rename(columns={"FrutaNombre":"Name"})[
-        ["Fruta_id","Name","PrecioBaseUSD_kg","PrecioAjustadoUSD_kg","EficienciaBase","EficienciaAjustada"]
+    base = params_actuales.rename(columns={"FrutaNombre":"Name",
+                                            "PrecioBaseUSD_kg":"Costo Base (USD/kg)",
+                                            "PrecioAjustadoUSD_kg":"Costo Ajustado (USD/kg)",
+                                            "RendimientoBase":"Rendimiento Base",
+                                            "RendimientoAjustado":"Rendimiento Ajustado",
+                                            "CostoEfectivoBase":"Costo Efectivo Base (USD/kg)",
+                                            "CostoEfectivoAjustado":"Costo Efectivo Ajustado (USD/kg)"})[
+        ["Fruta_id","Name","Costo Base (USD/kg)","Costo Ajustado (USD/kg)","Rendimiento Base",
+        "Rendimiento Ajustado","Costo Efectivo Base (USD/kg)","Costo Efectivo Ajustado (USD/kg)"]
     ]
     frutas = base.merge(
         tabla_resumen[["Fruta_id","SKUsAfectados"]],
@@ -1633,9 +1726,14 @@ with tab_precio_frutas:
     )
 
     frutas["SKUsAfectados"] = frutas["SKUsAfectados"].fillna(0)
-    frutas["Cambio_Precio_%"] = np.where(
-        frutas["PrecioBaseUSD_kg"] > 0,
-        (frutas["PrecioAjustadoUSD_kg"] / frutas["PrecioBaseUSD_kg"] - 1) * 100,
+    frutas["Variación Costo %"] = np.where(
+        frutas["Costo Base (USD/kg)"] > 0,
+        (frutas["Costo Ajustado (USD/kg)"] / frutas["Costo Base (USD/kg)"] - 1) * 100,
+        0.0
+    )
+    frutas["Variación Rendimiento %"] = np.where(
+        frutas["Rendimiento Base"] > 0,
+        (frutas["Rendimiento Ajustado"] / frutas["Rendimiento Base"] - 1) * 100,
         0.0
     )
 
@@ -1648,7 +1746,7 @@ with tab_precio_frutas:
         # mantenemos el nombre “(únicos)” pero aclaración: es “por fruta”.
         st.metric("SKUs Afectados (por fruta)", int(frutas["SKUsAfectados"].sum()))
     with k3:
-        st.metric("ΔPrecio Promedio", f"{frutas['Cambio_Precio_%'].mean():+.1f}%")
+        st.metric("Δ Costo Promedio", f"{frutas['Variación Costo %'].mean():+.1f}%")
     with k4:
         if not frutas.empty:
             top_idx = frutas["SKUsAfectados"].astype(float).idxmax()
@@ -1658,21 +1756,26 @@ with tab_precio_frutas:
 
     # 4) Tabla única (ordenada por SKUs afectados desc, precio desc)
     cols_tabla = [
-        "Name", "PrecioBaseUSD_kg", "PrecioAjustadoUSD_kg", "Cambio_Precio_%", "SKUsAfectados"
+        "Name", "Costo Base (USD/kg)", "Costo Ajustado (USD/kg)", "Costo Efectivo Base (USD/kg)",
+        "Costo Efectivo Ajustado (USD/kg)", "Variación Costo %", "Variación Rendimiento %",
+        "Rendimiento Base", "Rendimiento Ajustado", "SKUsAfectados"
     ]
     frutas_view = (frutas
-        .sort_values(["SKUsAfectados","PrecioAjustadoUSD_kg"], ascending=[False, False])
+        .sort_values(["SKUsAfectados","Costo Ajustado (USD/kg)"], ascending=[False, False])
         [cols_tabla]
     )
 
     st.dataframe(
         frutas_view.style.format({
-            "PrecioBaseUSD_kg": "{:.3f}",
-            "PrecioAjustadoUSD_kg": "{:.3f}",
-            "Cambio_Precio_%": "{:+.1f}%",
-            "EficienciaBase": "{:.1%}",
-            "EficienciaAjustada": "{:.1%}",
+            "Costo Base (USD/kg)": "{:.3f}",
+            "Costo Ajustado (USD/kg)": "{:.3f}",
+            "Variación Costo %": "{:+.1f}%",
+            "Variación Rendimiento %": "{:+.1f}%",
+            "Rendimiento Base": "{:.1%}",
+            "Rendimiento Ajustado": "{:.1%}",
             "SKUsAfectados": "{:.0f}",
+            "Costo Efectivo Base (USD/kg)": "{:.3f}",
+            "Costo Efectivo Ajustado (USD/kg)": "{:.3f}",
         }),
         use_container_width=True, hide_index=True
     )
@@ -1695,7 +1798,7 @@ with tab_precio_frutas:
                     st.write(f"• **{r['Name']}** — {int(r['SKUsAfectados'])} SKUs")
 
             st.subheader("📈 Stats de precios (USD/kg)")
-            p = f["PrecioAjustadoUSD_kg"].dropna()
+            p = f["Costo Ajustado (USD/kg)"].dropna()
             if not p.empty:
                 st.write(
                     f"• **Rango**: ${p.min():.3f} — ${p.max():.3f}/kg\n\n"
@@ -1705,14 +1808,14 @@ with tab_precio_frutas:
         # ---------- Columna derecha ----------
         with colR:
             st.subheader("💰 Top 5 precios más altos")
-            top_precio = f.sort_values("PrecioAjustadoUSD_kg", ascending=False).head(5)
+            top_precio = f.sort_values("Costo Ajustado (USD/kg)", ascending=False).head(5)
             for _, r in top_precio.iterrows():
-                st.write(f"• **{r['Name']}** — ${r['PrecioAjustadoUSD_kg']:.3f}/kg")
+                st.write(f"• **{r['Name']}** — ${r['Costo Ajustado (USD/kg)']:.3f}/kg")
 
             st.subheader("🧊 Top 5 precios más bajos (>0)")
-            low_precio = f[f["PrecioAjustadoUSD_kg"] > 0].sort_values("PrecioAjustadoUSD_kg", ascending=True).head(5)
+            low_precio = f[f["Costo Ajustado (USD/kg)"] > 0].sort_values("Costo Ajustado (USD/kg)", ascending=True).head(5)
             for _, r in low_precio.iterrows():
-                st.write(f"• **{r['Name']}** — ${r['PrecioAjustadoUSD_kg']:.3f}/kg")
+                st.write(f"• **{r['Name']}** — ${r['Costo Ajustado (USD/kg)']:.3f}/kg")
 
 
     # 6) Gráfico A: Top N por SKUs afectados (barra)
@@ -1734,20 +1837,20 @@ with tab_precio_frutas:
     except ImportError:
         st.info("Para ver gráficos, instala plotly: `pip install plotly`")
 
-# 7) Gráfico B: Dispersión Precio vs Eficiencia (tamaño = SKUs, color = ΔPrecio%)
+# 7) Gráfico B: Dispersión Precio vs Rendimiento (tamaño = SKUs, color = ΔPrecio%)
 # try:
 #     import plotly.express as px
 #     fig_scatter = px.scatter(
 #         frutas,
-#         x="PrecioAjustadoUSD_kg", y="EficienciaAjustada",
+#         x="PrecioAjustadoUSD_kg", y="RendimientoAjustada",
 #         size=frutas["SKUsAfectados"].fillna(0).clip(lower=0.1),  # que no desaparezcan
 #         color="Cambio_Precio_%",
 #         hover_data=["Name","SKUsAfectados"],
-#         labels={"PrecioAjustadoUSD_kg":"Precio (USD/kg)","EficienciaAjustada":"Eficiencia"},
+#         labels={"PrecioAjustadoUSD_kg":"Precio (USD/kg)","RendimientoAjustada":"Rendimiento"},
 #         color_continuous_scale="RdBu_r"
 #     )
 #     fig_scatter.update_layout(
-#         title="Precio vs. Eficiencia (tamaño = SKUs afectados, color = ΔPrecio%)",
+#         title="Precio vs. Rendimiento (tamaño = SKUs afectados, color = ΔPrecio%)",
 #         height=420, showlegend=False
 #     )
 #     st.plotly_chart(fig_scatter, use_container_width=True)
@@ -1760,7 +1863,7 @@ with tab_precio_frutas:
         st.markdown("""
         ### 🎯 **Objetivo del Simulador**
         
-        Este simulador te permite ajustar precios y eficiencias de frutas para analizar su impacto en:
+        Este simulador te permite ajustar precios y Rendimientos de frutas para analizar su impacto en:
         - **Costos de MMPP (Fruta)** por SKU
         - **EBITDA** de cada producto
         - **Contribución total** de cada fruta al negocio
@@ -1770,7 +1873,7 @@ with tab_precio_frutas:
         1. **Selecciona una fruta** del dropdown
         2. **Elige el tipo de ajuste**:
            - **Precio**: Porcentaje (%) o valor absoluto (USD/kg)
-           - **Eficiencia**: Valor entre 0.01 y 1.0
+           - **Rendimiento**: Valor entre 0.01 y 1.0
         3. **Ingresa el valor** del ajuste
         4. **Aplica el cambio** con "🚀 Aplicar Ajuste"
         5. **Revisa el impacto** en tiempo real
@@ -1796,7 +1899,7 @@ with tab_precio_frutas:
         
         **Contribución por SKU:**
         ```
-        contrib_pos = PrecioAjustadoUSD_kg × Porcentaje ÷ EficienciaAjustada
+        contrib_pos = PrecioAjustadoUSD_kg × Porcentaje ÷ RendimientoAjustada
         MMPP (Fruta) (USD/kg) = -contrib_pos
         ```
         
@@ -1808,7 +1911,7 @@ with tab_precio_frutas:
         ### 🗄️ **Estructura de datos**
         
         - **RECETA_SKU**: SKU, Fruta_id, Porcentaje
-        - **INFO_FRUTA**: Fruta_id, Precio, Eficiencia, Name
+        - **INFO_FRUTA**: Fruta_id, Precio, Rendimiento, Name
         - **Overrides**: {fruta_id: {"price": {"type": "percentage"|"dollars", "value": float}}}
         
         ### 🔄 **Flujo de recálculo**
@@ -1830,7 +1933,7 @@ with tab_precio_frutas:
                 st.metric("Total frutas", len(info_df))
                 st.metric("Frutas con nombre", len(info_df[info_df["Name"].notna()]))
                 st.metric("Precio promedio", f"${info_df['Precio'].mean():.3f}/kg")
-                st.metric("Eficiencia promedio", f"{info_df['Eficiencia'].mean():.1%}")
+                st.metric("Rendimiento promedio", f"{info_df['Rendimiento'].mean():.1%}")
             else:
                 st.warning("No hay datos de frutas disponibles")
         
@@ -1885,7 +1988,7 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
     # Enriquecer con INFO_FRUTA
     if info_df is not None and not info_df.empty:
-        info = info_df[["Fruta_id","Precio","Eficiencia","Name"]].copy()
+        info = info_df[["Fruta_id","Precio","Rendimiento","Name"]].copy()
         info["Fruta_id"] = info["Fruta_id"].astype(str).str.strip()
         receta["Fruta_id"] = receta["Fruta_id"].astype(str).str.strip()
         det = receta.merge(info, on="Fruta_id", how="left")
@@ -1902,11 +2005,11 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
             det["Precio"] = det.apply(lambda r: precio_ajustado(r["Fruta_id"], pd.to_numeric(r["Precio"], errors="coerce")), axis=1)
 
-        # Contribución positiva = Precio * (Porcentaje/100) / Eficiencia
+        # Contribución positiva = Precio * (Porcentaje/100) / Rendimiento
         pct  = pd.to_numeric(det["Porcentaje"], errors="coerce").fillna(0) / 100.0
         pr   = pd.to_numeric(det["Precio"], errors="coerce").fillna(0).clip(lower=0)
         opt  = pd.to_numeric(det["Óptimo"], errors="coerce").fillna(0) / 100.0
-        eff  = pd.to_numeric(det["Eficiencia"], errors="coerce").fillna(0).clip(lower=0.01, upper=1.0)
+        eff  = pd.to_numeric(det["Rendimiento"], errors="coerce").fillna(0).clip(lower=0.01, upper=1.0)
         det["Name"] = det["Name"].fillna(det["Fruta_id"])
         det["Contribucion Original (USD/kg)"] = (pr * pct) / eff
         det["Contribucion Óptima (USD/kg)"] = (pr * opt) / eff
@@ -1936,7 +2039,7 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
         st.dataframe(
             det[["Name","Contribucion Original (USD/kg)","Porcentaje Original","Contribucion Óptima (USD/kg)","Porcentaje Óptimo"]]
                 .sort_values("Contribucion Óptima (USD/kg)", ascending=False)
-                .style.format({"Contribucion Original (USD/kg)":"{:.3f}","Porcentaje Original":"{:.2f}%","Contribucion Óptima (USD/kg)":"{:.3f}","Porcentaje Óptimo":"{:.2f}%","Precio":"{:.3f}","Eficiencia":"{:.3f}"}),
+                .style.format({"Contribucion Original (USD/kg)":"{:.3f}","Porcentaje Original":"{:.2f}%","Contribucion Óptima (USD/kg)":"{:.3f}","Porcentaje Óptimo":"{:.2f}%","Precio":"{:.3f}","Rendimiento":"{:.3f}"}),
             width='stretch', hide_index=True
         )
 
@@ -2106,22 +2209,23 @@ with tab_receta:
     st.caption("Tip: usa los controles de página para navegar y el botón **Ver receta** para abrir el modal.")
     
     # ===================== Estadísticas por Fruta =====================
-    st.subheader("📈 Estadísticas por Fruta")
+    st.subheader("📈 Estadísticas por Fruta (Mixes)")
     
     if info_df is not None and not receta_filtrada.empty:
         # Calcular estadísticas por fruta
-        stats_fruta = receta_filtrada.groupby("Fruta_id").agg({
+        receta_filtrada_mixes = receta_filtrada[receta_filtrada["Porcentaje"] < 100]
+        stats_fruta = receta_filtrada_mixes.groupby("Fruta_id").agg({
             "SKU": "nunique",
             "Porcentaje": "mean",
             "Óptimo": ["mean", "sum"],
         }).reset_index()
         
         # Flatten column names
-        stats_fruta.columns = ["Fruta_id", "SKUs_Usados", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Porcentaje Óptimo Total"]
+        stats_fruta.columns = ["Fruta_id", "SKUs con Fruta", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Porcentaje Óptimo Total"]
         
         # Enriquecer con información de frutas
         stats_fruta = stats_fruta.merge(
-            info_df[["Fruta_id", "Precio", "Eficiencia", "Name"]],
+            info_df[["Fruta_id", "Precio", "Rendimiento", "Name"]],
             on="Fruta_id",
             how="left"
         )
@@ -2130,26 +2234,26 @@ with tab_receta:
         stats_fruta["Contribucion_Total"] = (
             stats_fruta["Precio"] * 
             stats_fruta["Porcentaje Óptimo Total"] / 100 / 
-            stats_fruta["Eficiencia"]
+            stats_fruta["Rendimiento"]
         )
         
-        view_fruta = stats_fruta[["Name", "SKUs_Usados", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Precio"]]
-        view_fruta.sort_values(by="SKUs_Usados", ascending=False, inplace=True)
+        view_fruta = stats_fruta[["Name", "SKUs con Fruta", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Precio"]]
+        view_fruta.sort_values(by="SKUs con Fruta", ascending=False, inplace=True)
         
         # Mostrar tabla de estadísticas
         st.dataframe(
             view_fruta.style.format({
-                "SKUs_Usados": "{:.0f}",
+                "SKUs con Fruta": "{:.0f}",
                 "Porcentaje Original Promedio": "{:.2f}%",
                 "Porcentaje Óptimo Promedio": "{:.2f}%",
                 "Porcentaje Óptimo Total": "{:.1f}%",
                 "Precio": "{:.3f}",
-                "Eficiencia": "{:.3f}",
+                "Rendimiento": "{:.3f}",
                 "Contribucion_Total": "{:.3f}"
             }),
             column_config={
                 "Name": st.column_config.TextColumn(width="small"),
-                "SKUs_Usados": st.column_config.NumberColumn(width="small"),
+                "SKUs con Fruta": st.column_config.NumberColumn(width="small"),
                 "Porcentaje Original Promedio": st.column_config.NumberColumn(width="small", help="Este porcentaje considera los monoproductos"),
                 "Porcentaje Óptimo Promedio": st.column_config.NumberColumn(width="small", help="Este porcentaje considera los monoproductos"),
                 "Precio": st.column_config.NumberColumn(width="small"),
@@ -2159,18 +2263,18 @@ with tab_receta:
         )
         
         # Gráfico de top frutas por uso
-        st.subheader("🏆 Top Frutas por Uso")
+        st.subheader("🏆 Top Frutas por Uso (Mixes)")
         
         try:
             import plotly.express as px
             
             # Top 10 frutas por número de SKUs
-            top_frutas = stats_fruta.nlargest(10, "SKUs_Usados")
+            top_frutas = stats_fruta.nlargest(10, "SKUs con Fruta")
             
             fig_top_frutas = px.bar(
                 top_frutas,
                 x="Name",
-                y="SKUs_Usados",
+                y="SKUs con Fruta",
                 title="Top 10 Frutas por Número de SKUs que las Usan",
                 color="Contribucion_Total",
                 color_continuous_scale="Blues"
@@ -2242,7 +2346,7 @@ with tab_receta:
         - **Porcentaje**: Proporción de la fruta en el SKU
         - **Contribución**: Impacto en costo por kg del producto
         - **SKUs usados**: Número de productos que usan cada fruta
-        - **Eficiencia**: Factor de procesamiento de cada fruta
+        - **Rendimiento**: Factor de procesamiento de cada fruta
         """)
 
 # -------- Información de navegación --------
