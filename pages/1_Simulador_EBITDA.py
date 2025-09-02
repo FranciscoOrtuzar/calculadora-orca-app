@@ -642,7 +642,7 @@ with tab_sku:
             filtered_skus = df_filtered["SKU"].tolist()
             detalle_filtrado = detalle_data[detalle_data["SKU"].isin(filtered_skus)].copy()
             
-            adj_columns = ["Proceso Granel (USD/kg)", "Almacenaje MMPP", "MO Directa", "MO Indirecta",
+            adj_columns = ["Almacenaje MMPP", "MO Directa", "MO Indirecta",
         "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
         "Fletes Internos", "Comex", "Guarda PT", "PrecioVenta (USD/kg)"]
             
@@ -685,15 +685,27 @@ with tab_sku:
                             help="Nuevo valor en dólares por kg"
                         )
                     else:
-                        adjustment_value = st.number_input(
+                        # Usar text_input para evitar el bug de number_input con valores negativos
+                        input_text = st.text_input(
                             "Nuevo valor:",
-                            min_value=-10.0,
-                            max_value=0.0,
-                            value=0.0,
-                            step=0.001,
-                            format="%.3f",
-                            help="Nuevo valor en dólares por kg"
+                            value="",
+                            help="Nuevo valor en USD/kg (ej: -0.123, 0.456)",
+                            key=f"adjustment_value_{selected_cost}",
+                            placeholder="0.000"
                         )
+                        
+                        # Validar y convertir el valor
+                        try:
+                            adjustment_value = float(input_text)
+                            if adjustment_value < -10.0 or adjustment_value > 100.0:
+                                st.error("⚠️ El valor debe estar entre -10.0 y 100.0 USD/kg")
+                                adjustment_value = 0.0
+                        except ValueError:
+                            if input_text.strip() == "":
+                                adjustment_value = 0.0
+                            else:
+                                st.error("⚠️ Por favor, ingrese un número válido (ej: -0.123)")
+                                adjustment_value = 0.0
             
             with col4:
                 if st.button("Aplicar Ajuste", type="primary"):

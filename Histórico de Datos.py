@@ -390,7 +390,7 @@ with tab_retail:
     "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","EBITDA (USD)"]
     skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
     ebitda_mensual = st.session_state["hist.ebitda_mensual"]
-    st.dataframe(ebitda_mensual)
+    # st.dataframe(ebitda_mensual)
     view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
     view_base = view_base[base_cols].copy()
     view_base.set_index("SKU-Cliente", inplace=True)

@@ -710,7 +710,7 @@ def columns_config(editable: bool = True) -> dict:
         elif col == "Retail Costos Directos (USD/kg)":
             editable_columns[col] = st.column_config.NumberColumn(
                 col,
-                help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Utilities, Fletes Internos, Comex y Guarda PT",
+                help=f"Incluye: MO Directa, Materiales Cajas y Bolsas, Laboratorio, Mantención, Utilities y Fletes Internos",
                 format="%.3f",
                 step=0.001,
                 disabled=True
@@ -718,7 +718,7 @@ def columns_config(editable: bool = True) -> dict:
         elif col == "Retail Costos Indirectos (USD/kg)":
             editable_columns[col] = st.column_config.NumberColumn(
                 col,
-                help=f"Incluye: MO Indirecta, Materiales Indirectos y Servicios Generales",
+                help=f"Incluye: MO Indirecta y Materiales Indirectos",
                 format="%.3f",
                 step=0.001,
                 disabled=True
@@ -734,7 +734,7 @@ def columns_config(editable: bool = True) -> dict:
         elif col == "Materiales Total":
             editable_columns[col] = st.column_config.NumberColumn(
                 col,
-                help=f"Incluye: Materiales Cajas y Bolsas y Materiales Indirectos",
+                help=f"Incluye: Materiales Directos y Materiales Indirectos",
                 format="%.3f",
                 step=0.001,
                 disabled=True
@@ -819,7 +819,7 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
             detalle[col] = -abs(detalle[col])
     
     # También corregir columnas de costos sin USD/kg
-    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Cajas y Bolsas", 
+    other_cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", 
                          "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", 
                          "Utilities", "Fletes Internos", "Comex", "Guarda PT"]
     for col in other_cost_columns:
@@ -886,7 +886,7 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
         "Retail Costos Indirectos (USD/kg)",
         "Retail Costos Directos (USD/kg)",
         "Servicios Generales",
-        "COMEX",
+        "Comex",
         "Guarda PT"
     ]
     
