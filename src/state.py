@@ -17,6 +17,7 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.granel", None)
     st.session_state.setdefault("hist.ebitda_total", None)
     st.session_state.setdefault("hist.granel_ponderado", None)
+    st.session_state.setdefault("hist.granel_optimo", None)
     st.session_state.setdefault("hist.df_optimo", None)
 
     # Simulación
@@ -31,6 +32,11 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("sim.dirty", False)
     st.session_state.setdefault("sim.last_saved_path", None)
     st.session_state.setdefault("sim.last_saved_at", None)
+    st.session_state.setdefault("sim.granel", None)
+    
+    # Simulación de Granel
+    st.session_state.setdefault("sim.granel_df", None)
+    st.session_state.setdefault("sim.granel_overrides_row", {})
 
     
     # Datos de fruta
@@ -76,6 +82,8 @@ def _sim_take_snapshot() -> dict:
         "override_upload": st.session_state.get("sim.override_upload", None),
         "fruit_price_overrides": copy.deepcopy(st.session_state.get("mmpp.fruit_price_overrides", {})),
         "fruit_overrides": copy.deepcopy(st.session_state.get("sim.fruit_overrides", {})),
+        "granel_df": st.session_state["sim.granel_df"].copy(deep=True) if isinstance(st.session_state.get("sim.granel_df"), pd.DataFrame) else None,
+        "granel_overrides_row": copy.deepcopy(st.session_state.get("sim.granel_overrides_row", {})),
     }
 
 def sim_snapshot_push() -> None:
@@ -100,6 +108,8 @@ def sim_undo() -> None:
     st.session_state["sim.override_upload"] = prev["override_upload"]
     st.session_state["mmpp.fruit_price_overrides"] = prev["fruit_price_overrides"]
     st.session_state["sim.fruit_overrides"] = prev["fruit_overrides"]
+    st.session_state["sim.granel_df"] = prev["granel_df"]
+    st.session_state["sim.granel_overrides_row"] = prev["granel_overrides_row"]
     st.session_state["sim.dirty"] = True
 
 def sim_redo() -> None:
@@ -118,6 +128,8 @@ def sim_redo() -> None:
     st.session_state["sim.override_upload"] = next_["override_upload"]
     st.session_state["mmpp.fruit_price_overrides"] = next_["fruit_price_overrides"]
     st.session_state["sim.fruit_overrides"] = next_["fruit_overrides"]
+    st.session_state["sim.granel_df"] = next_["granel_df"]
+    st.session_state["sim.granel_overrides_row"] = next_["granel_overrides_row"]
     st.session_state["sim.dirty"] = True
 
 # ---------- Overrides de fruta (MMPP) ----------

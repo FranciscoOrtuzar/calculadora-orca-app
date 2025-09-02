@@ -318,11 +318,15 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns={col_fruta_id: "Fruta_id"})
     df["Fruta_id"] = df["Fruta_id"].astype(str).str.strip()
 
-    # Convertir valores a numéricos
+    # Convertir valores a numéricos ANTES de calcular Proceso Granel
     for c in df.columns:
         if c in ["Fruta_id", "Fruta"]:
             continue
         df[c] = df[c].apply(to_number_safe)
+    
+    df["Proceso Granel (USD/kg)"] = sum_existing(df, ["MO Directa", "MO Indirecta", "Materiales Directos",
+    "Materiales Indirectos", "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales", "Utilities",
+    "Fletes", "Comex", "Guarda Producto Terminado"])
 
     # Quedarse con fruta_id + Fruta + columnas de costos
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
@@ -923,7 +927,7 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
     return detalle
 # ===================== Construcción del mart =====================
 @st.cache_data(show_spinner=True)
-def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int], optimo: bool = False) -> pd.DataFrame:
+def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int], optimo: bool = False, df_granel: pd.DataFrame = None) -> pd.DataFrame:
     """
     Pipeline completo para construir el detalle de datos.
     
@@ -959,13 +963,15 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     dim = build_dim_sku(sheets["DIM_SKU"])
 
     # 3.1) MMPP y Almacenaje por SKU
-    mmpp_almacenaje = compute_mmpp_y_almacenaje_per_sku(sheets["RECETA_SKU"], sheets["INFO_FRUTA"])
-    mmpp_almacenaje = mmpp_almacenaje.rename(columns={"MMPP (Fruta) (USD/kg)": "MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje": "Almacenaje (Calculado)"})    
+    mmpp_almacenaje = compute_mmpp_almacenaje_granel_per_sku(sheets["RECETA_SKU"], sheets["INFO_FRUTA"], df_granel)
+    mmpp_almacenaje = mmpp_almacenaje.rename(columns={"MMPP (Fruta) (USD/kg)": "MMPP (Fruta) (USD/kg) (Calculado)",
+    "Almacenaje": "Almacenaje (Calculado)", "Proceso Granel (USD/kg)": "Proceso Granel (USD/kg) (Calculado)"})    
     # 4) Unión de tablas
     costos_detalle_calculado = costos_detalle.merge(mmpp_almacenaje, on="SKU", how="right")
     costos_detalle_calculado["MMPP (Fruta) (USD/kg)"] = -abs(costos_detalle_calculado["MMPP (Fruta) (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["MMPP (Fruta) (USD/kg)"]))
     costos_detalle_calculado["Almacenaje MMPP"] = -abs(costos_detalle_calculado["Almacenaje (Calculado)"].fillna(costos_detalle_calculado["Almacenaje MMPP"]))
-    costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)"])
+    costos_detalle_calculado["Proceso Granel (USD/kg)"] = -abs(costos_detalle_calculado["Proceso Granel (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["Proceso Granel (USD/kg)"]))
+    costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)", "Proceso Granel (USD/kg) (Calculado)"])
     detalle = costos_detalle_calculado.merge(dim, on="SKU", how="right")
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
     if "SKU-Cliente" in dim.columns:
@@ -1226,7 +1232,7 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ===================== Cálculo de MMPP =====================
-def compute_mmpp_y_almacenaje_per_sku(receta_df: pd.DataFrame, info_df: pd.DataFrame) -> pd.DataFrame:
+def compute_mmpp_almacenaje_granel_per_sku(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_df: pd.DataFrame) -> pd.DataFrame:
     """
     Calcula MMPP (Fruta) y Almacenaje por SKU basado en recetas y precios de fruta,
     utilizando operaciones vectorizadas para optimizar el rendimiento.
@@ -1243,46 +1249,61 @@ def compute_mmpp_y_almacenaje_per_sku(receta_df: pd.DataFrame, info_df: pd.DataF
     if missing_info_cols:
         raise ValueError(f"Columnas faltantes en INFO_FRUTA: {missing_info_cols}")
 
+    required_granel_cols = ["Fruta_id", "Proceso Granel (USD/kg)"]
+    missing_granel_cols = [col for col in required_granel_cols if col not in granel_df.columns]
+    if missing_granel_cols:
+        raise ValueError(f"Columnas faltantes en FACT_GRANEL: {missing_granel_cols}")
+
     # 2. Copia y normalización de datos
     #-----------------------------------
     # Crear copias para evitar modificar los DataFrames originales
     df_receta = receta_df[required_receta_cols].copy()
     df_info = info_df[required_info_cols].copy()
+    df_granel = granel_df[required_granel_cols].copy()
 
     # Normalizar 'Fruta_id' a string y limpiar espacios
     df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str).str.strip()
     df_info["Fruta_id"] = df_info["Fruta_id"].astype(str).str.strip()
+    df_granel["Fruta_id"] = df_granel["Fruta_id"].astype(str).str.strip()
 
     # Convertir columnas a tipo numérico, forzando NaN en errores
     df_receta["Porcentaje"] = df_receta["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
     df_info["Precio"] = df_info["Precio"].apply(lambda x: to_number_safe(x, comma_decimal=True))
     df_info["Rendimiento"] = df_info["Rendimiento"].apply(lambda x: to_number_safe(x, comma_decimal=True))
     df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+    df_granel["Proceso Granel (USD/kg)"] = df_granel["Proceso Granel (USD/kg)"].apply(lambda x: to_number_safe(x, comma_decimal=True))
 
     # 3. Filtrado y validación de rangos
     #-----------------------------------
     # Eliminar filas con valores nulos o no válidos
     df_receta.dropna(subset=["Porcentaje"], inplace=True)
     df_info.dropna(subset=["Precio", "Rendimiento", "Almacenaje"], inplace=True)
-    
+    df_granel.dropna(subset=["Proceso Granel (USD/kg)"], inplace=True)
+
     # Filtrar valores numéricos inválidos (ej. <= 0 o > 1 en Rendimiento)
     df_receta = df_receta[df_receta["Porcentaje"] > 0]
     df_info = df_info[
         (df_info["Precio"] >= 0) &
         (df_info["Rendimiento"] > 0) &
         (df_info["Rendimiento"] <= 1) &
-        (df_info["Almacenaje"] <= 0)
+        (df_info["Almacenaje"] != 0)
     ]
+    df_granel = df_granel[df_granel["Proceso Granel (USD/kg)"] != 0]
+    
+
 
     # 4. Cálculo optimizado
     #------------------------
     # Unir los DataFrames para combinar la información de receta y fruta
     # Únicos en cada dataset
     df_merged = pd.merge(df_receta, df_info, on="Fruta_id", how="inner")
-    
+    df_merged = pd.merge(df_merged, df_granel, on="Fruta_id", how="inner")
+
     # Calcular los costos de forma vectorizada
     # MMPP: Precio de la fruta * Porcentaje de la receta / Rendimiento
     df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Porcentaje"] / 100) / df_merged["Rendimiento"]
+    # Proceso Granel: Costo de proceso granel * Porcentaje de la receta
+    df_merged["Costo_Proceso_Granel"] = df_merged["Proceso Granel (USD/kg)"] * df_merged["Porcentaje"] / 100
     # Almacenaje: Costo de almacenaje de la fruta * Porcentaje de la receta
     df_merged["Costo_Almacenaje"] = df_merged["Almacenaje"] * df_merged["Porcentaje"] / 100
 
@@ -1290,9 +1311,12 @@ def compute_mmpp_y_almacenaje_per_sku(receta_df: pd.DataFrame, info_df: pd.DataF
     df_result = df_merged.groupby("SKU").agg(
         **{
             "MMPP (Fruta) (USD/kg)": pd.NamedAgg(column='Costo_MMPP', aggfunc='sum'),
-            "Almacenaje": pd.NamedAgg(column='Costo_Almacenaje', aggfunc='sum')
+            "Almacenaje": pd.NamedAgg(column='Costo_Almacenaje', aggfunc='sum'),
+            "Proceso Granel (USD/kg)": pd.NamedAgg(column='Costo_Proceso_Granel', aggfunc='sum')
         }
     ).reset_index()
+    
+
 
     return df_result
 # ===================== Documentación para nuevas fuentes =====================

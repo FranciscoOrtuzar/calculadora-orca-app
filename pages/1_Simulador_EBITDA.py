@@ -33,7 +33,11 @@ try:
         apply_filters, get_filter_options, apply_global_overrides, 
         apply_upload_overrides, compute_ebitda, calculate_kpis,
         get_top_bottom_skus, create_ebitda_chart, create_margin_distribution_chart,
-        export_escenario, validate_upload_file
+        export_escenario, validate_upload_file,
+        apply_granel_filters, get_granel_filter_options, apply_granel_global_overrides,
+        recalculate_granel_totals, apply_granel_universal_adjustments, calculate_granel_kpis,
+        get_top_bottom_granel, create_granel_cost_chart, export_granel_escenario,
+        sync_granel_changes_to_retail
     )
 except ImportError as e:
     st.warning(f"⚠️ Error importando desde src/: {e}")
@@ -532,7 +536,7 @@ else:
     st.sidebar.info("Sin overrides aplicados")
 
 # ===================== Pestañas del Simulador =====================
-tab_sku, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🍓 Precio Fruta", "📖 Receta"])
+tab_sku, tab_granel, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
     tab_real, tab_optimos = st.tabs(["🔍 Real", "🏆 Óptimos"])
@@ -1326,6 +1330,36 @@ with tab_sku:
         - **EBITDA negativo**: El SKU genera pérdidas
         - **Margen alto**: Mayor rentabilidad relativa
         - **Margen bajo**: Menor rentabilidad relativa
+        
+        ### 🌾 **Simulador de Granel**
+        
+        El simulador de granel te permite:
+        
+        1. **Filtrar frutas** por tipo específico
+        2. **Aplicar overrides globales** con cambios porcentuales en costos de granel
+        3. **Ajustes universales** por tipo de costo específico
+        4. **Analizar costos** de MO, Materiales, Laboratorio, etc.
+        5. **Visualizar resultados** con gráficos de costos por fruta
+        6. **Exportar escenarios** de granel para análisis posterior
+        7. **🔄 Sincronización automática** con el simulador de retail
+        
+        ### 🔄 **Sincronización Granel ↔ Retail**
+        
+        Cuando editas costos de granel, el sistema automáticamente:
+        - Recalcula el "Proceso Granel (USD/kg)" para cada SKU
+        - Actualiza los totales en el simulador de retail
+        - Mantiene la consistencia entre ambos simuladores
+        - Requiere datos de recetas (RECETA_SKU) y frutas (INFO_FRUTA) para funcionar
+        
+        ### 🔧 **Cómo usar el simulador de granel**
+        
+        1. **Carga datos** en la página Home con la hoja 'FACT_GRANEL_POND'
+        2. **Navega a la pestaña Granel** en el simulador
+        3. **Aplica filtros** por fruta si deseas enfocar el análisis
+        4. **Configura overrides globales** para cambios porcentuales masivos
+        5. **Usa ajustes universales** para modificar costos específicos
+        6. **Analiza KPIs** y gráficos para tomar decisiones
+        7. **Exporta el escenario** para compartir o analizar
         """)
     with tab_optimos:
         st.header("🏆 Óptimos")
@@ -1410,7 +1444,431 @@ with tab_sku:
                 key="data_editor_detalle",
                 hide_index=True
             )
+# ====== GRANEL ======
+with tab_granel:
+    # ------------------------------------------------------
+    # Helpers (solo para esta tab; usan tus funciones de src/simulator.py)
+    # ------------------------------------------------------
+    def _ensure_sim_df_from_hist():
+        """Inicializa sim.granel_df desde el histórico si no existe (sin mutar el histórico)."""
+        if "sim.granel_df" not in st.session_state or st.session_state["sim.granel_df"] is None:
+            st.session_state["sim.granel_df"] = st.session_state["hist.granel_ponderado"].copy()
+            st.session_state["sim.granel_df"] = recalculate_granel_totals(st.session_state["sim.granel_df"])
 
+    def _cost_editable_columns(df: pd.DataFrame) -> list:
+        """Columnas de costos editables manualmente (excluye IDs, títulos y totales)."""
+        lock = {"Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo", "Costos Directos", "Costos Indirectos"}
+        return [c for c in df.columns if c not in lock and not c.endswith("Total")]
+
+    def _merge_back_sim(sim_df: pd.DataFrame, edited_view: pd.DataFrame, pk="Fruta_id") -> pd.DataFrame:
+        """Escribe de vuelta SOLO lo editado (columnas editables) en sim.granel_df, recalculando totales."""
+        editable = [c for c in _cost_editable_columns(edited_view) if c in sim_df.columns]
+        base = sim_df.copy()
+        # Trae solo pk + columnas editables desde la vista
+        left = base.merge(edited_view[[pk] + editable], on=pk, how="left", suffixes=("", "_new"))
+        for c in editable:
+            nc = f"{c}_new"
+            if nc in left.columns:
+                left[c] = left[nc].combine_first(left[c])
+                left.drop(columns=[nc], inplace=True)
+        left = recalculate_granel_totals(left)
+        return left
+
+    def _sync_retail_using_hist_copy(overrides: dict):
+        """
+        Sincroniza retail usando:
+        - COPIA del histórico + overrides universales aplicados al vuelo
+        (sin mutar el histórico), y recalcula Proceso Granel en retail.
+        """
+        receta_df = st.session_state.get("fruta.receta_df")
+        info_df   = st.session_state.get("fruta.info_df")
+        retail_df = st.session_state.get("sim.df")
+        if receta_df is None or info_df is None or retail_df is None:
+            return False, "Faltan datos de recetas, info de frutas o sim.df"
+
+        hist = st.session_state["hist.granel_ponderado"]  # inmutable
+        hist_for_sync = apply_granel_universal_adjustments(hist, overrides or {})
+        # (No usamos ediciones manuales aquí para evitar mezclar filtros; si quisieras
+        # también reflejar ediciones locales, podrías fusionar columnas editadas desde sim.granel_df)
+        try:
+            st.session_state["sim.df"] = sync_granel_changes_to_retail(
+                hist_for_sync, receta_df, info_df, retail_df
+            )
+            st.session_state["sim.dirty"] = True
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    # ------------------------------------------------------
+    # Tabs internas
+    # ------------------------------------------------------
+    tab_granel_real, tab_granel_optimos = st.tabs(["🔍 Real", "🏆 Óptimos"])
+
+    # ======================================================
+    # TAB: REAL
+    # ======================================================
+    with tab_granel_real:
+        # --------- Carga de datos base ---------
+        granel_hist = st.session_state.get("hist.granel_ponderado")
+        if granel_hist is None or granel_hist.empty:
+            st.error("❌ **No hay datos de granel disponibles**")
+            st.info("💡 **Para usar el simulador de granel, primero debes:**\n\n1. 📁 Ir a **Inicio**\n2. 📤 Cargar Excel con la hoja **FACT_GRANEL_POND**\n3. 🔄 Regresar al simulador")
+            if st.button("Ir a Inicio", type="primary"):
+                st.switch_page("Inicio.py")
+            st.stop()
+
+        # Asegura escenario sim inicial (NUNCA tocar histórico)
+        _ensure_sim_df_from_hist()
+
+        # --------- Filtros ---------
+        st.subheader("🔍 Filtros de Granel")
+        filter_options = get_granel_filter_options(granel_hist)
+        col1, col2 = st.columns(2)
+        with col1:
+            if "Fruta" in filter_options:
+                frutas_seleccionadas = st.multiselect(
+                    "Frutas:",
+                    options=filter_options["Fruta"],
+                    default=[],
+                    help="Selecciona las frutas a incluir en el análisis"
+                )
+            else:
+                frutas_seleccionadas = []
+        with col2:
+            st.write("")
+
+        # Mapear las frutas seleccionadas a sus ids correspondientes
+        ids_seleccionadas = []
+        if "Fruta" in filter_options and "id" in filter_options:
+            # Crear un mapeo directo de nombre de fruta a ID
+            fruta_to_id_map = {}
+            for i, nombre in enumerate(filter_options["Fruta"]):
+                if i < len(filter_options["id"]):
+                    fruta_to_id_map[nombre] = filter_options["id"][i]
+            
+            # Mapear las frutas seleccionadas a sus IDs
+            for fruta in frutas_seleccionadas:
+                if fruta in fruta_to_id_map:
+                    ids_seleccionadas.append(fruta_to_id_map[fruta])
+
+        # Mostrar SIEMPRE el sim (no el histórico), filtrado
+        sim_df = st.session_state["sim.granel_df"].copy()
+        granel_filtrado = apply_granel_filters(sim_df, ids_seleccionadas)
+
+        # --------- Ajustes universales ---------
+        st.subheader("⚙️ Ajustes Universales por Costo de Granel")
+
+        # Columnas de costos disponibles (en el SIM filtrado para UX, se aplican globalmente)
+        cost_columns_granel = _cost_editable_columns(sim_df)
+        if cost_columns_granel:
+            c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+            with c1:
+                selected_cost_granel = st.selectbox(
+                    "Seleccionar costo a ajustar:",
+                    options=cost_columns_granel,
+                    help="Ajuste universal sobre esta columna"
+                )
+            with c2:
+                adjustment_type_granel = st.selectbox(
+                    "Tipo de ajuste:",
+                    options=["Porcentaje (%)", "Dólares por kg (USD/kg)"],
+                    help="Aplicar % o fijar un nuevo valor absoluto"
+                )
+            with c3:
+                if adjustment_type_granel == "Porcentaje (%)":
+                    adjustment_value_granel = st.number_input(
+                        "Valor del ajuste:",
+                        key=f"adjustment_value_granel_{selected_cost_granel}",
+                        min_value=-100.0, max_value=1000.0, value=0.0,
+                        step=0.5, format="%.1f",
+                        help="Porcentaje de cambio (-100 a +1000)"
+                    )
+                else:
+                    # Usar text_input para evitar el bug de number_input con valores negativos
+                    input_text = st.text_input(
+                        "Nuevo valor:",
+                        value="",
+                        help="Nuevo valor en USD/kg (ej: -0.123, 0.456)",
+                        key=f"adjustment_value_granel_dollars_{selected_cost_granel}",
+                        placeholder="0.000"
+                    )
+                    
+                    # Validar y convertir el valor
+                    try:
+                        adjustment_value_granel = float(input_text)
+                        if adjustment_value_granel < -10.0 or adjustment_value_granel > 100.0:
+                            st.error("⚠️ El valor debe estar entre -10.0 y 100.0 USD/kg")
+                            adjustment_value_granel = 0.0
+                    except ValueError:
+                        if input_text.strip() == "":
+                            adjustment_value_granel = 0.0
+                        else:
+                            st.error("⚠️ Por favor, ingrese un número válido (ej: -0.123)")
+                            adjustment_value_granel = 0.0
+            with c4:
+                if st.button("Aplicar Ajuste Granel", type="primary"):
+                    sim_snapshot_push()
+
+                    st.session_state.setdefault("sim.granel_overrides_row", {})
+                    st.session_state["sim.granel_overrides_row"][selected_cost_granel] = {
+                        "type": "percentage" if adjustment_type_granel == "Porcentaje (%)" else "dollars",
+                        "value": float(adjustment_value_granel),
+                        "timestamp": pd.Timestamp.now()
+                    }
+
+                    # Recalcular el ESCENARIO completo desde histórico + overrides (histórico intocable)
+                    base = st.session_state["hist.granel_ponderado"].copy()
+                    base = apply_granel_universal_adjustments(base, st.session_state["sim.granel_overrides_row"])
+                    st.session_state["sim.granel_df"] = recalculate_granel_totals(base)
+
+                    # Sync retail con COPIA del histórico + overrides
+                    ok, err = _sync_retail_using_hist_copy(st.session_state["sim.granel_overrides_row"])
+                    if ok:
+                        st.success(f"✅ Ajuste aplicado y sincronizado: {selected_cost_granel}")
+                    else:
+                        st.warning(f"⚠️ Ajuste aplicado en granel; retail no sincronizado: {err}")
+                    st.rerun()
+
+        # Listado y gestión de overrides activos
+        if st.session_state.get("sim.granel_overrides_row"):
+            st.subheader("Ajustes Universales Activos")
+            for cost_column, adj in st.session_state["sim.granel_overrides_row"].items():
+                tipo = "Porcentaje" if adj["type"] == "percentage" else "Dólares"
+                valor = f"{adj['value']:+.1f}%" if adj["type"] == "percentage" else f"{adj['value']:+.3f} USD/kg"
+                ts = adj["timestamp"].strftime("%H:%M:%S") if isinstance(adj.get("timestamp"), pd.Timestamp) else "—"
+                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                with c1:
+                    st.write(f"**{cost_column}**: {valor}")
+                with c2:
+                    st.write(f"**Tipo**: {tipo}")
+                with c3:
+                    st.write(f"**Aplicado**: {ts}")
+                with c4:
+                    if st.button("🗑️", key=f"del_ovr_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
+                        sim_snapshot_push()
+                        del st.session_state["sim.granel_overrides_row"][cost_column]
+
+                        # Recalcular escenario desde histórico limpio + overrides restantes
+                        base = st.session_state["hist.granel_ponderado"].copy()
+                        base = apply_granel_universal_adjustments(base, st.session_state["sim.granel_overrides_row"])
+                        st.session_state["sim.granel_df"] = recalculate_granel_totals(base)
+
+                        ok, err = _sync_retail_using_hist_copy(st.session_state["sim.granel_overrides_row"])
+                        if ok:
+                            st.success(f"✅ Ajuste eliminado y sincronizado: {cost_column}")
+                        else:
+                            st.warning(f"⚠️ Ajuste eliminado; retail no sincronizado: {err}")
+                        st.rerun()
+
+            if st.button("Limpiar todos los ajustes", type="secondary"):
+                sim_snapshot_push()
+                st.session_state["sim.granel_overrides_row"] = {}
+                st.session_state["sim.granel_df"] = recalculate_granel_totals(st.session_state["hist.granel_ponderado"].copy())
+
+                ok, err = _sync_retail_using_hist_copy({})
+                if ok:
+                    st.success("✅ Overrides limpiados y retail sincronizado")
+                else:
+                    st.warning(f"⚠️ Overrides limpiados; retail no sincronizado: {err}")
+                st.rerun()
+
+        # --------- Tabla editable (sobre el SIM filtrado) ---------
+        st.subheader("✏️ Editar Costos de Granel (solo escenario)")
+        editable_view = granel_filtrado.copy()
+
+        # Casting numérico seguro para estilos/ediciones
+        numeric_cols = [c for c in editable_view.columns if c not in ["Fruta_id", "Fruta"]]
+        for c in numeric_cols:
+            editable_view[c] = pd.to_numeric(editable_view[c], errors="coerce")
+
+        # Orden preferido (mostrar si existen)
+        order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo",
+                      "MO Directa", "MO Indirecta", "MO Total",
+                      "Materiales Directos", "Materiales Indirectos", "Materiales Total",
+                      "Laboratorio", "Mantencion y Maquinaria",
+                      "Costos Directos", "Costos Indirectos", "Servicios Generales"]
+        available_cols = [c for c in order_cols if c in editable_view.columns]
+        # Añadir columnas que no estaban en el orden
+        tail_cols = [c for c in editable_view.columns if c not in available_cols]
+        editable_view = editable_view[available_cols + tail_cols]
+
+        # Column config: bloquea no editables, deja editables con formato
+        colcfg = {}
+        editables = set(_cost_editable_columns(editable_view))
+        for c in editable_view.columns:
+            if c in {"Fruta_id", "Fruta"}:
+                colcfg[c] = st.column_config.TextColumn(c, disabled=True, pinned="left")
+            elif c == "Rendimiento":
+                colcfg[c] = st.column_config.NumberColumn(c, format="%.2f", min_value=0.01, max_value=1.0, step=0.01, disabled=True)
+            elif c in {"Precio", "Precio Efectivo"}:
+                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=True)
+            elif c.endswith("Total") or c in {"Costos Directos", "Costos Indirectos"}:
+                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=True)
+            else:
+                # costos individuales editables
+                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=(c not in editables))
+
+        edited_df = st.data_editor(
+            editable_view,
+            column_config=colcfg,
+            use_container_width=True,
+            hide_index=True,
+            key="data_editor_granel"
+        )
+
+        # Botón explícito para guardar lo editado (evita escribir al vuelo)
+        if st.button("💾 Guardar cambios del editor"):
+            sim_snapshot_push()
+            # Fusiona de vuelta SOLO columnas editables al SIM global (no solo las filas filtradas)
+            sim_global = st.session_state["sim.granel_df"]
+            # Asegura pk
+            if "Fruta_id" not in edited_df.columns or "Fruta_id" not in sim_global.columns:
+                st.error("No se encontró la columna 'Fruta_id' para guardar cambios.")
+            else:
+                try:
+                    st.session_state["sim.granel_df"] = _merge_back_sim(sim_global, edited_df, pk="Fruta_id")
+                    # Opcional: sincronizar retail tras editar manualmente
+                    ok, err = _sync_retail_using_hist_copy(st.session_state.get("sim.granel_overrides_row", {}))
+                    if ok:
+                        st.success("✅ Cambios guardados y retail sincronizado")
+                    else:
+                        st.info("✅ Cambios guardados en granel (retail no sincronizado)")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error guardando cambios: {e}")
+
+        # --------- KPIs ---------
+        st.subheader("📈 KPIs de Granel (escenario)")
+        try:
+            kpis_granel = calculate_granel_kpis(editable_view)
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric("Total Frutas", kpis_granel.get("Total Frutas", 0))
+            with c2:
+                st.metric("MO Promedio", f"${kpis_granel.get('MO Promedio (USD/kg)', float('nan')):.3f}/kg" if "MO Promedio (USD/kg)" in kpis_granel else "N/A")
+            with c3:
+                st.metric("Materiales Promedio", f"${kpis_granel.get('Materiales Promedio (USD/kg)', float('nan')):.3f}/kg" if "Materiales Promedio (USD/kg)" in kpis_granel else "N/A")
+            with c4:
+                st.metric("Precio Efectivo Promedio", f"${kpis_granel.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpis_granel else "N/A")
+        except Exception as e:
+            st.error(f"❌ Error calculando KPIs: {e}")
+
+        # --------- Top/Bottom ---------
+        st.subheader("🏆 Top 5 y Bottom 5 Frutas por Costo")
+        try:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Top 5")
+                top_frutas, _ = get_top_bottom_granel(editable_view, 5)
+                if not top_frutas.empty:
+                    show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in top_frutas.columns]
+                    st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
+                else:
+                    st.info("No hay datos")
+            with c2:
+                st.subheader("Bottom 5")
+                _, bottom_frutas = get_top_bottom_granel(editable_view, 5)
+                if not bottom_frutas.empty:
+                    show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in bottom_frutas.columns]
+                    st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
+                else:
+                    st.info("No hay datos")
+        except Exception as e:
+            st.error(f"❌ Error obteniendo top/bottom: {e}")
+
+        # --------- Gráfico ---------
+        st.subheader("📈 Gráfico de Costos")
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            top_n_granel = st.number_input(
+                "Número de frutas",
+                min_value=5, max_value=50, value=20, step=5,
+                help="Top N por costo"
+            )
+        with c2:
+            st.write("")
+        try:
+            chart = create_granel_cost_chart(editable_view, int(top_n_granel))
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.warning("No se pudo crear el gráfico.")
+        except Exception as e:
+            st.error(f"❌ Error creando gráfico: {e}")
+
+        # --------- Export ---------
+        st.subheader("💾 Exportar Escenario de Granel")
+        ec1, ec2 = st.columns([2, 1])
+        with ec1:
+            filename_prefix_granel = st.text_input(
+                "Prefijo del archivo:",
+                value="escenario_granel",
+                help="Nombre base para el CSV"
+            )
+        with ec2:
+            if st.button("📥 Exportar a CSV", type="primary", key="export_granel_csv"):
+                try:
+                    export_path = export_granel_escenario(st.session_state["sim.granel_df"], filename_prefix_granel)
+                    with open(export_path, 'r', encoding='utf-8') as f:
+                        csv_content = f.read()
+                    st.download_button(
+                        label="⬇️ Descargar CSV",
+                        data=csv_content,
+                        file_name=export_path.name,
+                        mime="text/csv",
+                        key="download_granel_csv"
+                    )
+                    st.success(f"✅ Exportado: {export_path}")
+                except Exception as e:
+                    st.error(f"❌ Error exportando: {e}")
+
+    # ======================================================
+    # TAB: ÓPTIMOS
+    # ======================================================
+    with tab_granel_optimos:
+        st.header("🏆 Granel Óptimos")
+        granel_optimo = st.session_state.get("hist.granel_optimo")
+        if granel_optimo is None or granel_optimo.empty:
+            st.info("ℹ️ **Datos óptimos de granel no disponibles**. Se generan al cargar datos base.")
+        else:
+            st.subheader("📊 Datos Óptimos de Granel")
+            opt_view = granel_optimo.copy()
+            # Casting numérico
+            num_cols = [c for c in opt_view.columns if c not in ["Fruta_id", "Fruta"]]
+            for c in num_cols:
+                opt_view[c] = pd.to_numeric(opt_view[c], errors="coerce")
+
+            order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo",
+                          "MO Directa", "MO Indirecta", "MO Total",
+                          "Materiales Directos", "Materiales Indirectos", "Materiales Total",
+                          "Laboratorio", "Mantencion y Maquinaria",
+                          "Costos Directos", "Costos Indirectos", "Servicios Generales"]
+            avail_cols = [c for c in order_cols if c in opt_view.columns]
+            tail = [c for c in opt_view.columns if c not in avail_cols]
+            opt_view = opt_view[avail_cols + tail]
+
+            fmt = {c: "{:.3f}" for c in num_cols if c in opt_view.columns}
+            if "Rendimiento" in opt_view.columns:
+                fmt["Rendimiento"] = "{:.1%}"
+
+            st.dataframe(opt_view.style.format(fmt), use_container_width=True, hide_index=True)
+
+            # KPIs
+            st.subheader("📈 KPIs Óptimos")
+            try:
+                kpi_opt = calculate_granel_kpis(opt_view)
+                k1, k2, k3, k4 = st.columns(4)
+                with k1:
+                    st.metric("Total Frutas Óptimas", kpi_opt.get("Total Frutas", 0))
+                with k2:
+                    st.metric("MO Promedio Óptimo", f"${kpi_opt.get('MO Promedio (USD/kg)', float('nan')):.3f}/kg" if "MO Promedio (USD/kg)" in kpi_opt else "N/A")
+                with k3:
+                    st.metric("Materiales Promedio Óptimo", f"${kpi_opt.get('Materiales Promedio (USD/kg)', float('nan')):.3f}/kg" if "Materiales Promedio (USD/kg)" in kpi_opt else "N/A")
+                with k4:
+                    st.metric("Precio Efectivo Promedio Óptimo", f"${kpi_opt.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpi_opt else "N/A")
+            except Exception as e:
+                st.error(f"❌ Error KPIs óptimos: {e}")
+    
 with tab_precio_frutas:
     st.header("🍓 Simulador de Precios de Frutas")
     

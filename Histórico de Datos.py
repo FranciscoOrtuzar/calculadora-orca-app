@@ -160,12 +160,21 @@ with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
 # Procesar datos solo si no están en caché o si se recargó
 if st.session_state["hist.df"] is None:
     if "hist.file_bytes" in st.session_state and st.session_state["hist.file_bytes"] is not None:
-        try:
+        # try:
             with st.spinner("Procesando archivo..."):
-                detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym)
-                dettale_optimo = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, optimo=True)
-                ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
                 df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
+                detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, df_granel=df_granel_ponderado)
+                detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, optimo=True, df_granel=df_granel_ponderado)
+                ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
+                
+                # Generar datos óptimos de granel si están disponibles
+                try:
+                    df_granel_optimo, df_granel_ponderado_optimo = build_granel(st.session_state["hist.file_bytes"], sheet_granel=["FACT_GRANEL_OPTIMO", "FACT_GRANEL_POND_OPTIMO"])
+                    st.session_state["hist.granel_optimo"] = df_granel_ponderado_optimo
+                    st.success(f"✅ Datos óptimos de granel cargados: {len(df_granel_ponderado_optimo)} frutas")
+                except Exception as e:
+                    st.info(f"ℹ️ Datos óptimos de granel no disponibles: {e}")
+                    st.session_state["hist.granel_optimo"] = None
                 st.session_state["hist.granel_ponderado"] = df_granel_ponderado
                 st.session_state["hist.granel"] = df_granel
                 st.session_state["hist.ebitda_mensual"] = ebitda_mensual
@@ -177,7 +186,7 @@ if st.session_state["hist.df"] is None:
                 detalle = detalle.merge(volumenes, how="left", on="SKU-Cliente")
                 detalle = detalle.merge(ebitdas, how="left", on="SKU-Cliente")
                 st.session_state["hist.df"] = detalle
-                st.session_state["hist.df_optimo"] = dettale_optimo
+                st.session_state["hist.df_optimo"] = detalle_optimo
                 st.success(f"✅ Factos procesados: {len(detalle)} SKUs, {len(ebitda_mensual)} meses")
                 # st.dataframe(ebitda_mensual, use_container_width=True, hide_index=True)
                 # st.dataframe(costos_mensuales, use_container_width=True, hide_index=True)
@@ -213,9 +222,9 @@ if st.session_state["hist.df"] is None:
                     st.warning(f"⚠️ Error cargando datos de fruta: {e}")
                     st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
                     
-        except Exception as e:
-            st.error(f"Error procesando el archivo: {e}")
-            st.stop()
+        # except Exception as e:
+        #     st.error(f"Error procesando el archivo: {e}")
+        #     st.stop()
     else:
         st.info("Sube tu archivo para comenzar.")
         st.stop()
@@ -526,12 +535,12 @@ with tab_granel:
     granel_ponderado = st.session_state.get("hist.granel_ponderado")
     info_fruta = st.session_state.get("fruta.info_df")
     precio_fruta = info_fruta[["Precio","Fruta_id"]]
-    eficiencia = info_fruta[["Eficiencia", "Fruta_id"]]
-    # Agregar columnas de precio y eficiencia
+    rendimiento = info_fruta[["Rendimiento", "Fruta_id"]]
+    # Agregar columnas de precio y rendimiento
     granel_ponderado = granel_ponderado.merge(precio_fruta, how="left", on="Fruta_id")
-    granel_ponderado = granel_ponderado.merge(eficiencia, how="left", on="Fruta_id")
-    # Calcular MMPP Total
-    granel_ponderado["MMPP Total"] = granel_ponderado["Precio"] / granel_ponderado["Eficiencia"]
+    granel_ponderado = granel_ponderado.merge(rendimiento, how="left", on="Fruta_id")
+    # Calcular Costo Efectivo
+    granel_ponderado["Precio Efectivo"] = granel_ponderado["Precio"] / granel_ponderado["Rendimiento"]
     # Calcular Costos Directos y Costos Indirectos
     granel_ponderado["Costos Directos"] = granel_ponderado["MO Directa"] + granel_ponderado["Materiales Directos"] + granel_ponderado["Laboratorio"] + granel_ponderado["Mantencion y Maquinaria"]
     granel_ponderado["Costos Indirectos"] = granel_ponderado["MO Indirecta"] + granel_ponderado["Materiales Indirectos"]
@@ -552,13 +561,13 @@ with tab_granel:
         for col in numeric_cols:
             granel_display[col] = pd.to_numeric(granel_display[col], errors='coerce')
         
-        order_cols = ["Fruta_id", "Fruta", "Precio", "Eficiencia", "MMPP Total", "MO Directa", "MO Indirecta",
+        order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo", "MO Directa", "MO Indirecta",
         "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
         "Costos Directos", "Costos Indirectos", "Servicios Generales"]
         granel_display = granel_display[order_cols]
         #Formato
         fmt_num = {col: "{:.3f}" for col in numeric_cols}
-        fmt_pct = {"Eficiencia": "{:.1%}"} if "Eficiencia" in granel_display.columns else {}
+        fmt_pct = {"Rendimiento": "{:.1%}"} if "Rendimiento" in granel_display.columns else {}
 
         fmt = fmt_num | fmt_pct
         # Mostrar tabla con formato

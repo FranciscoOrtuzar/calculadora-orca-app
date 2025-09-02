@@ -558,3 +558,351 @@ def validate_upload_file(uploaded_file) -> Tuple[bool, str, Optional[pd.DataFram
         
     except Exception as e:
         return False, f"Error leyendo archivo: {e}", None
+
+# ===================== Funciones de Simulación de Granel =====================
+
+def apply_granel_filters(df: pd.DataFrame, fruta: List[str] = None) -> pd.DataFrame:
+    """
+    Aplica filtros a los datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        fruta: Lista de frutas a incluir
+        
+    Returns:
+        DataFrame filtrado
+    """
+    df_filtered = df.copy()
+    
+    # Aplicar filtros solo si están especificados y no están vacíos
+    if fruta and len(fruta) > 0 and "Todos" not in fruta:
+        df_filtered = df_filtered[df_filtered["Fruta_id"].isin(fruta)]
+    
+    return df_filtered
+
+def get_granel_filter_options(df: pd.DataFrame) -> Dict[str, List[str]]:
+    """
+    Obtiene opciones de filtro para datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        
+    Returns:
+        Diccionario con opciones de filtro
+    """
+    options = {}
+    
+    if "Fruta_id" in df.columns and "Fruta" in df.columns:
+        # Crear un DataFrame único con Fruta_id y Fruta para mantener la correspondencia
+        unique_frutas = df[["Fruta_id", "Fruta"]].drop_duplicates().sort_values("Fruta")
+        
+        # Devolver listas correspondientes
+        options["id"] = unique_frutas["Fruta_id"].tolist()
+        options["Fruta"] = unique_frutas["Fruta"].tolist()
+    
+    return options
+
+def apply_granel_global_overrides(df: pd.DataFrame, pct_change: float, enable: bool = False) -> pd.DataFrame:
+    """
+    Aplica overrides globales a los datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        pct_change: Porcentaje de cambio
+        enable: Si aplicar el override
+        
+    Returns:
+        DataFrame con overrides aplicados
+    """
+    if not enable or abs(pct_change) < 0.01:
+        return df.copy()
+    
+    df_adjusted = df.copy()
+    
+    # Identificar columnas de costos (excluyendo identificadores y totales)
+    cost_columns = [col for col in df_adjusted.columns 
+                   if col not in ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo", 
+                                 "Costos Directos", "Costos Indirectos"] 
+                   and not col.endswith("Total")]
+    
+    # Aplicar cambio porcentual a costos
+    for col in cost_columns:
+        if col in df_adjusted.columns:
+            df_adjusted[col] = df_adjusted[col] * (1 + pct_change / 100)
+    
+    # Recalcular totales
+    df_adjusted = recalculate_granel_totals(df_adjusted)
+    
+    return df_adjusted
+
+def recalculate_granel_totals(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recalcula los totales en los datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        
+    Returns:
+        DataFrame con totales recalculados
+    """
+    df_calc = df.copy()
+    
+    # Recalcular MO Total si existen las componentes
+    if "MO Directa" in df_calc.columns and "MO Indirecta" in df_calc.columns:
+        df_calc["MO Total"] = df_calc["MO Directa"] + df_calc["MO Indirecta"]
+    
+    # Recalcular Materiales Total si existen las componentes
+    if "Materiales Directos" in df_calc.columns and "Materiales Indirectos" in df_calc.columns:
+        df_calc["Materiales Total"] = df_calc["Materiales Directos"] + df_calc["Materiales Indirectos"]
+    
+    # Recalcular Costos Directos
+    direct_cost_cols = ["MO Directa", "Materiales Directos", "Laboratorio", "Mantencion y Maquinaria"]
+    existing_direct_cols = [col for col in direct_cost_cols if col in df_calc.columns]
+    if existing_direct_cols:
+        df_calc["Costos Directos"] = df_calc[existing_direct_cols].sum(axis=1)
+    
+    # Recalcular Costos Indirectos
+    indirect_cost_cols = ["MO Indirecta", "Materiales Indirectos"]
+    existing_indirect_cols = [col for col in indirect_cost_cols if col in df_calc.columns]
+    if existing_indirect_cols:
+        df_calc["Costos Indirectos"] = df_calc[existing_indirect_cols].sum(axis=1)
+    
+    # Recalcular Precio Efectivo si existen Precio y Rendimiento
+    if "Precio" in df_calc.columns and "Rendimiento" in df_calc.columns:
+        df_calc["Precio Efectivo"] = df_calc["Precio"] / df_calc["Rendimiento"]
+    
+    return df_calc
+
+def apply_granel_universal_adjustments(df: pd.DataFrame, adjustments: dict) -> pd.DataFrame:
+    """
+    Aplica ajustes universales a los datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        adjustments: Diccionario con ajustes por columna
+        
+    Returns:
+        DataFrame con ajustes aplicados
+    """
+    if not adjustments:
+        return df
+
+    df_adjusted = df.copy()
+
+    for cost_column, adj in adjustments.items():
+        if cost_column not in df_adjusted.columns:
+            continue
+
+        if adj["type"] == "percentage":
+            df_adjusted[cost_column] = df_adjusted[cost_column] * (1 + adj["value"] / 100)
+        else:  # "dollars" = nuevo valor absoluto
+            df_adjusted[cost_column] = adj["value"]
+
+    # Recalcular totales
+    df_adjusted = recalculate_granel_totals(df_adjusted)
+    return df_adjusted
+
+def calculate_granel_kpis(df: pd.DataFrame) -> Dict:
+    """
+    Calcula KPIs para datos de granel.
+    
+    Args:
+        df: DataFrame de granel
+        
+    Returns:
+        Diccionario con KPIs calculados
+    """
+    kpis = {}
+    
+    try:
+        kpis["Total Frutas"] = len(df)
+        
+        if "MO Total" in df.columns:
+            kpis["MO Promedio (USD/kg)"] = df["MO Total"].mean()
+        
+        if "Materiales Total" in df.columns:
+            kpis["Materiales Promedio (USD/kg)"] = df["Materiales Total"].mean()
+        
+        if "Laboratorio" in df.columns:
+            kpis["Laboratorio Promedio (USD/kg)"] = df["Laboratorio"].mean()
+        
+        if "Precio Efectivo" in df.columns:
+            kpis["Precio Efectivo Promedio (USD/kg)"] = df["Precio Efectivo"].mean()
+        
+        if "Costos Directos" in df.columns:
+            kpis["Costos Directos Promedio (USD/kg)"] = df["Costos Directos"].mean()
+        
+        if "Costos Indirectos" in df.columns:
+            kpis["Costos Indirectos Promedio (USD/kg)"] = df["Costos Indirectos"].mean()
+        
+    except Exception as e:
+        st.error(f"Error calculando KPIs de granel: {e}")
+    
+    return kpis
+
+def get_top_bottom_granel(df: pd.DataFrame, n: int = 5) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Obtiene las frutas con mayor y menor costo total.
+    
+    Args:
+        df: DataFrame de granel
+        n: Número de frutas a retornar
+        
+    Returns:
+        Tupla con (top_frutas, bottom_frutas)
+    """
+    if "Precio Efectivo" in df.columns:
+        # Ordenar por Precio Efectivo (mayor a menor)
+        df_sorted = df.sort_values("Precio Efectivo", ascending=False)
+        top_frutas = df_sorted.head(n)
+        bottom_frutas = df_sorted.tail(n)
+    else:
+        # Si no hay Precio Efectivo, usar Costos Directos como alternativa
+        if "Costos Directos" in df.columns:
+            df_sorted = df.sort_values("Costos Directos", ascending=False)
+            top_frutas = df_sorted.head(n)
+            bottom_frutas = df_sorted.tail(n)
+        else:
+            top_frutas = pd.DataFrame()
+            bottom_frutas = pd.DataFrame()
+    
+    return top_frutas, bottom_frutas
+
+def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.Chart]:
+    """
+    Crea un gráfico de barras con los costos de granel por fruta.
+    
+    Args:
+        df: DataFrame de granel
+        top_n: Número de frutas a mostrar
+        
+    Returns:
+        Gráfico de Altair o None si hay error
+    """
+    try:
+        if df.empty:
+            return None
+        
+        # Seleccionar las top N frutas por Precio Efectivo
+        if "Precio Efectivo" in df.columns:
+            df_chart = df.nlargest(top_n, "Precio Efectivo")
+            y_col = "Precio Efectivo"
+            title = f"Top {top_n} Frutas por Precio Efectivo (USD/kg)"
+        elif "Costos Directos" in df.columns:
+            df_chart = df.nlargest(top_n, "Costos Directos")
+            y_col = "Costos Directos"
+            title = f"Top {top_n} Frutas por Costos Directos (USD/kg)"
+        else:
+            return None
+        
+        # Crear gráfico
+        chart = alt.Chart(df_chart).mark_bar().add_selection(
+            alt.selection_interval()
+        ).encode(
+            x=alt.X("Fruta_id:N", sort="-y", title="Fruta"),
+            y=alt.Y(f"{y_col}:Q", title="Costo (USD/kg)"),
+            color=alt.Color(f"{y_col}:Q", scale=alt.Scale(scheme="blues")),
+            tooltip=["Fruta_id", "Fruta", f"{y_col}:Q"]
+        ).properties(
+            title=title,
+            width=600,
+            height=400
+        )
+        
+        return chart
+        
+    except Exception as e:
+        st.error(f"Error creando gráfico de granel: {e}")
+        return None
+
+def sync_granel_changes_to_retail(granel_df: pd.DataFrame, receta_df: pd.DataFrame, info_df: pd.DataFrame, retail_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sincroniza los cambios de costos de granel con el simulador de retail,
+    recalculando el "Proceso Granel (USD/kg)" para cada SKU.
+    
+    Args:
+        granel_df: DataFrame de granel con costos actualizados
+        receta_df: DataFrame de recetas SKU
+        info_df: DataFrame de información de frutas
+        retail_df: DataFrame de retail actual
+        
+    Returns:
+        DataFrame de retail con "Proceso Granel (USD/kg)" actualizado
+    """
+    try:
+        # Importar la función de cálculo de MMPP
+        from src.data_io import compute_mmpp_almacenaje_granel_per_sku
+        
+        # Verificar que tenemos las columnas necesarias en granel_df
+        required_granel_cols = ["Fruta_id"]
+        missing_cols = [col for col in required_granel_cols if col not in granel_df.columns]
+        if missing_cols:
+            print(f"ERROR: Faltan columnas en granel_df: {missing_cols}")
+            return retail_df
+        
+        # Calcular nuevos valores de Proceso Granel basados en los costos de granel actualizados
+        cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos", 
+                       "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
+        available_cost_cols = [col for col in cost_columns if col in granel_df.columns]
+        
+        # Crear DataFrame con solo las columnas necesarias
+        granel_costs = granel_df[["Fruta_id"] + available_cost_cols].copy()
+        
+        # Calcular el costo total de proceso granel por fruta
+        if available_cost_cols:
+            granel_costs["Proceso Granel (USD/kg)"] = granel_costs[available_cost_cols].sum(axis=1)
+        else:
+            # Si no hay columnas de costo, usar 0
+            granel_costs["Proceso Granel (USD/kg)"] = 0.0
+        
+        # Usar la función existente para recalcular MMPP y Proceso Granel
+        updated_costs = compute_mmpp_almacenaje_granel_per_sku(receta_df, info_df, granel_costs)
+        
+        # Actualizar el DataFrame de retail
+        retail_updated = retail_df.copy()
+        
+        # Verificar que tenemos la columna Proceso Granel en retail
+        if "Proceso Granel (USD/kg)" not in retail_updated.columns:
+            print("ERROR: No se encontró la columna 'Proceso Granel (USD/kg)' en retail_df")
+            return retail_df
+        
+        # Actualizar usando mapeo directo (mismo patrón que apply_fruit_overrides_to_sim)
+        proceso_granel_map = updated_costs.set_index("SKU")["Proceso Granel (USD/kg)"]
+        retail_updated["Proceso Granel (USD/kg)"] = retail_updated["SKU"].astype(str).map(
+            proceso_granel_map.reindex(proceso_granel_map.index.astype(str))
+        ).fillna(retail_updated["Proceso Granel (USD/kg)"])
+        
+        # Recalcular totales en retail
+        from src.data_io import recalculate_totals
+        retail_updated = recalculate_totals(retail_updated)
+        
+        return retail_updated
+        
+    except Exception as e:
+        print(f"ERROR sincronizando cambios de granel con retail: {e}")
+        import traceback
+        traceback.print_exc()
+        return retail_df
+
+def export_granel_escenario(df: pd.DataFrame, filename_prefix: str = "escenario_granel") -> Path:
+    """
+    Exporta un escenario de granel a CSV.
+    
+    Args:
+        df: DataFrame de granel
+        filename_prefix: Prefijo del archivo
+        
+    Returns:
+        Path del archivo exportado
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{filename_prefix}_{timestamp}.csv"
+    
+    # Crear directorio outputs si no existe
+    output_dir = Path("outputs")
+    output_dir.mkdir(exist_ok=True)
+    
+    filepath = output_dir / filename
+    df.to_csv(filepath, index=False)
+    
+    return filepath
