@@ -184,13 +184,44 @@ Si encuentras problemas:
 3. Revisa los logs de error
 4. Ejecuta `pip list` para verificar dependencias instaladas
 
+## 🌐 Despliegue Web
+
+### Streamlit Cloud (Recomendado)
+1. **Subir a GitHub**: Haz push de tu código a un repositorio público
+2. **Conectar con Streamlit Cloud**: Ve a [share.streamlit.io](https://share.streamlit.io)
+3. **Configurar despliegue**: 
+   - Selecciona tu repositorio
+   - Branch: `main`
+   - Main file: `main.py`
+4. **Desplegar**: La aplicación estará disponible en una URL pública
+
+### Heroku
+1. **Instalar Heroku CLI**
+2. **Login**: `heroku login`
+3. **Crear app**: `heroku create tu-app-name`
+4. **Desplegar**: `git push heroku main`
+
+### Otras plataformas
+- **Railway**: Conecta tu repositorio GitHub
+- **Render**: Despliegue automático desde GitHub
+- **DigitalOcean App Platform**: Similar a Heroku
+
+### Archivos de configuración incluidos:
+- ✅ `Procfile` - Para Heroku y similares
+- ✅ `runtime.txt` - Versión de Python
+- ✅ `.streamlit/config.toml` - Configuración de Streamlit
+- ✅ `setup.sh` - Script de configuración
+- ✅ `requirements.txt` - Dependencias actualizadas
+
 ## 🎉 ¡Listo!
 
 Tu entorno de desarrollo está configurado y listo para usar todas las funcionalidades de la Calculadora VF:
 
 - ✅ Simulador de EBITDA por SKU
+- ✅ Simulador de Granel con sincronización automática
 - ✅ Ajustes de precios de frutas
 - ✅ Visor de recetas con paginación
 - ✅ Análisis de impacto en tiempo real
 - ✅ Exportación de datos y escenarios
 - ✅ Sistema de undo/redo completo
+- ✅ Despliegue web listo

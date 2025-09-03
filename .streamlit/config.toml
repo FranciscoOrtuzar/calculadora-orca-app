@@ -1,18 +1,24 @@
 [global]
-developmentMode = false
+# Configuración global para el despliegue web
 
 [server]
+# Configuración del servidor para despliegue web
 headless = true
-port = 8501
 enableCORS = false
 enableXsrfProtection = false
+port = 8501
 
 [browser]
+# Configuración del navegador
 gatherUsageStats = false
 
 [theme]
+# Tema personalizado (opcional)
 primaryColor = "#FF6B6B"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F0F2F6"
 textColor = "#262730"
-font = "sans serif"
+
+[logger]
+# Configuración de logs
+level = "info"

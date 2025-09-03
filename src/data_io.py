@@ -643,7 +643,8 @@ def columns_config(editable: bool = True) -> dict:
     "Materiales Directos", "Materiales Indirectos", "Laboratorio", "Mantención", "Servicios Generales", "Utilities",
     "Fletes Internos", "Comex", "Guarda PT"]
     dimension_cols_edit = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]  # Columnas dimensionales visibles
-    total_cols_edit = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
+    total_cols_edit = ["Costos Totales (USD/kg)", "Gastos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct",
+                        "EBITDA Simple (USD)", "KgEmbarcados", "EBITDA (USD)"]
     intermediate_cols_edit = ["PrecioVenta (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
                                 "MO Total", "Materiales Total", "MMPP Total (USD/kg)"]
     
@@ -785,20 +786,30 @@ def columns_config(editable: bool = True) -> dict:
                 step=0.001,
                 disabled=True
             )
-    editable_columns["KgEmbarcados"] = st.column_config.NumberColumn(
-        "KgEmbarcados",
-        help="Kilogramos embarcados",
-        format="%.0f",
-        step=1,
-        disabled=True
-    )
-    editable_columns["EBITDA (USD)"] = st.column_config.NumberColumn(
-        "EBITDA (USD)",
-        help="EBITDA en dólares",
-        format="%.0f",
-        step=1,
-        disabled=True
-    )
+        elif col == "EBITDA Simple (USD)":
+            editable_columns[col] = st.column_config.NumberColumn(
+                col,
+                help="EBITDA en dólares (KgEmbarcados * EBITDA (USD/kg))",
+                format="%.0f",
+                step=1,
+                disabled=True
+            )
+        elif col == "KgEmbarcados":
+            editable_columns["KgEmbarcados"] = st.column_config.NumberColumn(
+                "KgEmbarcados",
+                help="Kilogramos embarcados",
+                format="%.0f",
+                step=1,
+                disabled=True
+            )
+        elif col == "EBITDA (USD)":
+            editable_columns["EBITDA (USD)"] = st.column_config.NumberColumn(
+                "EBITDA (USD)",
+                help="EBITDA en dólares (desde valores mensuales)",
+                format="%.0f",
+                step=1,
+                disabled=True
+            )
     return editable_columns
 
     # ===================== Función para Recalcular Totales =====================
@@ -1117,7 +1128,7 @@ def build_ebitda_mensual(uploaded_bytes: bytes,
     return df, costos_wide, vol, precios
 
 @st.cache_data(show_spinner=True)
-def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANEL_POND"]) -> tuple:
+def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANEL_POND"], optimo=False) -> tuple:
     """
     Lee un workbook en bytes y devuelve un DF mensual por SKU-Cliente y un DF de granel ponderado:
     """
@@ -1128,7 +1139,8 @@ def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANE
         raise ValueError(f"No está la hoja '{sheet_granel[0]}'.")
     if sheet_granel[1] not in sheets: 
         raise ValueError(f"No está la hoja '{sheet_granel[1]}'.")
-    
+    if optimo:
+        sheet_granel[1] = "FACT_GRANEL_POND_OPTIMO"
     granel = build_fact_granel(sheets[sheet_granel[0]], fill_before_first=True)
     granel_ponderado = build_fact_granel_ponderado(sheets[sheet_granel[1]])
     return granel, granel_ponderado
@@ -1315,10 +1327,224 @@ def compute_mmpp_almacenaje_granel_per_sku(receta_df: pd.DataFrame, info_df: pd.
             "Proceso Granel (USD/kg)": pd.NamedAgg(column='Costo_Proceso_Granel', aggfunc='sum')
         }
     ).reset_index()
-    
-
-
     return df_result
+
+def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
+    """
+    Carga el plan 2026 y actualiza el dataframe de simulación.
+    
+    Lógica:
+    - Solo muestra SKUs presentes en el plan 2026
+    - Actualiza precios y kg embarcados si están en el plan
+    - Mantiene datos antiguos si no hay información nueva
+    - Aplica variaciones porcentuales a precios de frutas desde FRUTA_2026
+    - Recalcula costos de granel y totales
+    
+    Estructura esperada:
+    - FACT_2026: SKU, SKU-Cliente, Cliente, Descripción, Especie, Condicion, Marca, Kg, Precio
+    - FRUTA_2026: Fruta_id, Variacion_Pct (variación porcentual del precio)
+    
+    Args:
+        bytes_plan: Bytes del archivo Excel del plan 2026
+        
+    Returns:
+        bool: True si la carga fue exitosa
+    """
+    try:
+        # Cargar hojas del plan 2026
+        sheets = read_workbook(bytes_plan)
+        
+        # Verificar que las hojas necesarias existan
+        if "FACT_2026" not in sheets:
+            st.error("❌ No se encontró la hoja 'FACT_2026' en el archivo")
+            return False
+            
+        if "FRUTA_2026" not in sheets:
+            st.warning("⚠️ No se encontró la hoja 'FRUTA_2026' en el archivo")
+            frutas_2026 = None
+        else:
+            frutas_2026 = sheets["FRUTA_2026"]
+        
+        kg_y_precios = sheets["FACT_2026"]
+        
+        # Verificar columnas requeridas en FACT_2026
+        required_cols = ["SKU", "SKU-Cliente", "Cliente", "Descripción", "Especie", "Condicion", "Marca", "Kg", "Precio"]
+        missing_cols = [col for col in required_cols if col not in kg_y_precios.columns]
+        if missing_cols:
+            st.error(f"❌ Faltan columnas en FACT_2026: {missing_cols}")
+            return False
+        
+        # Obtener datos actuales
+        df_sim = st.session_state["sim.df"].copy()
+        frutas = st.session_state["fruta.info_df"].copy()
+        receta_df = st.session_state["fruta.receta_df"]
+        granel_df = st.session_state["hist.granel_ponderado"]
+        
+        # 1. FILTRAR df_sim para mostrar solo SKUs del plan 2026
+        skus_plan_2026 = kg_y_precios["SKU"].unique()
+        
+        # Convertir ambos a string para asegurar compatibilidad
+        # Filtrar nulos y valores no numéricos, luego convertir a string
+        skus_plan_2026_clean = []
+        for sku in skus_plan_2026:
+            if pd.notna(sku):
+                try:
+                    # Intentar convertir a número y luego a string
+                    sku_clean = str(int(float(sku)))
+                    skus_plan_2026_clean.append(sku_clean)
+                except (ValueError, TypeError):
+                    # Si no se puede convertir, mostrar warning y omitir
+                    st.warning(f"⚠️ SKU no numérico encontrado en plan 2026: '{sku}' - omitiendo")
+                    continue
+        
+        df_sim["SKU_str"] = df_sim["SKU"].astype(str)
+        
+        df_sim_filtrado = df_sim[df_sim["SKU_str"].isin(skus_plan_2026_clean)].copy()
+        
+        # Limpiar columna temporal
+        df_sim_filtrado = df_sim_filtrado.drop(columns=["SKU_str"])
+        
+        st.info(f"📊 Plan 2026: {len(skus_plan_2026)} SKUs únicos")
+        st.info(f"📊 Simulador actual: {len(df_sim)} SKUs totales")
+        st.info(f"📊 SKUs que se mostrarán: {len(df_sim_filtrado)} SKUs")
+        
+        # 2. ACTUALIZAR precios y kg embarcados (solo si están en el plan)
+        for _, row in kg_y_precios.iterrows():
+            sku_cliente = row["SKU-Cliente"]
+            nuevo_precio = row["Precio"]
+            nuevos_kg = row["Kg"]
+            
+            # Convertir a numérico y validar precio
+            try:
+                precio_num = pd.to_numeric(nuevo_precio, errors='coerce')
+                if pd.notna(precio_num) and precio_num > 0:
+                    df_sim_filtrado.loc[df_sim_filtrado["SKU-Cliente"] == sku_cliente, "PrecioVenta (USD/kg)"] = abs(precio_num)
+            except (ValueError, TypeError):
+                pass
+            
+            # Convertir a numérico y validar kg
+            try:
+                kg_num = pd.to_numeric(nuevos_kg, errors='coerce')
+                if pd.notna(kg_num) and kg_num > 0:
+                    df_sim_filtrado.loc[df_sim_filtrado["SKU-Cliente"] == sku_cliente, "KgEmbarcados"] = kg_num
+            except (ValueError, TypeError):
+                pass
+        
+        # 3. ACTUALIZAR precios de frutas (solo si están en FRUTA_2026)
+        if frutas_2026 is not None:
+            # Verificar columnas requeridas en FRUTA_2026
+            if "Fruta_id" in frutas_2026.columns and "Variacion_Pct" in frutas_2026.columns:
+                frutas_actualizadas = 0
+                for _, row in frutas_2026.iterrows():
+                    fruta_id = row["Fruta_id"]
+                    variacion_pct = row["Variacion_Pct"]
+                    
+                    # Convertir variación a numérico y aplicar si es válida
+                    try:
+                        variacion_num = pd.to_numeric(variacion_pct, errors='coerce')
+                        if pd.notna(variacion_num):
+                            # Buscar la fruta en el DataFrame actual
+                            mask = frutas["Fruta_id"] == fruta_id
+                            if mask.any():
+                                precio_actual = frutas.loc[mask, "Precio"].iloc[0]
+                                precio_actual_num = pd.to_numeric(precio_actual, errors='coerce')
+                                if pd.notna(precio_actual_num) and precio_actual_num > 0:
+                                    # Calcular nuevo precio: precio_actual * (1 + variacion_pct/100)
+                                    nuevo_precio = precio_actual_num * (1 + variacion_num / 100)
+                                    frutas.loc[mask, "Precio"] = nuevo_precio
+                                    frutas_actualizadas += 1
+                    except (ValueError, TypeError):
+                        pass
+                
+                if frutas_actualizadas > 0:
+                    st.success(f"✅ Precios de {frutas_actualizadas} frutas actualizados con variaciones desde FRUTA_2026")
+                else:
+                    st.warning("⚠️ No se encontraron frutas válidas para actualizar en FRUTA_2026")
+            else:
+                st.warning("⚠️ FRUTA_2026 debe tener las columnas 'Fruta_id' y 'Variacion_Pct'")
+        
+        # 4. RECALCULAR costos de granel y MMPP
+        df_costos = compute_mmpp_almacenaje_granel_per_sku(receta_df, frutas, granel_df)
+        
+        # Actualizar costos en df_sim_filtrado
+        costos_actualizados = 0
+        for _, row in df_costos.iterrows():
+            sku = row["SKU"]
+            # Convertir ambos a string para comparación
+            sku_str = str(sku)
+            df_sim_filtrado["SKU_str"] = df_sim_filtrado["SKU"].astype(str)
+            
+            if sku_str in df_sim_filtrado["SKU_str"].values:
+                mask = df_sim_filtrado["SKU_str"] == sku_str
+                df_sim_filtrado.loc[mask, "MMPP (Fruta) (USD/kg)"] = row["MMPP (Fruta) (USD/kg)"]
+                df_sim_filtrado.loc[mask, "Almacenaje MMPP"] = row["Almacenaje"]
+                df_sim_filtrado.loc[mask, "Proceso Granel (USD/kg)"] = row["Proceso Granel (USD/kg)"]
+                costos_actualizados += 1
+        
+        # Limpiar columna temporal
+        df_sim_filtrado = df_sim_filtrado.drop(columns=["SKU_str"])
+        
+        
+        # 5. RECALCULAR totales
+        df_sim_filtrado = recalculate_totals(df_sim_filtrado)
+        
+        # 6. ACTUALIZAR session_state
+        st.session_state["fruta.plan_2026"] = frutas
+        st.session_state["sim.df"] = df_sim_filtrado
+        
+        # IMPORTANTE: También actualizar sim.df_filtered para que la tabla editable funcione
+        # Como sim.df ahora solo tiene SKUs del plan 2026, sim.df_filtered debe reflejar esto
+        if "sim.df_filtered" in st.session_state and st.session_state["sim.df_filtered"] is not None:
+            # Obtener los filtros actuales del sidebar (si están disponibles)
+            current_filters = st.session_state.get("sim.filters", {})
+            
+            # Aplicar filtros básicos al nuevo sim.df
+            df_filtered_updated = df_sim_filtrado.copy()
+            
+            # Aplicar filtros del sidebar si existen
+            if current_filters:
+                # Filtros básicos por columnas comunes
+                for field, values in current_filters.items():
+                    if values and field in ["Marca", "Cliente", "Especie", "Condicion"]:
+                        if field in df_filtered_updated.columns:
+                            df_filtered_updated = df_filtered_updated[
+                                df_filtered_updated[field].isin(values)
+                            ]
+            
+            # Ordenar y actualizar
+            if "SKU-Cliente" in df_filtered_updated.columns:
+                df_filtered_updated = df_filtered_updated.sort_values(["SKU-Cliente"]).reset_index(drop=True)
+            else:
+                df_filtered_updated = df_filtered_updated.reset_index(drop=True)
+            
+            st.session_state["sim.df_filtered"] = df_filtered_updated.copy()
+            
+            st.info(f"📊 Filtros aplicados: {len(df_filtered_updated)} SKUs visibles en tabla editable")
+        
+        # 7. MOSTRAR resumen de cambios
+        st.success("✅ Plan 2026 cargado exitosamente")
+        
+        # Estadísticas de actualización
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("SKUs en Plan 2026", len(skus_plan_2026))
+        with col2:
+            # Contar precios válidos (convertir a numérico primero)
+            precios_numericos = pd.to_numeric(kg_y_precios["Precio"], errors='coerce')
+            precios_actualizados = len(kg_y_precios[precios_numericos.notna() & (precios_numericos > 0)])
+            st.metric("Precios actualizados", precios_actualizados)
+        with col3:
+            # Contar kg válidos (convertir a numérico primero)
+            kg_numericos = pd.to_numeric(kg_y_precios["Kg"], errors='coerce')
+            kg_actualizados = len(kg_y_precios[kg_numericos.notna() & (kg_numericos > 0)])
+            st.metric("Kg embarcados actualizados", kg_actualizados)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error cargando plan 2026: {str(e)}")
+        return False
+
 # ===================== Documentación para nuevas fuentes =====================
 """
 INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:

@@ -16,6 +16,7 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.ebitda_mensual", None)
     st.session_state.setdefault("hist.granel", None)
     st.session_state.setdefault("hist.ebitda_total", None)
+    st.session_state.setdefault("hist.ebitda_simple_total", None)
     st.session_state.setdefault("hist.granel_ponderado", None)
     st.session_state.setdefault("hist.granel_optimo", None)
     st.session_state.setdefault("hist.df_optimo", None)
@@ -42,6 +43,7 @@ def ensure_defaults() -> None:
     # Datos de fruta
     st.session_state.setdefault("fruta.receta_df", None)
     st.session_state.setdefault("fruta.info_df", None)
+    st.session_state.setdefault("fruta.plan_2026", None)
     st.session_state.setdefault("sim.fruit_overrides", {})
 
     # UI / Otros

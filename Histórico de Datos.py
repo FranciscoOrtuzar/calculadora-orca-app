@@ -169,7 +169,7 @@ if st.session_state["hist.df"] is None:
                 
                 # Generar datos óptimos de granel si están disponibles
                 try:
-                    df_granel_optimo, df_granel_ponderado_optimo = build_granel(st.session_state["hist.file_bytes"], sheet_granel=["FACT_GRANEL_OPTIMO", "FACT_GRANEL_POND_OPTIMO"])
+                    df_granel_optimo, df_granel_ponderado_optimo = build_granel(st.session_state["hist.file_bytes"], optimo=True)
                     st.session_state["hist.granel_optimo"] = df_granel_ponderado_optimo
                     st.success(f"✅ Datos óptimos de granel cargados: {len(df_granel_ponderado_optimo)} frutas")
                 except Exception as e:
@@ -185,9 +185,10 @@ if st.session_state["hist.df"] is None:
                 ebitdas = ebitda_mensual.groupby(["SKU-Cliente"])["EBITDA (USD)"].sum().reset_index()
                 detalle = detalle.merge(volumenes, how="left", on="SKU-Cliente")
                 detalle = detalle.merge(ebitdas, how="left", on="SKU-Cliente")
+                detalle["EBITDA Simple (USD)"] = detalle["KgEmbarcados"] * detalle["EBITDA (USD/kg)"]
+                st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
                 st.session_state["hist.df"] = detalle
                 st.session_state["hist.df_optimo"] = detalle_optimo
-                st.success(f"✅ Factos procesados: {len(detalle)} SKUs, {len(ebitda_mensual)} meses")
                 # st.dataframe(ebitda_mensual, use_container_width=True, hide_index=True)
                 # st.dataframe(costos_mensuales, use_container_width=True, hide_index=True)
                 # st.dataframe(volumen_mensual, use_container_width=True, hide_index=True)
@@ -206,7 +207,6 @@ if st.session_state["hist.df"] is None:
                         if "RECETA_SKU" in sheets:
                             receta_df = load_receta_sku(sheets["RECETA_SKU"])
                             st.session_state["fruta.receta_df"] = receta_df
-                            st.success(f"✅ RECETA_SKU cargada: {len(receta_df)} recetas")
                         else:
                             st.info("ℹ️ Hoja RECETA_SKU no encontrada")
                         
@@ -214,7 +214,6 @@ if st.session_state["hist.df"] is None:
                         if "INFO_FRUTA" in sheets:
                             info_df = load_info_fruta(sheets["INFO_FRUTA"])
                             st.session_state["fruta.info_df"] = info_df
-                            st.success(f"✅ INFO_FRUTA cargada: {len(info_df)} frutas")
                         else:
                             st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
                             
@@ -387,7 +386,7 @@ with tab_retail:
     st.subheader("Márgenes actuales (unitarios)")
     base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
     "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
-    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","EBITDA (USD)"]
+    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","EBITDA (USD)","EBITDA Simple (USD)"]
     skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
     ebitda_mensual = st.session_state["hist.ebitda_mensual"]
     # st.dataframe(ebitda_mensual)
@@ -440,7 +439,8 @@ with tab_retail:
                         "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
                         "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
                         "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
-                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)",
+                        "EBITDA Pct","KgEmbarcados","EBITDA (USD)","EBITDA Simple (USD)"]
         # Si falta, recalcúlala si están los componentes
         if "Gastos Totales (USD/kg)" not in det.columns:
             comp = [
@@ -547,9 +547,7 @@ with tab_granel:
     if granel_ponderado is None or granel_ponderado.empty:
         st.error("❌ **No hay datos de granel disponibles**")
         st.info("💡 **Para ver los datos de granel, asegúrate de que tu archivo Excel contenga la hoja 'FACT_GRANEL_POND'**")
-    else:
-        st.success(f"✅ Datos de granel cargados: {len(granel_ponderado)} frutas")
-        
+    else:        
         # Mostrar tabla de granel
         st.subheader("📊 Costos de Granel por Fruta")
         
@@ -565,6 +563,7 @@ with tab_granel:
         "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
         "Costos Directos", "Costos Indirectos", "Servicios Generales"]
         granel_display = granel_display[order_cols]
+        granel_display = granel_display.set_index("Fruta_id").sort_index()
         #Formato
         fmt_num = {col: "{:.3f}" for col in numeric_cols}
         fmt_pct = {"Rendimiento": "{:.1%}"} if "Rendimiento" in granel_display.columns else {}
@@ -687,10 +686,12 @@ ebitda_promedio = df_filtrado["EBITDA (USD/kg)"].mean()
 margen_promedio = df_filtrado["EBITDA Pct"].mean()
 ebitda_total = st.session_state["hist.ebitda_total"]
 ebitda_actual = df_filtrado["EBITDA (USD)"].sum()
+ebitda_simple_total = st.session_state["hist.ebitda_simple_total"]
+ebitda_simple_actual = df_filtrado["EBITDA Simple (USD)"].sum()
 
 # Mostrar KPIs en columnas
 # col1, col2 = st.columns([1,1])
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     st.metric("Total SKUs", total_skus, help="SKUs con costos reales (excluyendo subproductos)")
     # Información sobre subproductos excluidos en los KPIs
@@ -700,10 +701,14 @@ with col1:
 with col2:
     st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
 
-with col3:
-    st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
-with col4:
-    st.metric("EBITDA Activo", format_currency_european(ebitda_actual, 0), help="EBITDA de SKUs visibles (no contiene subproductos)")
+# with col3:
+#     st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
+# with col4:
+#     st.metric("EBITDA Activo", format_currency_european(ebitda_actual, 0), help="EBITDA de SKUs visibles (no contiene subproductos)")
+# with col5:
+#     st.metric("EBITDA Simple Total", format_currency_european(ebitda_simple_total, 0), help="EBITDA simple total de la compañia (no contiene subproductos)")
+# with col6:
+#     st.metric("EBITDA Simple Actual", format_currency_european(ebitda_simple_actual, 0), help="EBITDA simple de SKUs visibles (no contiene subproductos)")
 
 # # Resumen por marca si existe
 # if "Marca" in df_filtrado.columns:
