@@ -3,6 +3,7 @@
 # =============================================================================
 # Este archivo contiene todas las dependencias necesarias para ejecutar
 # la aplicación de simulación de EBITDA por SKU con funcionalidades de frutas
+# y simulador de granel con sincronización automática
 # =============================================================================
 
 # =============================================================================
@@ -30,6 +31,13 @@ xlrd>=2.0.2
 pathlib2>=2.3.7.post1
 
 # =============================================================================
+# WEB DEPLOYMENT (Para Streamlit Cloud/Heroku/etc)
+# =============================================================================
+# Estas dependencias son necesarias para el despliegue web
+gunicorn>=21.2.0
+watchdog>=3.0.0
+
+# =============================================================================
 # VALIDACIÓN Y TIPOS (OPCIONALES PARA DESARROLLO)
 # =============================================================================
 # typing-extensions>=4.5.0  # Descomenta si usas Python < 3.8
@@ -45,3 +53,5 @@ pathlib2>=2.3.7.post1
 # 6. Altair es necesario para gráficos del simulador principal
 # 7. OpenPyXL es necesario para archivos Excel (.xlsx)
 # 8. XLRD es necesario para archivos Excel legacy (.xls)
+# 9. Gunicorn es necesario para el despliegue web
+# 10. Watchdog es necesario para el monitoreo de archivos en Streamlit

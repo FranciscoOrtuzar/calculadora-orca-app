@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent / "src"))
 # Importar con manejo de errores más robusto
 try:
     # Intentar import desde src
-    from src.data_io import build_detalle, REQ_SHEETS, columns_config, recalculate_totals
+    from src.data_io import build_detalle, REQ_SHEETS, columns_config, recalculate_totals, cargar_plan_2026
     from src.state import (
         ensure_session_state, session_state_table, sim_snapshot_push, 
         sim_undo, sim_redo, apply_fruit_override,
@@ -317,6 +317,7 @@ df_base["SKU"] = df_base["SKU"].astype(int)
 # Inicializar sim.df una sola vez
 if df_base is not None and st.session_state["sim.df"] is None:
     st.session_state["sim.df"] = df_base.copy()
+    cargar_plan_2026(st.session_state["hist.file_bytes"])
 
 # Filtrar SKUs sin costos totales (igual a 0) para análisis de EBITDA más preciso
 # Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
@@ -539,8 +540,8 @@ else:
 tab_sku, tab_granel, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
-    tab_real, tab_optimos = st.tabs(["🔍 Real", "🏆 Óptimos"])
-    with tab_real:
+    tab_plan, tab_optimos = st.tabs(["🔍 Plan 2026", "🏆 Óptimos"])
+    with tab_plan:
         # ===================== Bloque 1 - Carga de Planilla =====================
         with st.expander("📁 **Carga de Planilla (SKU-CostoNuevo)**", expanded=False):
             col1, col2 = st.columns([3, 1])
@@ -586,9 +587,9 @@ with tab_sku:
         if st.session_state.get("sim.override_upload") and "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
             # Aplicar los overrides de sesión sobre los datos filtrados
             df_current = st.session_state["sim.df"].copy()
-            # Asegurar que solo se muestren los SKUs filtrados
-            filtered_skus = st.session_state["sim.df_filtered"]["SKU"].tolist()
-            df_current = df_current[df_current["SKU"].isin(filtered_skus)].copy()
+            # Asegurar que solo se muestren los SKUs filtrados (usar SKU-Cliente para consistencia)
+            filtered_skus = st.session_state["sim.df_filtered"]["SKU-Cliente"].tolist()
+            df_current = df_current[df_current["SKU-Cliente"].isin(filtered_skus)].copy()
         else:
             df_current = df_global.copy()
 
@@ -838,7 +839,7 @@ with tab_sku:
             if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
                 # Usar sim.df que ya incluye los ajustes universales aplicados
                 sim_data = st.session_state["sim.df"].copy()
-                # Filtrar por SKUs actuales
+                # Filtrar por SKUs actuales (usar SKU-Cliente para consistencia)
                 filtered_skus = st.session_state["sim.df_filtered"]["SKU-Cliente"].tolist()
                 
                 # Identificar columnas de costos (excluyendo dimensiones y totales)
@@ -1493,7 +1494,7 @@ with tab_granel:
         (sin mutar el histórico), y recalcula Proceso Granel en retail.
         """
         receta_df = st.session_state.get("fruta.receta_df")
-        info_df   = st.session_state.get("fruta.info_df")
+        info_df   = st.session_state.get("fruta.plan_2026")
         retail_df = st.session_state.get("sim.df")
         if receta_df is None or info_df is None or retail_df is None:
             return False, "Faltan datos de recetas, info de frutas o sim.df"
@@ -1886,7 +1887,7 @@ with tab_precio_frutas:
     
     # Verificar que los datos de frutas estén disponibles
     receta_df = st.session_state.get("fruta.receta_df")
-    info_df = st.session_state.get("fruta.info_df")
+    info_df = st.session_state.get("fruta.plan_2026")
     
     if receta_df is None or info_df is None:
         st.error("❌ **Faltan datos de frutas**")
@@ -2674,7 +2675,7 @@ with tab_receta:
     
         btn_key = f"ver_receta_{sku_cliente}_{start}"
         if cols[5].button("Ver receta", key=btn_key, width='stretch'):
-            ver_receta_dialog(sku, st.session_state["fruta.receta_df"], st.session_state["fruta.info_df"])
+            ver_receta_dialog(sku, st.session_state["fruta.receta_df"], st.session_state["fruta.plan_2026"])
     # Línea de ayuda
     st.caption("Tip: usa los controles de página para navegar y el botón **Ver receta** para abrir el modal.")
     
