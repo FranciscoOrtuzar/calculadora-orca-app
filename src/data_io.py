@@ -1353,13 +1353,21 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         # MMPP: Precio * Óptimo / Rendimiento (SÍ usa rendimiento)
         df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Óptimo"] / 100) / df_merged["Rendimiento"]
         
-        # Proceso Granel: Costo Granel * Óptimo / Rendimiento (SÍ usa rendimiento)
-        df_merged["Costo_Proceso_Granel"] = (df_merged["Proceso Granel (USD/kg)"] * df_merged["Óptimo"] / 100)
+        # Proceso Granel: Si el rendimiento es 1, la fruta viene congelada, por lo que no hay proceso granel
+        df_merged["Costo_Proceso_Granel"] = np.where(
+            df_merged["Rendimiento"] == 1,
+            0,  # Fruta congelada, no hay proceso granel
+            df_merged["Proceso Granel (USD/kg)"] * df_merged["Óptimo"] / 100  # Fruta fresca, sí hay proceso granel
+        )
 
         # Almacenaje: Costo Almacenaje * Óptimo / Rendimiento (SÍ usa rendimiento)
         df_merged["Costo_Almacenaje"] = (df_merged["Almacenaje"] * df_merged["Óptimo"] / 100)
         
         # 7. Agrupar por SKU y sumar
+        if df_merged.empty:
+            # Si no hay datos válidos, devolver DataFrame vacío con las columnas correctas
+            return pd.DataFrame(columns=["SKU", "MMPP (Fruta) (USD/kg)", "Almacenaje", "Proceso Granel (USD/kg)"])
+        
         df_result = df_merged.groupby("SKU").agg(
             **{
                 "MMPP (Fruta) (USD/kg)": pd.NamedAgg(column='Costo_MMPP', aggfunc='sum'),
