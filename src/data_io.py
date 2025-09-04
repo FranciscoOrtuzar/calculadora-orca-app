@@ -1521,11 +1521,6 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
                                     frutas_actualizadas += 1
                     except (ValueError, TypeError):
                         pass
-                
-                if frutas_actualizadas > 0:
-                    st.success(f"✅ Precios de {frutas_actualizadas} frutas actualizados con variaciones desde FRUTA_2026")
-                else:
-                    st.warning("⚠️ No se encontraron frutas válidas para actualizar en FRUTA_2026")
             else:
                 st.warning("⚠️ FRUTA_2026 debe tener las columnas 'Fruta_id' y 'Variacion_Pct'")
         
@@ -1576,42 +1571,7 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         st.session_state["fruta.plan_2026"] = frutas
         st.session_state["sim.df"] = df_sim_updated  # Usar el df_sim COMPLETO actualizado
         st.session_state["hist.df_optimo"] = df_optimo_updated  # Usar el df_optimo COMPLETO actualizado
-        
-        # DEBUG: Verificar que los datos óptimos se actualizaron correctamente
-        st.write("🔍 DEBUG datos óptimos:")
-        st.write(f"  df_optimo_updated shape: {df_optimo_updated.shape}")
-        st.write(f"  Costos estándar actualizados: {costos_actualizados}")
-        st.write(f"  Costos óptimos actualizados: {costos_optimos_actualizados}")
-        st.write(f"  Columnas con MMPP: {'MMPP (Fruta) (USD/kg)' in df_optimo_updated.columns}")
-        st.write(f"  Columnas con Proceso Granel: {'Proceso Granel (USD/kg)' in df_optimo_updated.columns}")
-        st.write(f"  Columnas con Almacenaje: {'Almacenaje MMPP' in df_optimo_updated.columns}")
-        
-        # Comparar valores estándar vs óptimos
-        if len(df_sim_updated) > 0 and len(df_optimo_updated) > 0:
-            st.write("  Comparación estándar vs óptimo:")
-            sample_sku = df_sim_updated["SKU-Cliente"].iloc[0]
-            
-            # Buscar en ambos DataFrames
-            mask_estandar = df_sim_updated["SKU-Cliente"] == sample_sku
-            mask_optimo = df_optimo_updated["SKU-Cliente"] == sample_sku
-            
-            if mask_estandar.any() and mask_optimo.any():
-                estandar = df_sim_updated[mask_estandar].iloc[0]
-                optimo = df_optimo_updated[mask_optimo].iloc[0]
-                
-                st.write(f"    SKU {sample_sku}:")
-                st.write(f"      Estándar - MMPP: ${estandar['MMPP (Fruta) (USD/kg)']:.3f}, Granel: ${estandar['Proceso Granel (USD/kg)']:.3f}")
-                st.write(f"      Óptimo   - MMPP: ${optimo['MMPP (Fruta) (USD/kg)']:.3f}, Granel: ${optimo['Proceso Granel (USD/kg)']:.3f}")
-        
-        # Mostrar algunos ejemplos de datos óptimos
-        if len(df_optimo_updated) > 0:
-            st.write("  Ejemplos de datos óptimos:")
-            sample_optimo = df_optimo_updated.head(3)[["SKU-Cliente", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "Almacenaje MMPP"]]
-            for _, row in sample_optimo.iterrows():
-                st.write(f"    {row['SKU-Cliente']}: MMPP=${row['MMPP (Fruta) (USD/kg)']:.3f}, Granel=${row['Proceso Granel (USD/kg)']:.3f}, Alm=${row['Almacenaje MMPP']:.3f}")
-        
-        
-        
+
         # IMPORTANTE: También actualizar sim.df_filtered para que la tabla editable funcione
         # Usar el df_sim COMPLETO actualizado para el filtrado
         if "sim.df_filtered" in st.session_state and st.session_state["sim.df_filtered"] is not None:
