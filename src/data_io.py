@@ -1268,7 +1268,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         from src.data_io import to_number_safe
         
         # 1. Validación de columnas requeridas
-        required_receta_cols = ["SKU", "Fruta_id", "Porcentaje"]
+        required_receta_cols = ["SKU", "Fruta_id", "Porcentaje", "Óptimo"]
         missing_receta_cols = [col for col in required_receta_cols if col not in receta_df.columns]
         if missing_receta_cols:
             raise ValueError(f"Columnas faltantes en RECETA_SKU: {missing_receta_cols}")
@@ -1288,15 +1288,17 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         
         # Convertir columnas a tipo numérico
         df_receta["Porcentaje"] = df_receta["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
+        df_receta["Óptimo"] = df_receta["Óptimo"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Precio"] = df_info["Precio"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Rendimiento"] = df_info["Rendimiento"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         
         # 3. Filtrado y validación de rangos
-        df_receta.dropna(subset=["Porcentaje"], inplace=True)
+        df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
         df_info.dropna(subset=["Precio", "Rendimiento", "Almacenaje"], inplace=True)
         
-        df_receta = df_receta[df_receta["Porcentaje"] > 0]
+        # df_receta = df_receta[df_receta["Porcentaje"] > 0]
+        df_receta = df_receta[df_receta["Óptimo"] > 0]
         df_info = df_info[
             (df_info["Precio"] >= 0) &
             (df_info["Rendimiento"] > 0) &
@@ -1348,14 +1350,14 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         df_merged["Proceso Granel (USD/kg)"] = df_merged["Proceso Granel (USD/kg)"].fillna(0.0)
         
         # 6. Calcular costos usando las fórmulas correctas
-        # MMPP: Precio * Porcentaje / Rendimiento (SÍ usa rendimiento)
-        df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Porcentaje"] / 100) / df_merged["Rendimiento"]
+        # MMPP: Precio * Óptimo / Rendimiento (SÍ usa rendimiento)
+        df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Óptimo"] / 100) / df_merged["Rendimiento"]
         
-        # Proceso Granel: Costo Granel * Porcentaje / Rendimiento (SÍ usa rendimiento)
-        df_merged["Costo_Proceso_Granel"] = (df_merged["Proceso Granel (USD/kg)"] * df_merged["Porcentaje"] / 100)
+        # Proceso Granel: Costo Granel * Óptimo / Rendimiento (SÍ usa rendimiento)
+        df_merged["Costo_Proceso_Granel"] = (df_merged["Proceso Granel (USD/kg)"] * df_merged["Óptimo"] / 100)
 
-        # Almacenaje: Costo Almacenaje * Porcentaje / Rendimiento (SÍ usa rendimiento)
-        df_merged["Costo_Almacenaje"] = (df_merged["Almacenaje"] * df_merged["Porcentaje"] / 100)
+        # Almacenaje: Costo Almacenaje * Óptimo / Rendimiento (SÍ usa rendimiento)
+        df_merged["Costo_Almacenaje"] = (df_merged["Almacenaje"] * df_merged["Óptimo"] / 100)
         
         # 7. Agrupar por SKU y sumar
         df_result = df_merged.groupby("SKU").agg(

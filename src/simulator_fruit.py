@@ -126,12 +126,12 @@ def compute_mmpp_fruta_per_sku(receta_df: pd.DataFrame, params_df: pd.DataFrame)
         DataFrame con [SKU, MMPP (Fruta) (USD/kg)] (valores negativos para costos)
     """
     r = receta_df.copy()
-    r["Porcentaje"] = pd.to_numeric(r["Porcentaje"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    r["Óptimo"] = pd.to_numeric(r["Óptimo"], errors="coerce").fillna(0.0).clip(lower=0.0)
     
     merged = r.merge(params_df, on="Fruta_id", how="left")
     merged["contrib_pos"] = (
         pd.to_numeric(merged["PrecioAjustadoUSD_kg"], errors="coerce").fillna(0.0) *
-        (merged["Porcentaje"] /100) / 
+        (merged["Óptimo"] /100) / 
         pd.to_numeric(merged["RendimientoAjustado"], errors="coerce").fillna(1.0).replace(0, 0.01))
     
     per_sku = merged.groupby("SKU", as_index=False)["contrib_pos"].sum()
@@ -201,7 +201,7 @@ def get_fruit_summary_table(info_df: pd.DataFrame,
     )
     receta_con_params["contrib_pos"] = (
         receta_con_params["PrecioAjustadoUSD_kg"] * 
-        receta_con_params["Porcentaje"] / 
+        receta_con_params["Óptimo"] / 
         receta_con_params["RendimientoAjustado"]
     )
     
