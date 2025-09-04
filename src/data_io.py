@@ -1294,11 +1294,11 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         
         # 3. Filtrado y validación de rangos
-        df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
+        # df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
         df_info.dropna(subset=["Precio", "Rendimiento", "Almacenaje"], inplace=True)
         
         # df_receta = df_receta[df_receta["Porcentaje"] > 0]
-        df_receta = df_receta[df_receta["Óptimo"] > 0]
+        df_receta = df_receta[(df_receta["Óptimo"] > 0) | (df_receta["Porcentaje"] > 0)]
         df_info = df_info[
             (df_info["Precio"] >= 0) &
             (df_info["Rendimiento"] > 0) &
@@ -1351,8 +1351,13 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         
         # 6. Calcular costos usando las fórmulas correctas
         # MMPP: Precio * Óptimo / Rendimiento (SÍ usa rendimiento)
-        df_merged["Costo_MMPP"] = (df_merged["Precio"] * df_merged["Óptimo"] / 100) / df_merged["Rendimiento"]
-        
+        # Si existe el optimo, usarlo, sino usar el porcentaje
+        df_merged["Costo_MMPP"] = np.where(
+            df_merged["Óptimo"].notna(),
+            (df_merged["Precio"] * df_merged["Óptimo"] / 100) / df_merged["Rendimiento"],
+            (df_merged["Precio"] * df_merged["Porcentaje"] / 100) / df_merged["Rendimiento"]
+        )
+
         # Proceso Granel: Si el rendimiento es 1, la fruta viene congelada, por lo que no hay proceso granel
         df_merged["Costo_Proceso_Granel"] = np.where(
             df_merged["Rendimiento"] == 1,
@@ -1466,8 +1471,9 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         
         # Crear df_sim_filtrado solo para mostrar estadísticas
         df_sim_filtrado = df_sim_updated[df_sim_updated["SKU_str"].isin(skus_plan_2026_clean)].copy()
+        skus_cliente_plan_2026 = kg_y_precios["SKU-Cliente"].unique()
         
-        st.info(f"📊 Plan 2026: {len(skus_plan_2026)} SKUs únicos")
+        st.info(f"📊 Plan 2026: {len(skus_cliente_plan_2026)} SKU-Clientes únicos")
         st.info(f"📊 Simulador actual: {len(df_sim)} SKUs totales")
         st.info(f"📊 SKUs que se mostrarán: {len(df_sim_filtrado)} SKUs")
         
@@ -1614,10 +1620,12 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         # 7. MOSTRAR resumen de cambios
         st.success("✅ Plan 2026 cargado exitosamente")
         
+        st.session_state["sim.plan_2026"] = kg_y_precios
+        
         # Estadísticas de actualización
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("SKUs en Plan 2026", len(skus_plan_2026))
+            st.metric("SKUs en Plan 2026", len(skus_cliente_plan_2026))
         with col2:
             st.metric("Precios actualizados", precios_actualizados)
         with col3:

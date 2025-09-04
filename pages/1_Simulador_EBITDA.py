@@ -12,9 +12,56 @@ import math
 from pathlib import Path
 import io
 import streamlit.components.v1 as components
+import json
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
+
+# ===================== Utilidades =====================
+def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convierte un DataFrame a formato seguro para Arrow/Streamlit.
+    
+    Args:
+        df: DataFrame a convertir
+        
+    Returns:
+        DataFrame con formato seguro para Arrow
+    """
+    out = df.copy()
+
+    # 1) Asegurar nombres de columnas simples (no MultiIndex / no objetos)
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [" | ".join(map(str, lvl)) for lvl in out.columns]
+
+    out.columns = [str(c) for c in out.columns]
+
+    # 2) Convertir valores no serializables (tuplas, listas, dicts, arrays, sets) a strings JSON
+    def _sanitize_val(x):
+        if isinstance(x, (tuple, list, dict, set, np.ndarray)):
+            try:
+                return json.dumps(x, default=str)
+            except Exception:
+                return str(x)
+        return x
+
+    for c in out.columns:
+        # Si la serie es object, aplica saneo elemento a elemento
+        if out[c].dtype == "object":
+            # Evita cast innecesario si ya son strings/números/fechas
+            sample = out[c].dropna().head(5).tolist()
+            if any(isinstance(v, (tuple, list, dict, set, np.ndarray)) for v in sample):
+                out[c] = out[c].map(_sanitize_val)
+        # Opcional: convertir categorías a string
+        if pd.api.types.is_categorical_dtype(out[c].dtype):
+            out[c] = out[c].astype(str)
+
+    # 3) Índice simple
+    if isinstance(out.index, pd.MultiIndex):
+        # Convertir MultiIndex a strings usando to_flat_index()
+        out.index = [" | ".join(map(str, tup)) for tup in out.index.to_flat_index()]
+
+    return out
 
 # Importar con manejo de errores más robusto
 try:
@@ -329,11 +376,18 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
     # Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
     subproductos = df_base[df_base["Costos Totales (USD/kg)"] == 0].copy()
     sin_ventas = df_base[df_base["Comex"] == 0].copy()
-    skus_excluidos = pd.concat([subproductos, sin_ventas])
-    skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first").set_index("SKU-Cliente")
-    df_base = df_base[(df_base["Costos Totales (USD/kg)"] != 0) & (df_base["Comex"] != 0)].copy()
-
-    
+    # Filtrar SKUs que no están en el plan 2026
+    no_plan_2026 = df_base[~df_base["SKU-Cliente"].isin(st.session_state["sim.plan_2026"]["SKU-Cliente"])].copy()
+    skus_excluidos = pd.concat([subproductos, sin_ventas, no_plan_2026])
+    skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
+    df_base = df_base[~df_base["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
+    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas o no en plan 2026
+    skus_excluidos["Subproducto"] = skus_excluidos["SKU-Cliente"].isin(subproductos["SKU-Cliente"])
+    skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
+    skus_excluidos["No en Plan 2026"] = skus_excluidos["SKU-Cliente"].isin(no_plan_2026["SKU-Cliente"])
+    # Ordenar por SKU-Cliente
+    skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
+    skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
     filtered_count = len(df_base)
     skus_excluidos_count = len(skus_excluidos)
     
@@ -344,11 +398,24 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
         # Mostrar información sobre subproductos excluidos
         with st.expander(f"📋 **SKUs excluidos** ({skus_excluidos_count} SKUs)", expanded=False):
             st.write("**¿Por qué se excluyen estos SKUs?**")
-            st.write("Son SKUs sin ventas, o con costos totales = 0, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
+            st.write("Son SKUs sin ventas, con costos totales = 0, o que no están en el plan 2026, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
             
             # Estadísticas de subproductos
             col1, col2, col3 = st.columns(3)
+            # # Quiero mostrar los 3 tipos de excluidos (sin ventas, con costos totales = 0, no en plan 2026) de manera separada.
+            # sin_ventas_counts = sin_ventas["Marca"].value_counts()
+            # subproductos_counts = subproductos["Marca"].value_counts()
+            # no_plan_2026_counts = no_plan_2026["Marca"].value_counts()
+            # st.write("**Por Marca:**")
+            # for marca, count in sin_ventas_counts.head(3).items():
+            #     st.write(f"- {marca}: {count}")
+            # for marca, count in subproductos_counts.head(3).items():
+            #     st.write(f"- {marca}: {count}")
+            # for marca, count in no_plan_2026_counts.head(3).items():
+            #     st.write(f"- {marca}: {count}")
+            
             with col1:
+                st.metric("**Sin ventas:**", len(sin_ventas))
                 if "Marca" in skus_excluidos.columns:
                     marca_counts = skus_excluidos["Marca"].value_counts()
                     st.write("**Por Marca:**")
@@ -356,6 +423,7 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                         st.write(f"- {marca}: {count}")
             
             with col2:
+                st.metric("**Con costos totales = 0:**", len(subproductos))
                 if "Cliente" in skus_excluidos.columns:
                     cliente_counts = skus_excluidos["Cliente"].value_counts()
                     st.write("**Por Cliente:**")
@@ -363,6 +431,7 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                         st.write(f"- {cliente}: {count}")
             
             with col3:
+                st.metric("**No en plan 2026:**", len(no_plan_2026))
                 if "Especie" in skus_excluidos.columns:
                     especie_counts = skus_excluidos["Especie"].value_counts()
                     st.write("**Por Especie:**")
@@ -372,7 +441,7 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
             # Tabla completa de subproductos
             st.write("**Lista completa de subproductos excluidos:**")
             st.dataframe(
-                skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Costos Totales (USD/kg)"]],
+                skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas", "No en Plan 2026"]],
                 width='stretch',
                 hide_index=True
             )
@@ -2764,14 +2833,14 @@ with tab_receta:
         desc = row.get("Descripcion", "")
         marca = row.get("Marca", "")
         cliente = row.get("Cliente", "")
-        frutas_usadas = int(row.get("Frutas_Usadas", 0))
+        frutas_usadas = str(row.get("Frutas_Usadas", 0))
     
         cols = st.columns([1, 3, 2, 2, 2, 2])
         cols[0].write(sku)
         cols[1].write(desc)
         cols[2].write(marca)
         cols[3].write(cliente)
-        cols[4].write(frutas_usadas, help="Número de frutas diferentes usadas en el SKU")
+        cols[4].write(f"**{frutas_usadas}**", help="Número de frutas diferentes usadas en el SKU")
     
         btn_key = f"ver_receta_{sku_cliente}_{start}"
         if cols[5].button("Ver receta", key=btn_key, width='stretch'):
