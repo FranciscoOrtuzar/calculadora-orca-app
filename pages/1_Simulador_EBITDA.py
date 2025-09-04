@@ -2558,7 +2558,7 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
     # Enriquecer con INFO_FRUTA
     if info_df is not None and not info_df.empty:
-        info = info_df[["Fruta_id","Precio","Rendimiento","Name","Costo efectivo"]].copy()
+        info = info_df[["Fruta_id","Precio","Rendimiento","Name"]].copy()
         info["Fruta_id"] = info["Fruta_id"].astype(str).str.strip()
         receta["Fruta_id"] = receta["Fruta_id"].astype(str).str.strip()
         det = receta.merge(info, on="Fruta_id", how="left")
@@ -2621,6 +2621,8 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
 with tab_receta:
     st.header("📖 Visor de Recetas por SKU")
+    info_df = st.session_state.get("fruta.plan_2026")
+
     
     # Verificar que tenemos datos de recetas
     if receta_df is None:
@@ -2805,8 +2807,11 @@ with tab_receta:
             stats_fruta["Porcentaje Óptimo Total"] / 100 / 
             stats_fruta["Rendimiento"]
         )
-        
-        view_fruta = stats_fruta[["Name", "SKUs con Fruta", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Precio"]]
+        stats_fruta["Costo efectivo"] = stats_fruta["Precio"] / stats_fruta["Rendimiento"]
+
+
+        view_fruta = stats_fruta[["Name", "SKUs con Fruta", "Porcentaje Original Promedio", "Porcentaje Óptimo Promedio", "Costo efectivo"]]
+        view_fruta.rename(columns={"Costo efectivo": "Precio efectivo"}, inplace=True)
         view_fruta.sort_values(by="SKUs con Fruta", ascending=False, inplace=True)
         
         # Mostrar tabla de estadísticas
@@ -2816,7 +2821,7 @@ with tab_receta:
                 "Porcentaje Original Promedio": "{:.2f}%",
                 "Porcentaje Óptimo Promedio": "{:.2f}%",
                 "Porcentaje Óptimo Total": "{:.1f}%",
-                "Precio": "{:.3f}",
+                "Precio efectivo": "{:.3f}",
                 "Rendimiento": "{:.3f}",
                 "Contribucion_Total": "{:.3f}"
             }),
