@@ -3,6 +3,7 @@ Simulador de EBITDA por SKU (USD/kg)
 Página del simulador con filtros, overrides y análisis de rentabilidad.
 """
 
+from altair import renderers
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -2557,11 +2558,10 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
 
     # Enriquecer con INFO_FRUTA
     if info_df is not None and not info_df.empty:
-        info = info_df[["Fruta_id","Precio","Rendimiento","Name"]].copy()
+        info = info_df[["Fruta_id","Precio","Rendimiento","Name","Costo efectivo"]].copy()
         info["Fruta_id"] = info["Fruta_id"].astype(str).str.strip()
         receta["Fruta_id"] = receta["Fruta_id"].astype(str).str.strip()
         det = receta.merge(info, on="Fruta_id", how="left")
-
         # Overrides de precio si existen
         overrides = st.session_state.get("sim.fruit_overrides", {})
         if overrides:
@@ -2578,10 +2578,10 @@ def ver_receta_dialog(sku: str, receta_df: pd.DataFrame, info_df: pd.DataFrame):
         pct  = pd.to_numeric(det["Porcentaje"], errors="coerce").fillna(0) / 100.0
         pr   = pd.to_numeric(det["Precio"], errors="coerce").fillna(0).clip(lower=0)
         opt  = pd.to_numeric(det["Óptimo"], errors="coerce").fillna(0) / 100.0
-        eff  = pd.to_numeric(det["Rendimiento"], errors="coerce").fillna(0).clip(lower=0.01, upper=1.0)
+        rend  = pd.to_numeric(det["Rendimiento"], errors="coerce").fillna(0).clip(lower=0.01, upper=1.0)
         det["Name"] = det["Name"].fillna(det["Fruta_id"])
-        det["Contribucion Original (USD/kg)"] = (pr * pct) / eff
-        det["Contribucion Óptima (USD/kg)"] = (pr * opt) / eff
+        det["Contribucion Original (USD/kg)"] = (pr * pct) / rend
+        det["Contribucion Óptima (USD/kg)"] = (pr * opt) / rend
         det.rename(columns={"Porcentaje":"Porcentaje Original", "Óptimo":"Porcentaje Óptimo"}, inplace=True)
 
         # Cabecera compacta
