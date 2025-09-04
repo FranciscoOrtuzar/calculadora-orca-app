@@ -323,8 +323,13 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
     subproductos = df_filtrado[(df_filtrado["Costos Totales (USD/kg)"] == 0) | (df_filtrado["Costos Totales (USD/kg)"] is None)].copy()
     sin_ventas = df_filtrado[df_filtrado["Comex"] == 0].copy()
     skus_excluidos = pd.concat([subproductos, sin_ventas])
-    skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first").set_index("SKU-Cliente")
-    df_filtrado = df_filtrado[(df_filtrado["Costos Totales (USD/kg)"] != 0) & (df_filtrado["Comex"] != 0)].copy()
+    skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
+    df_filtrado = df_filtrado[~df_filtrado["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
+    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas o no en plan 2026
+    skus_excluidos["Subproducto"] = skus_excluidos["SKU-Cliente"].isin(subproductos["SKU-Cliente"])
+    skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
+    skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
+    skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
     df_filtrado["EBITDA Pct"] = df_filtrado["EBITDA Pct"] / 100
     
     filtered_count = len(df_filtrado)
@@ -362,7 +367,7 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
             # Tabla completa de subproductos
             st.write("**Lista completa de subproductos y SKUs sin ventas excluidos:**")
             st.dataframe(
-                skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Comex", "Costos Totales (USD/kg)"]],
+                skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas"]],
                 use_container_width=True,
                 hide_index=True
             )
