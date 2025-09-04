@@ -328,6 +328,9 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
     "Materiales Indirectos", "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales", "Utilities",
     "Fletes", "Comex", "Guarda Producto Terminado"])
 
+    df["Costos Directos"] = sum_existing(df, ["MO Directa", "Materiales Directos",
+    "Laboratorio", "Mantencion y Maquinaria"])
+    df["Costos Indirectos"] = sum_existing(df, ["MO Indirecta", "Materiales Indirectos"])
     # Quedarse con fruta_id + Fruta + columnas de costos
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
     out = df[["Fruta_id", "Fruta"] + cost_cols].dropna(subset=["Fruta_id"]).reset_index(drop=True)
@@ -1368,13 +1371,6 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         df_result["Almacenaje"] = -abs(df_result["Almacenaje"])
         df_result["Proceso Granel (USD/kg)"] = -abs(df_result["Proceso Granel (USD/kg)"])
         
-        # 9. DEBUG: Mostrar estadísticas
-        print(f"DEBUG compute_mmpp_unified:")
-        print(f"  Total SKUs procesados: {len(df_result)}")
-        print(f"  Total frutas en recetas: {df_receta['Fruta_id'].nunique()}")
-        print(f"  Frutas con datos de granel: {len(df_granel)}")
-        print(f"  Frutas sin datos de granel: {df_receta['Fruta_id'].nunique() - len(df_granel)}")
-        
         return df_result
         
     except Exception as e:
@@ -1433,8 +1429,10 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         frutas = st.session_state["fruta.info_df"].copy()
         receta_df = st.session_state["fruta.receta_df"]
         granel_df = st.session_state["hist.granel_ponderado"]
+        optimo_df = st.session_state["hist.df_optimo"]
+        granel_optimo_df = st.session_state["hist.granel_optimo"]
         
-        # 1. FILTRAR df_sim para mostrar solo SKUs del plan 2026
+        # 1. PREPARAR lista de SKUs del plan 2026 para actualización
         skus_plan_2026 = kg_y_precios["SKU"].unique()
         
         # Convertir ambos a string para asegurar compatibilidad
@@ -1448,21 +1446,25 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
                     skus_plan_2026_clean.append(sku_clean)
                 except (ValueError, TypeError):
                     # Si no se puede convertir, mostrar warning y omitir
-                    st.warning(f"⚠️ SKU no numérico encontrado en plan 2026: '{sku}' - omitiendo")
                     continue
         
-        df_sim["SKU_str"] = df_sim["SKU"].astype(str)
+        # Crear una copia del df_sim completo para actualizar
+        df_sim_updated = df_sim.copy()
+        df_optimo_updated = optimo_df.copy()
+        df_sim_updated["SKU_str"] = df_sim_updated["SKU"].astype(str)
+        df_optimo_updated["SKU_str"] = df_optimo_updated["SKU"].astype(str)
         
-        df_sim_filtrado = df_sim[df_sim["SKU_str"].isin(skus_plan_2026_clean)].copy()
-        
-        # Limpiar columna temporal
-        df_sim_filtrado = df_sim_filtrado.drop(columns=["SKU_str"])
+        # Crear df_sim_filtrado solo para mostrar estadísticas
+        df_sim_filtrado = df_sim_updated[df_sim_updated["SKU_str"].isin(skus_plan_2026_clean)].copy()
         
         st.info(f"📊 Plan 2026: {len(skus_plan_2026)} SKUs únicos")
         st.info(f"📊 Simulador actual: {len(df_sim)} SKUs totales")
         st.info(f"📊 SKUs que se mostrarán: {len(df_sim_filtrado)} SKUs")
         
-        # 2. ACTUALIZAR precios y kg embarcados (solo si están en el plan)
+        # 2. ACTUALIZAR precios y kg embarcados en el df_sim COMPLETO
+        precios_actualizados = 0
+        kg_actualizados = 0
+        
         for _, row in kg_y_precios.iterrows():
             sku_cliente = row["SKU-Cliente"]
             nuevo_precio = row["Precio"]
@@ -1472,7 +1474,13 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
             try:
                 precio_num = pd.to_numeric(nuevo_precio, errors='coerce')
                 if pd.notna(precio_num) and precio_num > 0:
-                    df_sim_filtrado.loc[df_sim_filtrado["SKU-Cliente"] == sku_cliente, "PrecioVenta (USD/kg)"] = abs(precio_num)
+                    # Actualizar en el df_sim COMPLETO
+                    mask = df_sim_updated["SKU-Cliente"] == sku_cliente
+                    mask_optimo = df_optimo_updated["SKU-Cliente"] == sku_cliente
+                    if mask.any():
+                        df_sim_updated.loc[mask, "PrecioVenta (USD/kg)"] = abs(precio_num)
+                        precios_actualizados += 1
+                        df_optimo_updated.loc[mask_optimo, "PrecioVenta (USD/kg)"] = abs(precio_num)
             except (ValueError, TypeError):
                 pass
             
@@ -1480,7 +1488,11 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
             try:
                 kg_num = pd.to_numeric(nuevos_kg, errors='coerce')
                 if pd.notna(kg_num) and kg_num > 0:
-                    df_sim_filtrado.loc[df_sim_filtrado["SKU-Cliente"] == sku_cliente, "KgEmbarcados"] = kg_num
+                    # Actualizar en el df_sim COMPLETO
+                    mask = df_sim_updated["SKU-Cliente"] == sku_cliente
+                    if mask.any():
+                        df_sim_updated.loc[mask, "KgEmbarcados"] = kg_num
+                        kg_actualizados += 1
             except (ValueError, TypeError):
                 pass
         
@@ -1519,42 +1531,95 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         
         # 4. RECALCULAR costos de granel y MMPP usando la función unificada
         from src.simulator import compute_mmpp_unified
-        df_costos = compute_mmpp_unified(receta_df, frutas, granel_df)
         
-        # Actualizar costos en df_sim_filtrado
+        # Calcular costos estándar para df_sim_updated
+        df_costos_estandar = compute_mmpp_unified(receta_df, frutas, granel_df)
+        
+        # Calcular costos óptimos para df_optimo_updated usando granel_optimo_df
+        df_costos_optimos = compute_mmpp_unified(receta_df, frutas, granel_optimo_df)
+        
+        # Actualizar costos estándar en df_sim_updated
         costos_actualizados = 0
-        for _, row in df_costos.iterrows():
+        for _, row in df_costos_estandar.iterrows():
             sku = row["SKU"]
-            # Convertir ambos a string para comparación
             sku_str = str(sku)
-            df_sim_filtrado["SKU_str"] = df_sim_filtrado["SKU"].astype(str)
             
-            if sku_str in df_sim_filtrado["SKU_str"].values:
-                mask = df_sim_filtrado["SKU_str"] == sku_str
-                df_sim_filtrado.loc[mask, "MMPP (Fruta) (USD/kg)"] = row["MMPP (Fruta) (USD/kg)"]
-                df_sim_filtrado.loc[mask, "Almacenaje MMPP"] = row["Almacenaje"]
-                df_sim_filtrado.loc[mask, "Proceso Granel (USD/kg)"] = row["Proceso Granel (USD/kg)"]
+            if sku_str in df_sim_updated["SKU_str"].values:
+                mask = df_sim_updated["SKU_str"] == sku_str
+                df_sim_updated.loc[mask, "MMPP (Fruta) (USD/kg)"] = row["MMPP (Fruta) (USD/kg)"]
+                df_sim_updated.loc[mask, "Almacenaje MMPP"] = row["Almacenaje"]
+                df_sim_updated.loc[mask, "Proceso Granel (USD/kg)"] = row["Proceso Granel (USD/kg)"]
                 costos_actualizados += 1
         
+        # Actualizar costos óptimos en df_optimo_updated
+        costos_optimos_actualizados = 0
+        for _, row in df_costos_optimos.iterrows():
+            sku = row["SKU"]
+            sku_str = str(sku)
+            
+            if sku_str in df_optimo_updated["SKU_str"].values:
+                mask = df_optimo_updated["SKU_str"] == sku_str
+                df_optimo_updated.loc[mask, "MMPP (Fruta) (USD/kg)"] = row["MMPP (Fruta) (USD/kg)"]
+                df_optimo_updated.loc[mask, "Almacenaje MMPP"] = row["Almacenaje"]
+                df_optimo_updated.loc[mask, "Proceso Granel (USD/kg)"] = row["Proceso Granel (USD/kg)"]
+                costos_optimos_actualizados += 1
+        
         # Limpiar columna temporal
-        df_sim_filtrado = df_sim_filtrado.drop(columns=["SKU_str"])
+        df_sim_updated = df_sim_updated.drop(columns=["SKU_str"])
+        df_optimo_updated = df_optimo_updated.drop(columns=["SKU_str"])
         
-        
-        # 5. RECALCULAR totales
-        df_sim_filtrado = recalculate_totals(df_sim_filtrado)
+        # 5. RECALCULAR totales en el df_sim COMPLETO
+        df_sim_updated = recalculate_totals(df_sim_updated)
+        df_optimo_updated = recalculate_totals(df_optimo_updated)
         
         # 6. ACTUALIZAR session_state
         st.session_state["fruta.plan_2026"] = frutas
-        st.session_state["sim.df"] = df_sim_filtrado
+        st.session_state["sim.df"] = df_sim_updated  # Usar el df_sim COMPLETO actualizado
+        st.session_state["hist.df_optimo"] = df_optimo_updated  # Usar el df_optimo COMPLETO actualizado
+        
+        # DEBUG: Verificar que los datos óptimos se actualizaron correctamente
+        st.write("🔍 DEBUG datos óptimos:")
+        st.write(f"  df_optimo_updated shape: {df_optimo_updated.shape}")
+        st.write(f"  Costos estándar actualizados: {costos_actualizados}")
+        st.write(f"  Costos óptimos actualizados: {costos_optimos_actualizados}")
+        st.write(f"  Columnas con MMPP: {'MMPP (Fruta) (USD/kg)' in df_optimo_updated.columns}")
+        st.write(f"  Columnas con Proceso Granel: {'Proceso Granel (USD/kg)' in df_optimo_updated.columns}")
+        st.write(f"  Columnas con Almacenaje: {'Almacenaje MMPP' in df_optimo_updated.columns}")
+        
+        # Comparar valores estándar vs óptimos
+        if len(df_sim_updated) > 0 and len(df_optimo_updated) > 0:
+            st.write("  Comparación estándar vs óptimo:")
+            sample_sku = df_sim_updated["SKU-Cliente"].iloc[0]
+            
+            # Buscar en ambos DataFrames
+            mask_estandar = df_sim_updated["SKU-Cliente"] == sample_sku
+            mask_optimo = df_optimo_updated["SKU-Cliente"] == sample_sku
+            
+            if mask_estandar.any() and mask_optimo.any():
+                estandar = df_sim_updated[mask_estandar].iloc[0]
+                optimo = df_optimo_updated[mask_optimo].iloc[0]
+                
+                st.write(f"    SKU {sample_sku}:")
+                st.write(f"      Estándar - MMPP: ${estandar['MMPP (Fruta) (USD/kg)']:.3f}, Granel: ${estandar['Proceso Granel (USD/kg)']:.3f}")
+                st.write(f"      Óptimo   - MMPP: ${optimo['MMPP (Fruta) (USD/kg)']:.3f}, Granel: ${optimo['Proceso Granel (USD/kg)']:.3f}")
+        
+        # Mostrar algunos ejemplos de datos óptimos
+        if len(df_optimo_updated) > 0:
+            st.write("  Ejemplos de datos óptimos:")
+            sample_optimo = df_optimo_updated.head(3)[["SKU-Cliente", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "Almacenaje MMPP"]]
+            for _, row in sample_optimo.iterrows():
+                st.write(f"    {row['SKU-Cliente']}: MMPP=${row['MMPP (Fruta) (USD/kg)']:.3f}, Granel=${row['Proceso Granel (USD/kg)']:.3f}, Alm=${row['Almacenaje MMPP']:.3f}")
+        
+        
         
         # IMPORTANTE: También actualizar sim.df_filtered para que la tabla editable funcione
-        # Como sim.df ahora solo tiene SKUs del plan 2026, sim.df_filtered debe reflejar esto
+        # Usar el df_sim COMPLETO actualizado para el filtrado
         if "sim.df_filtered" in st.session_state and st.session_state["sim.df_filtered"] is not None:
             # Obtener los filtros actuales del sidebar (si están disponibles)
             current_filters = st.session_state.get("sim.filters", {})
             
-            # Aplicar filtros básicos al nuevo sim.df
-            df_filtered_updated = df_sim_filtrado.copy()
+            # Aplicar filtros básicos al df_sim COMPLETO actualizado
+            df_filtered_updated = df_sim_updated.copy()
             
             # Aplicar filtros del sidebar si existen
             if current_filters:
@@ -1584,14 +1649,8 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         with col1:
             st.metric("SKUs en Plan 2026", len(skus_plan_2026))
         with col2:
-            # Contar precios válidos (convertir a numérico primero)
-            precios_numericos = pd.to_numeric(kg_y_precios["Precio"], errors='coerce')
-            precios_actualizados = len(kg_y_precios[precios_numericos.notna() & (precios_numericos > 0)])
             st.metric("Precios actualizados", precios_actualizados)
         with col3:
-            # Contar kg válidos (convertir a numérico primero)
-            kg_numericos = pd.to_numeric(kg_y_precios["Kg"], errors='coerce')
-            kg_actualizados = len(kg_y_precios[kg_numericos.notna() & (kg_numericos > 0)])
             st.metric("Kg embarcados actualizados", kg_actualizados)
         
         return True

@@ -801,10 +801,10 @@ def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.
         chart = alt.Chart(df_chart).mark_bar().add_selection(
             alt.selection_interval()
         ).encode(
-            x=alt.X("Fruta_id:N", sort="-y", title="Fruta"),
+            x=alt.X("Fruta:N", sort="-y", title="Fruta"),
             y=alt.Y(f"{y_col}:Q", title="Costo (USD/kg)"),
             color=alt.Color(f"{y_col}:Q", scale=alt.Scale(scheme="blues")),
-            tooltip=["Fruta_id", "Fruta", f"{y_col}:Q"]
+            tooltip=["Fruta", "Fruta", f"{y_col}:Q"]
         ).properties(
             title=title,
             width=600,

@@ -850,7 +850,8 @@ with tab_sku:
                         "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
                         "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
                         "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
-                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)","EBITDA Pct"]
+                        "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)",
+                        "EBITDA Pct","KgEmbarcados"]
         
                 # Mover columnas dimensionales al inicio
                 display_order = dimension_cols + orden_cols
@@ -886,7 +887,7 @@ with tab_sku:
                 
                 # Aplicar negritas a las columnas de totales
                 total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)", "Costos Totales (USD/kg)",
-                "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
+                "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)", "KgEmbarcados"]
                 existing_total_columns = [col for col in total_columns if col in df_edit.columns]
                 
                 if existing_total_columns:
@@ -1168,14 +1169,14 @@ with tab_sku:
             st.info("💡 Verifica que las columnas de EBITDA estén presentes en los datos")
 
         # ===================== Top y Bottom SKUs =====================
-        st.header(" Top 5 y Bottom 5 SKUs por EBITDA")
+        st.header(" Top 10 y Bottom 10 SKUs por EBITDA")
 
         try:
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("Top 5 SKUs")
-                top_skus, _ = get_top_bottom_skus(df_current, 5)
+                st.subheader("Top 10 SKUs")
+                top_skus, _ = get_top_bottom_skus(df_current, 10)
                 if not top_skus.empty:
                     # Formatear las columnas correctamente
                     display_columns = ["SKU", "Cliente", "Marca"]
@@ -1197,14 +1198,15 @@ with tab_sku:
                             ebitda_column: "{:.3f}" if ebitda_column in top_skus.columns else None,
                             ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in top_skus.columns else None
                         }),
-                        width='stretch'
+                        width='stretch',
+                        hide_index=True
                     )
                 else:
                     st.info("No hay datos para mostrar")
             
             with col2:
-                st.subheader("Bottom 5 SKUs")
-                _, bottom_skus = get_top_bottom_skus(df_current, 5)
+                st.subheader("Bottom 10 SKUs")
+                _, bottom_skus = get_top_bottom_skus(df_current, 10)
                 if not bottom_skus.empty:
                     # Formatear las columnas correctamente
                     display_columns = ["SKU", "Cliente", "Marca"]
@@ -1226,7 +1228,8 @@ with tab_sku:
                             ebitda_column: "{:.3f}" if ebitda_column in bottom_skus.columns else None,
                             ebitda_pct_column: "{:.1f}%" if ebitda_pct_column in bottom_skus.columns else None
                         }),
-                        width='stretch'
+                        width='stretch',
+                        hide_index=True
                     )
                 else:
                     st.info("No hay datos para mostrar")
@@ -1743,31 +1746,48 @@ with tab_granel:
                       "MO Directa", "MO Indirecta", "MO Total",
                       "Materiales Directos", "Materiales Indirectos", "Materiales Total",
                       "Laboratorio", "Mantencion y Maquinaria",
-                      "Costos Directos", "Costos Indirectos", "Servicios Generales"]
+                      "Costos Directos", "Costos Indirectos", "Servicios Generales", "Proceso Granel (USD/kg)"]
         available_cols = [c for c in order_cols if c in editable_view.columns]
         # Añadir columnas que no estaban en el orden
-        tail_cols = [c for c in editable_view.columns if c not in available_cols]
-        editable_view = editable_view[available_cols + tail_cols]
-
-        # Column config: bloquea no editables, deja editables con formato
-        colcfg = {}
-        editables = set(_cost_editable_columns(editable_view))
-        for c in editable_view.columns:
-            if c in {"Fruta_id", "Fruta"}:
-                colcfg[c] = st.column_config.TextColumn(c, disabled=True, pinned="left")
-            elif c == "Rendimiento":
-                colcfg[c] = st.column_config.NumberColumn(c, format="%.2f", min_value=0.01, max_value=1.0, step=0.01, disabled=True)
-            elif c in {"Precio", "Precio Efectivo"}:
-                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=True)
-            elif c.endswith("Total") or c in {"Costos Directos", "Costos Indirectos"}:
-                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=True)
+        editable_view = editable_view[available_cols]
+        editable_view = editable_view.set_index("Fruta_id").sort_index()
+        total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
+        editable_columns = editable_view.style
+        if total_columns:
+                editable_columns = editable_columns.set_properties(
+                    subset=total_columns,
+                    **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                )
+        if "Proceso Granel (USD/kg)" in editable_columns.columns:
+            editable_columns = editable_columns.set_properties(
+                subset=["Proceso Granel (USD/kg)"],
+                    **{"font-weight": "bold", "background-color": "#fff7ed"}
+                )
+        config = {}
+        for c in editable_columns.columns:
+            if c not in ["Fruta_id", "Fruta", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
+                config[c] = st.column_config.NumberColumn(
+                    c,
+                    format="%.3f"
+                )
             else:
-                # costos individuales editables
-                colcfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001, disabled=(c not in editables))
+                if c == "Proceso Granel (USD/kg)":
+                    config[c] = st.column_config.NumberColumn(
+                    "Proceso Granel (USD/kg)",
+                    disabled=True,
+                    pinned="left",
+                    format="%.3f"
+                )
+                else:
+                    config[c] = st.column_config.TextColumn(
+                        c,
+                        disabled=True,
+                        pinned="left",
+                    )
 
-        edited_df = st.data_editor(
-            editable_view,
-            column_config=colcfg,
+        edited_df = st.dataframe(
+            editable_columns,
+            column_config=config,
             use_container_width=True,
             hide_index=True,
             key="data_editor_granel"
@@ -1811,20 +1831,20 @@ with tab_granel:
             st.error(f"❌ Error calculando KPIs: {e}")
 
         # --------- Top/Bottom ---------
-        st.subheader("🏆 Top 5 y Bottom 5 Frutas por Costo")
+        st.subheader("🏆 Top 10 y Bottom 10 Frutas por Costo")
         try:
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("Top 5")
-                top_frutas, _ = get_top_bottom_granel(editable_view, 5)
+                st.subheader("Top 10")
+                top_frutas, _ = get_top_bottom_granel(editable_view, 10)
                 if not top_frutas.empty:
                     show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in top_frutas.columns]
                     st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
                 else:
                     st.info("No hay datos")
             with c2:
-                st.subheader("Bottom 5")
-                _, bottom_frutas = get_top_bottom_granel(editable_view, 5)
+                st.subheader("Bottom 10")
+                _, bottom_frutas = get_top_bottom_granel(editable_view, 10)
                 if not bottom_frutas.empty:
                     show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in bottom_frutas.columns]
                     st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
@@ -1839,7 +1859,7 @@ with tab_granel:
         with c1:
             top_n_granel = st.number_input(
                 "Número de frutas",
-                min_value=5, max_value=50, value=20, step=5,
+                min_value=5, max_value=50, value=10, step=5,
                 help="Top N por costo"
             )
         with c2:
@@ -1901,14 +1921,48 @@ with tab_granel:
                           "Laboratorio", "Mantencion y Maquinaria",
                           "Costos Directos", "Costos Indirectos", "Servicios Generales"]
             avail_cols = [c for c in order_cols if c in opt_view.columns]
-            tail = [c for c in opt_view.columns if c not in avail_cols]
-            opt_view = opt_view[avail_cols + tail]
-
-            fmt = {c: "{:.3f}" for c in num_cols if c in opt_view.columns}
-            if "Rendimiento" in opt_view.columns:
-                fmt["Rendimiento"] = "{:.1%}"
-
-            st.dataframe(opt_view.style.format(fmt), use_container_width=True, hide_index=True)
+            opt_view = opt_view[available_cols]
+            opt_view = opt_view.set_index("Fruta_id").sort_index()
+            total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
+            opt_view_styled = opt_view.style
+            if total_columns:
+                    opt_view_styled = opt_view_styled.set_properties(
+                        subset=total_columns,
+                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                    )
+            if "Proceso Granel (USD/kg)" in opt_view.columns:
+                opt_view_styled = opt_view_styled.set_properties(
+                    subset=["Proceso Granel (USD/kg)"],
+                        **{"font-weight": "bold", "background-color": "#fff7ed"}
+                    )
+            config = {}
+            for c in opt_view_styled.columns:
+                if c not in ["Fruta_id", "Fruta", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
+                    config[c] = st.column_config.NumberColumn(
+                        c,
+                        format="%.3f"
+                    )
+                else:
+                    if c == "Proceso Granel (USD/kg)":
+                        config[c] = st.column_config.NumberColumn(
+                        "Proceso Granel (USD/kg)",
+                        disabled=True,
+                        pinned="left",
+                        format="%.3f"
+                    )
+                    else:
+                        config[c] = st.column_config.TextColumn(
+                            c,
+                            disabled=True,
+                            pinned="left",
+                        )
+            opt_df = st.dataframe(
+                opt_view_styled,
+                column_config=config,
+                use_container_width=True,
+                hide_index=True,
+                key="data_editor_granel"
+            )
 
             # KPIs
             st.subheader("📈 KPIs Óptimos")
