@@ -12,9 +12,56 @@ import math
 from pathlib import Path
 import io
 import streamlit.components.v1 as components
+import json
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
+
+# ===================== Utilidades =====================
+def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convierte un DataFrame a formato seguro para Arrow/Streamlit.
+    
+    Args:
+        df: DataFrame a convertir
+        
+    Returns:
+        DataFrame con formato seguro para Arrow
+    """
+    out = df.copy()
+
+    # 1) Asegurar nombres de columnas simples (no MultiIndex / no objetos)
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [" | ".join(map(str, lvl)) for lvl in out.columns]
+
+    out.columns = [str(c) for c in out.columns]
+
+    # 2) Convertir valores no serializables (tuplas, listas, dicts, arrays, sets) a strings JSON
+    def _sanitize_val(x):
+        if isinstance(x, (tuple, list, dict, set, np.ndarray)):
+            try:
+                return json.dumps(x, default=str)
+            except Exception:
+                return str(x)
+        return x
+
+    for c in out.columns:
+        # Si la serie es object, aplica saneo elemento a elemento
+        if out[c].dtype == "object":
+            # Evita cast innecesario si ya son strings/números/fechas
+            sample = out[c].dropna().head(5).tolist()
+            if any(isinstance(v, (tuple, list, dict, set, np.ndarray)) for v in sample):
+                out[c] = out[c].map(_sanitize_val)
+        # Opcional: convertir categorías a string
+        if pd.api.types.is_categorical_dtype(out[c].dtype):
+            out[c] = out[c].astype(str)
+
+    # 3) Índice simple
+    if isinstance(out.index, pd.MultiIndex):
+        # Convertir MultiIndex a strings usando to_flat_index()
+        out.index = [" | ".join(map(str, tup)) for tup in out.index.to_flat_index()]
+
+    return out
 
 # Importar con manejo de errores más robusto
 try:
