@@ -1622,6 +1622,21 @@ with tab_granel:
                 if st.button("Aplicar Ajuste Granel", type="primary"):
                     sim_snapshot_push()
 
+                    # GUARDAR VALORES ORIGINALES ANTES DE APLICAR AJUSTES
+                    if "sim.granel_original_values" not in st.session_state:
+                        st.session_state["sim.granel_original_values"] = {}
+                    
+                    # Guardar valores originales solo si es la primera vez que se aplica este ajuste
+                    if selected_cost_granel not in st.session_state["sim.granel_original_values"]:
+                        original_values = {}
+                        # Usar sim.granel_df si existe, sino usar hist.granel_ponderado
+                        source_df = st.session_state.get("sim.granel_df", st.session_state["hist.granel_ponderado"])
+                        for fruta_id in source_df["Fruta_id"]:
+                            mask = source_df["Fruta_id"] == fruta_id
+                            if mask.any() and selected_cost_granel in source_df.columns:
+                                original_values[fruta_id] = source_df.loc[mask, selected_cost_granel].iloc[0]
+                        st.session_state["sim.granel_original_values"][selected_cost_granel] = original_values
+
                     st.session_state.setdefault("sim.granel_overrides_row", {})
                     st.session_state["sim.granel_overrides_row"][selected_cost_granel] = {
                         "type": "percentage" if adjustment_type_granel == "Porcentaje (%)" else "dollars",
@@ -1633,6 +1648,11 @@ with tab_granel:
                     base = st.session_state["hist.granel_ponderado"].copy()
                     base = apply_granel_universal_adjustments(base, st.session_state["sim.granel_overrides_row"])
                     st.session_state["sim.granel_df"] = recalculate_granel_totals(base)
+                    
+                    # DEBUG: Verificar que los valores se aplicaron correctamente
+                    if selected_cost_granel in st.session_state["sim.granel_df"].columns:
+                        st.write(f"🔍 DEBUG: Valores de {selected_cost_granel} después de aplicar ajuste:")
+                        st.write(st.session_state["sim.granel_df"][selected_cost_granel].head().tolist())
 
                     # Sync retail con COPIA del histórico + overrides
                     ok, err = _sync_retail_using_hist_copy(st.session_state["sim.granel_overrides_row"])
@@ -1659,12 +1679,29 @@ with tab_granel:
                 with c4:
                     if st.button("🗑️", key=f"del_ovr_{cost_column}", help=f"Eliminar ajuste de {cost_column}"):
                         sim_snapshot_push()
+                        
+                        # RESTAURAR VALORES ORIGINALES
+                        if "sim.granel_original_values" in st.session_state and cost_column in st.session_state["sim.granel_original_values"]:
+                            original_values = st.session_state["sim.granel_original_values"][cost_column]
+                            
+                            # CORREGIDO: NO modificar hist.granel_ponderado (debe ser inmutable)
+                            # En su lugar, recalcular sim.granel_df desde histórico limpio
+                            
+                            # Eliminar valores originales guardados
+                            del st.session_state["sim.granel_original_values"][cost_column]
+                        
+                        # Eliminar el ajuste
                         del st.session_state["sim.granel_overrides_row"][cost_column]
 
                         # Recalcular escenario desde histórico limpio + overrides restantes
                         base = st.session_state["hist.granel_ponderado"].copy()
                         base = apply_granel_universal_adjustments(base, st.session_state["sim.granel_overrides_row"])
                         st.session_state["sim.granel_df"] = recalculate_granel_totals(base)
+                        
+                        # DEBUG: Verificar que los valores se restauraron correctamente
+                        if cost_column in st.session_state["sim.granel_df"].columns:
+                            st.write(f"🔍 DEBUG: Valores de {cost_column} después de eliminar ajuste:")
+                            st.write(st.session_state["sim.granel_df"][cost_column].head().tolist())
 
                         ok, err = _sync_retail_using_hist_copy(st.session_state["sim.granel_overrides_row"])
                         if ok:
@@ -1675,6 +1712,13 @@ with tab_granel:
 
             if st.button("Limpiar todos los ajustes", type="secondary"):
                 sim_snapshot_push()
+                
+                # CORREGIDO: NO modificar hist.granel_ponderado (debe ser inmutable)
+                # Simplemente limpiar valores originales guardados
+                if "sim.granel_original_values" in st.session_state:
+                    st.session_state["sim.granel_original_values"] = {}
+                
+                # Limpiar overrides
                 st.session_state["sim.granel_overrides_row"] = {}
                 st.session_state["sim.granel_df"] = recalculate_granel_totals(st.session_state["hist.granel_ponderado"].copy())
 
