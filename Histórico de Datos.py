@@ -385,8 +385,8 @@ with tab_retail:
     # -------- Mostrar resultados Retail --------
     st.subheader("Márgenes actuales (unitarios)")
     base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
-    "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
-    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","EBITDA (USD)","EBITDA Simple (USD)"]
+    "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
+    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados"]
     skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
     ebitda_mensual = st.session_state["hist.ebitda_mensual"]
     # st.dataframe(ebitda_mensual)
@@ -398,7 +398,8 @@ with tab_retail:
     styled_view_base = view_base.style
     # Aplicar negritas a las columnas de totales
     total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
-    "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)"]
+    "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+    "KgEmbarcados"]
     existing_total_columns = [col for col in total_columns if col in view_base.columns]
 
     if existing_total_columns:
@@ -438,9 +439,9 @@ with tab_retail:
         orden_cols = ["MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "MMPP Total (USD/kg)","MO Directa",
                         "MO Indirecta","MO Total","Materiales Directos","Materiales Indirectos","Materiales Total",
                         "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
-                        "Retail Costos Indirectos (USD/kg)","Servicios Generales","Comex","Guarda PT","Almacenaje MMPP",
+                        "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT",
                         "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)",
-                        "EBITDA Pct","KgEmbarcados","EBITDA (USD)","EBITDA Simple (USD)"]
+                        "EBITDA Pct","KgEmbarcados"]
         # Si falta, recalcúlala si están los componentes
         if "Gastos Totales (USD/kg)" not in det.columns:
             comp = [
@@ -559,7 +560,7 @@ with tab_granel:
         for col in numeric_cols:
             granel_display[col] = pd.to_numeric(granel_display[col], errors='coerce')
         
-        order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo", "MO Directa", "MO Indirecta",
+        order_cols = ["Fruta_id", "Fruta", "Precio Efectivo", "Proceso Granel (USD/kg)", "MO Directa", "MO Indirecta",
         "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
         "Costos Directos", "Costos Indirectos", "Servicios Generales"]
         granel_display = granel_display[order_cols]
@@ -569,10 +570,40 @@ with tab_granel:
         fmt_pct = {"Rendimiento": "{:.1%}"} if "Rendimiento" in granel_display.columns else {}
 
         fmt = fmt_num | fmt_pct
+        total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
+        granel_display = granel_display.style
+
+        if total_columns:
+                granel_display = granel_display.set_properties(
+                    subset=total_columns,
+                    **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                )
+        if "Proceso Granel (USD/kg)" in granel_display.columns:
+            granel_display = granel_display.set_properties(
+                subset=["Proceso Granel (USD/kg)"],
+                    **{"font-weight": "bold", "background-color": "#fff7ed"}
+                )
         # Mostrar tabla con formato
         st.dataframe(
-            granel_display.style.format(fmt),
+            granel_display.format(fmt),
             use_container_width=True,
+            column_config={
+                "Fruta": st.column_config.TextColumn(
+                    "Fruta",
+                    disabled=True,
+                    pinned="left"
+                ),
+                "Precio Efectivo": st.column_config.NumberColumn(
+                    "Precio Efectivo",
+                    disabled=True,
+                    pinned="left"
+                ),
+                "Proceso Granel (USD/kg)": st.column_config.NumberColumn(
+                    "Proceso Granel (USD/kg)",
+                    disabled=True,
+                    pinned="left"
+                ),
+            },
             hide_index=True
         )
         
