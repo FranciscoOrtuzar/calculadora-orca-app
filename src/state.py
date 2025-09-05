@@ -7,6 +7,14 @@ import streamlit as st
 # ---------- Inicialización ----------
 def ensure_defaults() -> None:
     """Inicializa todas las llaves de session_state con valores por defecto"""
+    # Filtros compartidos centrales
+    st.session_state.setdefault("shared.filters", {})
+    st.session_state.setdefault("shared.current_page", "hist")
+    
+    # Detección de primera carga de páginas
+    st.session_state.setdefault("sim.page_loaded", False)
+    st.session_state.setdefault("hist.page_loaded", False)
+    
     # Histórico
     st.session_state.setdefault("hist.df", None)
     st.session_state.setdefault("hist.filters", {})
@@ -20,7 +28,6 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.granel_ponderado", None)
     st.session_state.setdefault("hist.granel_optimo", None)
     st.session_state.setdefault("hist.df_optimo", None)
-    st.session_state.setdefault("hist.filters_changed", False)
 
     # Simulación
     st.session_state.setdefault("sim.df", None)
@@ -37,7 +44,6 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("sim.granel", None)
     st.session_state.setdefault("sim.show_subtotals_at_top", False)
     st.session_state.setdefault("sim.plan_2026", None)
-    st.session_state.setdefault("sim.filters_changed", False)
     
     # Simulación de Granel
     st.session_state.setdefault("sim.granel_df", None)
@@ -233,3 +239,23 @@ def ensure_session_state() -> None:
     """Inicializa y migra el session_state completo"""
     ensure_defaults()
     migrate_legacy_session_keys()
+
+# ===================== Sistema de Filtros Compartidos =====================
+def sync_filters_to_shared(page: str, filters: dict) -> None:
+    """Sincroniza filtros locales al estado compartido"""
+    st.session_state["shared.filters"] = filters.copy()
+    st.session_state["shared.current_page"] = page
+
+def get_shared_filters() -> dict:
+    """Obtiene los filtros compartidos"""
+    return st.session_state.get("shared.filters", {})
+
+def sync_filters_from_shared(page: str) -> dict:
+    """Sincroniza filtros desde el estado compartido a la página actual"""
+    shared_filters = get_shared_filters()
+    st.session_state["shared.current_page"] = page
+    return shared_filters
+
+def clear_shared_filters() -> None:
+    """Limpia todos los filtros compartidos"""
+    st.session_state["shared.filters"] = {}
