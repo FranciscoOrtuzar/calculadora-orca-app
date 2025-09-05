@@ -160,6 +160,21 @@ ensure_session_state()
 # Mostrar página Home
 st.title(ST_TITLE)
 
+# ===================== Indicador de Filtros Compartidos =====================
+def show_filter_status_hist():
+    """Muestra el estado de los filtros compartidos"""
+    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
+        sim_filters = st.session_state["sim.filters"]
+        active_count = sum(len(v) for v in sim_filters.values() if v)
+        if active_count > 0:
+            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el simulador")
+            return True
+    return False
+
+# Mostrar estado de filtros si están activos
+if show_filter_status_hist():
+    st.markdown("---")
+
 # ===================== Carga de datos (con persistencia) =====================
 with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
     col1, col2 = st.columns([1, 1])
@@ -374,18 +389,95 @@ def _current_selections_hist():
         selections[logical] = st.session_state.get(f"ms_hist_{logical}", [])
     return selections
 
+# ===================== Sistema de Filtros Compartidos =====================
+def sync_filters_from_simulator():
+    """Sincroniza filtros desde el simulador si están disponibles"""
+    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
+        sim_filters = st.session_state["sim.filters"]
+        for logical in FILTER_FIELDS_HIST:
+            if logical in sim_filters and sim_filters[logical]:
+                st.session_state[f"ms_hist_{logical}"] = sim_filters[logical]
+
+def sync_filters_to_simulator():
+    """Sincroniza filtros actuales al simulador"""
+    current_filters = _current_selections_hist()
+    st.session_state["sim.filters"] = current_filters
+
+def clear_all_filters_hist():
+    """Limpia todos los filtros del histórico"""
+    for logical in FILTER_FIELDS_HIST:
+        st.session_state[f"ms_hist_{logical}"] = []
+    st.session_state["sim.filters"] = {}
+
+# Sincronizar filtros desde simulador al cargar la página
+sync_filters_from_simulator()
+
+# UI para gestión de filtros compartidos
+with st.sidebar.expander("🔄 Gestión de Filtros", expanded=False):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Cargar desde Simulador", help="Cargar filtros del simulador"):
+            sync_filters_from_simulator()
+            st.rerun()
+    
+    with col2:
+        if st.button("📤 Enviar a Simulador", help="Enviar filtros actuales al simulador"):
+            sync_filters_to_simulator()
+            st.success("✅ Filtros sincronizados con simulador")
+            st.rerun()
+    
+    if st.button("🗑️ Limpiar Todos", help="Limpiar todos los filtros"):
+        clear_all_filters_hist()
+        st.rerun()
+
+# Mostrar filtros activos
+active_filters = _current_selections_hist()
+active_count = sum(len(v) for v in active_filters.values() if v)
+if active_count > 0:
+    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+    for logical, values in active_filters.items():
+        if values:
+            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
+
 # Guarda filtros en hist.filters
 st.session_state["hist.filters"] = _current_selections_hist()
 
 # Render de filtros en filas (sidebar)
 if FILTER_FIELDS_HIST:
     SELECTIONS_HIST = _current_selections_hist()
+    
+    # Función para actualizar filtros individuales
+    def update_filter_selection_hist(logical):
+        """Actualiza la selección de un filtro específico"""
+        # Forzar actualización del session_state
+        if f"ms_hist_{logical}" in st.session_state:
+            # Marcar que los filtros han cambiado para forzar rerun
+            st.session_state["hist.filters_changed"] = True
+    
+    # Inicializar flag de cambio de filtros
+    if "hist.filters_changed" not in st.session_state:
+        st.session_state["hist.filters_changed"] = False
+    
     for logical in FILTER_FIELDS_HIST:
         real_col = RESOLVED_HIST[logical]
         df_except = _apply_filters_hist(df_base_hist, SELECTIONS_HIST, skip_key=logical)
         opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
         current = [x for x in SELECTIONS_HIST.get(logical, []) if x in opts]
-        st.sidebar.multiselect(logical, options=opts, default=current, key=f"ms_hist_{logical}")
+        
+        # Crear el multiselect con callback para actualizar session_state
+        new_selection = st.sidebar.multiselect(
+            logical, 
+            options=opts, 
+            default=current, 
+            key=f"ms_hist_{logical}",
+            on_change=lambda logical=logical: update_filter_selection_hist(logical)
+        )
+    
+    # Forzar rerun si los filtros cambiaron
+    if st.session_state.get("hist.filters_changed", False):
+        st.session_state["hist.filters_changed"] = False
+        st.rerun()
 else:
     st.sidebar.info("No hay campos disponibles para filtrar")
 
@@ -400,6 +492,9 @@ else:
     df_filtrado = df_filtrado.reset_index(drop=True)
 
 st.session_state["hist.df_filtered"] = df_filtrado.copy()
+
+# Sincronizar filtros al simulador cuando cambien
+sync_filters_to_simulator()
 
 # -------- Filtrar subproductos (SKUs con costos totales = 0) --------
 # Inicializar variable subproductos
