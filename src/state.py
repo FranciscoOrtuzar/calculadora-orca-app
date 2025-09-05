@@ -20,6 +20,7 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("hist.granel_ponderado", None)
     st.session_state.setdefault("hist.granel_optimo", None)
     st.session_state.setdefault("hist.df_optimo", None)
+    st.session_state.setdefault("hist.filters_changed", False)
 
     # Simulación
     st.session_state.setdefault("sim.df", None)
@@ -34,6 +35,9 @@ def ensure_defaults() -> None:
     st.session_state.setdefault("sim.last_saved_path", None)
     st.session_state.setdefault("sim.last_saved_at", None)
     st.session_state.setdefault("sim.granel", None)
+    st.session_state.setdefault("sim.show_subtotals_at_top", False)
+    st.session_state.setdefault("sim.plan_2026", None)
+    st.session_state.setdefault("sim.filters_changed", False)
     
     # Simulación de Granel
     st.session_state.setdefault("sim.granel_df", None)

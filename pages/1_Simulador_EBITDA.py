@@ -18,6 +18,45 @@ import json
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 # ===================== Utilidades =====================
+def create_subtotal_row(df, position="bottom"):
+    """Crea una fila de subtotales con manejo de valores None"""
+    subtotal_row = {}
+    
+    # Llenar columnas de agrupación con "TOTAL" o mensaje genérico
+    for col in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Fruta", "Name"]:
+        if col in df.columns:
+            if col in ["Marca", "Cliente", "Especie", "Condicion", "Fruta", "Name", "SKU", "Descripcion"]:
+                subtotal_row[col] = "TOTAL"
+            else:
+                subtotal_row[col] = ""  # Mensaje genérico en lugar de None
+    
+    # Calcular sumas para columnas numéricas
+    numeric_cols = ["EBITDA (USD/kg)", "Costos Totales (USD/kg)", "KgEmbarcados", 
+                    "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "PrecioVenta (USD/kg)",
+                    "Precio (USD/kg)", "Costo (USD/kg)", "Óptimo", "Ponderado",
+                    "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total",
+                    "Materiales Directos", "Materiales Indirectos", "Materiales Total",
+                    "Laboratorio", "Mantención", "Utilities", "Fletes Internos",
+                    "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+                    "Servicios Generales", "Comex", "Guarda PT", "Almacenaje MMPP",
+                    "Gastos Totales (USD/kg)", "Costos Directos", "Costos Indirectos"]
+    
+    for col in numeric_cols:
+        if col in df.columns:
+            # Usar skipna=True para ignorar valores NaN/None
+            subtotal_row[col] = df[col].sum(skipna=True)
+    
+    # Manejar columnas que pueden ser None (como EBITDA Pct)
+    for col in ["EBITDA Pct"]:
+        if col in df.columns:
+            # Para porcentajes, calcular el promedio o mostrar mensaje genérico
+            if df[col].notna().any():
+                subtotal_row[col] = df[col].mean()
+            else:
+                subtotal_row[col] = ""  # Mensaje genérico en lugar de None
+    
+    return subtotal_row
+    
 def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convierte un DataFrame a formato seguro para Arrow/Streamlit.
@@ -340,6 +379,21 @@ st.set_page_config(
 st.title("Simulador de EBITDA por SKU (USD/kg)")
 st.markdown("Simula escenarios de variación en costos y analiza impacto en rentabilidad por SKU.")
 
+# ===================== Indicador de Filtros Compartidos =====================
+def show_filter_status():
+    """Muestra el estado de los filtros compartidos"""
+    if "hist.filters" in st.session_state and st.session_state["hist.filters"]:
+        hist_filters = st.session_state["hist.filters"]
+        active_count = sum(len(v) for v in hist_filters.values() if v)
+        if active_count > 0:
+            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el histórico")
+            return True
+    return False
+
+# Mostrar estado de filtros si están activos
+if show_filter_status():
+    st.markdown("---")
+
 # ===================== Carga de datos =====================
 def load_base_data():
     """Carga los datos base desde archivo local o sesión."""
@@ -509,6 +563,57 @@ def _current_selections():
         selections[logical] = st.session_state.get(f"ms_sim_{logical}", [])
     return selections
 
+# ===================== Sistema de Filtros Compartidos =====================
+def sync_filters_from_historical():
+    """Sincroniza filtros desde el histórico si están disponibles"""
+    if "hist.filters" in st.session_state and st.session_state["hist.filters"]:
+        hist_filters = st.session_state["hist.filters"]
+        for logical in FILTER_FIELDS:
+            if logical in hist_filters and hist_filters[logical]:
+                st.session_state[f"ms_sim_{logical}"] = hist_filters[logical]
+
+def sync_filters_to_historical():
+    """Sincroniza filtros actuales al histórico"""
+    current_filters = _current_selections()
+    st.session_state["hist.filters"] = current_filters
+
+def clear_all_filters():
+    """Limpia todos los filtros"""
+    for logical in FILTER_FIELDS:
+        st.session_state[f"ms_sim_{logical}"] = []
+    st.session_state["hist.filters"] = {}
+
+# Sincronizar filtros desde histórico al cargar la página
+sync_filters_from_historical()
+
+# UI para gestión de filtros compartidos
+with st.sidebar.expander("🔄 Gestión de Filtros", expanded=False):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Cargar desde Histórico", help="Cargar filtros del histórico"):
+            sync_filters_from_historical()
+            st.rerun()
+    
+    with col2:
+        if st.button("📤 Enviar a Histórico", help="Enviar filtros actuales al histórico"):
+            sync_filters_to_historical()
+            st.success("✅ Filtros sincronizados con histórico")
+            st.rerun()
+    
+    if st.button("🗑️ Limpiar Todos", help="Limpiar todos los filtros"):
+        clear_all_filters()
+        st.rerun()
+
+# Mostrar filtros activos
+active_filters = _current_selections()
+active_count = sum(len(v) for v in active_filters.values() if v)
+if active_count > 0:
+    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+    for logical, values in active_filters.items():
+        if values:
+            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
+
 # Guardar filtros en sim.filters
 st.session_state["sim.filters"] = _current_selections()
 
@@ -516,12 +621,38 @@ st.session_state["sim.filters"] = _current_selections()
 if FILTER_FIELDS:
     # Multiselects con opciones dependientes del resto, en filas separadas
     SELECTIONS = _current_selections()
+    
+    # Función para actualizar filtros individuales
+    def update_filter_selection(logical):
+        """Actualiza la selección de un filtro específico"""
+        # Forzar actualización del session_state
+        if f"ms_sim_{logical}" in st.session_state:
+            # Marcar que los filtros han cambiado para forzar rerun
+            st.session_state["sim.filters_changed"] = True
+    
+    # Inicializar flag de cambio de filtros
+    if "sim.filters_changed" not in st.session_state:
+        st.session_state["sim.filters_changed"] = False
+    
     for logical in FILTER_FIELDS:
         real_col = RESOLVED[logical]
         df_except = _apply_filters(df_base, SELECTIONS, skip_key=logical)
         opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
         current = [x for x in SELECTIONS.get(logical, []) if x in opts]
-        st.sidebar.multiselect(logical, options=opts, default=current, key=f"ms_sim_{logical}")
+        
+        # Crear el multiselect con callback para actualizar session_state
+        new_selection = st.sidebar.multiselect(
+            logical, 
+            options=opts, 
+            default=current, 
+            key=f"ms_sim_{logical}",
+            on_change=lambda logical=logical: update_filter_selection(logical)
+        )
+    
+    # Forzar rerun si los filtros cambiaron
+    if st.session_state.get("sim.filters_changed", False):
+        st.session_state["sim.filters_changed"] = False
+        st.rerun()
 else:
     st.sidebar.info("No hay campos disponibles para filtrar")
 
@@ -546,6 +677,9 @@ else:
 
 # Guardar resultado filtrado en sim.df_filtered
 st.session_state["sim.df_filtered"] = df_filtered.copy()
+
+# Sincronizar filtros al histórico cuando cambien
+sync_filters_to_historical()
 
 # ===================== Sidebar - Overrides Globales =====================
 st.sidebar.header("Overrides Globales")
@@ -904,6 +1038,21 @@ with tab_sku:
                 st.info("2. 🔄 Regresar al simulador")
                 st.stop()
             
+            # ===================== Opciones de Visualización =====================
+            st.subheader("📊 Opciones de Visualización")
+            col_view1, col_view2 = st.columns([1, 2])
+            
+            with col_view1:
+                show_subtotals_at_top = st.checkbox(
+                    "Subtotales al inicio",
+                    value=st.session_state.get("sim.show_subtotals_at_top", False),
+                    help="Mostrar fila de subtotales al inicio de la tabla",
+                    key="sim_show_subtotals_at_top"
+                )
+                if show_subtotals_at_top != st.session_state.get("sim.show_subtotals_at_top", False):
+                    st.session_state["sim.show_subtotals_at_top"] = show_subtotals_at_top
+                    st.rerun()
+            
             # Preparar datos para la tabla editable usando sim.df (que incluye ajustes universales)
             # Obtener datos de simulación si están disponibles en la sesión
             if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
@@ -930,6 +1079,8 @@ with tab_sku:
                 # Crear DataFrame para edición
                 df_edit = sim_data[available_display_cols].copy()
                 df_edit = df_edit[df_edit["SKU-Cliente"].isin(filtered_skus)]
+                
+                # No aplicar subtotales manuales - usar tabla dinámica en su lugar
                         
                 # Configurar columnas editables (solo costos individuales, no totales)
                 editable_columns = columns_config(editable=True)
@@ -976,17 +1127,88 @@ with tab_sku:
                         **{"font-weight": "bold", "background-color": "#fff7ed"}
                     )
                 
+                # Aplicar estilos especiales a filas de subtotales (código legacy removido)
+                # Los subtotales ahora se manejan con la nueva lógica de create_subtotal_row
+                
                 # El DataFrame ya tiene el índice establecido, solo aplicar estilos
                 df_edit_final = df_edit_styled
                 
+                # Crear fila de subtotales
+                subtotal_row = create_subtotal_row(df_edit)
+                subtotal_df = pd.DataFrame([subtotal_row])
+                
+                if show_subtotals_at_top:
+                    # Concatenar subtotales al inicio
+                    df_edit_with_subtotals = pd.concat([subtotal_df, df_edit], ignore_index=True)
+                    subtotal_position = 0  # Primera fila
+                else:
+                    # Concatenar subtotales al final (por defecto)
+                    df_edit_with_subtotals = pd.concat([df_edit, subtotal_df], ignore_index=True)
+                    subtotal_position = len(df_edit)  # Última fila
+                
+                # Aplicar estilos a la tabla con subtotales
+                df_edit_styled = df_edit_with_subtotals.style
+                
+                # Aplicar negritas a las columnas de totales
+                total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+                "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+                "KgEmbarcados"]
+                existing_total_columns = [col for col in total_columns if col in df_edit_with_subtotals.columns]
+
+                if existing_total_columns:
+                    df_edit_styled = df_edit_styled.set_properties(
+                        subset=existing_total_columns,
+                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                    )
+
+                # Aplicar estilos a columnas EBITDA
+                ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+                existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit_with_subtotals.columns]
+                
+                if existing_ebitda_columns:
+                    df_edit_styled = df_edit_styled.set_properties(
+                        subset=existing_ebitda_columns,
+                        **{"font-weight": "bold", "background-color": "#fff7ed"}
+                    )
+                
+                # Aplicar estilo especial a la fila de subtotales
+                from pandas import IndexSlice as idx
+                df_edit_styled = df_edit_styled.set_properties(
+                    subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
+                    **{
+                        "font-weight": "bold",
+                        "background-color": "#e8f4fd",
+                        "border-top": "2px solid #1f77b4",
+                    },
+                )
+                
+                # Mostrar tabla con subtotales
                 edited_df = st.dataframe(
-                    df_edit_final,
+                    df_edit_styled,
                     column_config=editable_columns,
                     width='stretch',
                     height="auto",
                     key="data_editor_detalle",
                     hide_index=True
                 )
+                
+                # Mostrar métricas de subtotales
+                col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+                
+                with col_metrics1:
+                    if "EBITDA (USD/kg)" in df_edit.columns:
+                        total_ebitda = df_edit["EBITDA (USD/kg)"].sum()
+                        st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
+                
+                with col_metrics2:
+                    if "Costos Totales (USD/kg)" in df_edit.columns:
+                        total_costos = df_edit["Costos Totales (USD/kg)"].sum()
+                        st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
+                
+                with col_metrics3:
+                    if "KgEmbarcados" in df_edit.columns:
+                        total_kg = df_edit["KgEmbarcados"].sum()
+                        st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
                 
                 # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
                 # if not edited_df.equals(df_edit_original):
@@ -1519,17 +1741,78 @@ with tab_sku:
                     **{"font-weight": "bold", "background-color": "#fff7ed"}
                 )
             
-            # El DataFrame ya tiene el índice establecido, solo aplicar estilos
-            df_optimos_final = df_optimos_styled
+            # Crear fila de subtotales
+            subtotal_row = create_subtotal_row(df_optimos)
+            subtotal_df = pd.DataFrame([subtotal_row])
             
+            # Concatenar subtotales al final (por defecto)
+            df_optimos_with_subtotals = pd.concat([df_optimos, subtotal_df], ignore_index=True)
+            subtotal_position = len(df_optimos)  # Última fila
+            
+            # Aplicar estilos a la tabla con subtotales
+            df_optimos_styled = df_optimos_with_subtotals.style
+            
+            # Aplicar negritas a las columnas de totales
+            total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+            "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+            "KgEmbarcados"]
+            existing_total_columns = [col for col in total_columns if col in df_optimos_with_subtotals.columns]
+
+            if existing_total_columns:
+                df_optimos_styled = df_optimos_styled.set_properties(
+                    subset=existing_total_columns,
+                    **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                )
+
+            # Aplicar estilos a columnas EBITDA
+            ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+            existing_ebitda_columns = [col for col in ebitda_columns if col in df_optimos_with_subtotals.columns]
+            
+            if existing_ebitda_columns:
+                df_optimos_styled = df_optimos_styled.set_properties(
+                    subset=existing_ebitda_columns,
+                    **{"font-weight": "bold", "background-color": "#fff7ed"}
+                )
+            
+            # Aplicar estilo especial a la fila de subtotales
+            from pandas import IndexSlice as idx
+            df_optimos_styled = df_optimos_styled.set_properties(
+                subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
+                **{
+                    "font-weight": "bold",
+                    "background-color": "#e8f4fd",
+                    "border-top": "2px solid #1f77b4",
+                },
+            )
+            
+            # Mostrar tabla con subtotales
             edited_df = st.dataframe(
-                df_optimos_final,
+                df_optimos_styled,
                 column_config=editable_columns,
                 width='stretch',
                 height="auto",
                 key="data_editor_detalle",
                 hide_index=True
             )
+            
+            # Mostrar métricas de subtotales
+            col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+            
+            with col_metrics1:
+                if "EBITDA (USD/kg)" in df_optimos.columns:
+                    total_ebitda = df_optimos["EBITDA (USD/kg)"].sum()
+                    st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
+            
+            with col_metrics2:
+                if "Costos Totales (USD/kg)" in df_optimos.columns:
+                    total_costos = df_optimos["Costos Totales (USD/kg)"].sum()
+                    st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
+            
+            with col_metrics3:
+                if "KgEmbarcados" in df_optimos.columns:
+                    total_kg = df_optimos["KgEmbarcados"].sum()
+                    st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
+
 # ====== GRANEL ======
 with tab_granel:
     # ------------------------------------------------------
@@ -1855,6 +2138,46 @@ with tab_granel:
                         pinned="left",
                     )
 
+        # Crear fila de subtotales
+        subtotal_row = create_subtotal_row(editable_view)
+        subtotal_df = pd.DataFrame([subtotal_row])
+        
+        # Concatenar subtotales al final (por defecto)
+        editable_view_with_subtotals = pd.concat([editable_view, subtotal_df], ignore_index=True)
+        subtotal_position = len(editable_view)  # Última fila
+        
+        # Aplicar estilos a la tabla con subtotales
+        editable_columns = editable_view_with_subtotals.style
+        
+        # Aplicar negritas a las columnas de totales
+        total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
+        existing_total_columns = [col for col in total_columns if col in editable_view_with_subtotals.columns]
+
+        if existing_total_columns:
+            editable_columns = editable_columns.set_properties(
+                subset=existing_total_columns,
+                **{"font-weight": "bold", "background-color": "#f8f9fa"}
+            )
+
+        # Aplicar estilos a columnas especiales
+        if "Proceso Granel (USD/kg)" in editable_view_with_subtotals.columns:
+            editable_columns = editable_columns.set_properties(
+                subset=["Proceso Granel (USD/kg)"],
+                **{"font-weight": "bold", "background-color": "#fff7ed"}
+            )
+        
+        # Aplicar estilo especial a la fila de subtotales
+        from pandas import IndexSlice as idx
+        editable_columns = editable_columns.set_properties(
+            subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
+            **{
+                "font-weight": "bold",
+                "background-color": "#e8f4fd",
+                "border-top": "2px solid #1f77b4",
+            },
+        )
+        
+        # Mostrar tabla con subtotales
         edited_df = st.dataframe(
             editable_columns,
             column_config=config,
@@ -1862,6 +2185,24 @@ with tab_granel:
             hide_index=True,
             key="data_editor_granel"
         )
+        
+        # Mostrar métricas de subtotales
+        col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+        
+        with col_metrics1:
+            if "Costos Directos" in editable_view.columns:
+                total_directos = editable_view["Costos Directos"].sum()
+                st.metric("Costos Directos Total", f"{total_directos:,.2f}")
+        
+        with col_metrics2:
+            if "Costos Indirectos" in editable_view.columns:
+                total_indirectos = editable_view["Costos Indirectos"].sum()
+                st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
+        
+        with col_metrics3:
+            if "Proceso Granel (USD/kg)" in editable_view.columns:
+                total_proceso = editable_view["Proceso Granel (USD/kg)"].sum()
+                st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
 
         # Botón explícito para guardar lo editado (evita escribir al vuelo)
         if st.button("💾 Guardar cambios del editor"):
@@ -2026,13 +2367,83 @@ with tab_granel:
                             disabled=True,
                             pinned="left",
                         )
-            opt_df = st.dataframe(
-                opt_view_styled,
-                column_config=config,
-                use_container_width=True,
-                hide_index=True,
-                key="data_editor_granel"
-            )
+            # Aplicar subtotales según la configuración
+            if "Fruta" in opt_view.columns:
+                # Crear fila de subtotales
+                subtotal_row = create_subtotal_row(opt_view)
+                subtotal_df = pd.DataFrame([subtotal_row])
+                
+                # Concatenar subtotales al final (por defecto)
+                opt_view_with_subtotals = pd.concat([opt_view, subtotal_df], ignore_index=True)
+                subtotal_position = len(opt_view)  # Última fila
+                
+                # Aplicar estilos a la tabla con subtotales
+                opt_view_styled = opt_view_with_subtotals.style
+                
+                # Aplicar negritas a las columnas de totales
+                total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
+                existing_total_columns = [col for col in total_columns if col in opt_view_with_subtotals.columns]
+
+                if existing_total_columns:
+                    opt_view_styled = opt_view_styled.set_properties(
+                        subset=existing_total_columns,
+                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
+                    )
+
+                # Aplicar estilos a columnas especiales
+                if "Proceso Granel (USD/kg)" in opt_view_with_subtotals.columns:
+                    opt_view_styled = opt_view_styled.set_properties(
+                        subset=["Proceso Granel (USD/kg)"],
+                        **{"font-weight": "bold", "background-color": "#fff7ed"}
+                    )
+                
+                # Aplicar estilo especial a la fila de subtotales
+                from pandas import IndexSlice as idx
+                opt_view_styled = opt_view_styled.set_properties(
+                    subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
+                    **{
+                        "font-weight": "bold",
+                        "background-color": "#e8f4fd",
+                        "border-top": "2px solid #1f77b4",
+                    },
+                )
+                
+                # Mostrar tabla con subtotales
+                opt_df = st.dataframe(
+                    opt_view_styled,
+                    column_config=config,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="data_editor_granel"
+                )
+                
+                # Mostrar métricas de subtotales
+                col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+                
+                with col_metrics1:
+                    if "Costos Directos" in opt_view.columns:
+                        total_directos = opt_view["Costos Directos"].sum()
+                        st.metric("Costos Directos Total", f"{total_directos:,.2f}")
+                
+                with col_metrics2:
+                    if "Costos Indirectos" in opt_view.columns:
+                        total_indirectos = opt_view["Costos Indirectos"].sum()
+                        st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
+                
+                with col_metrics3:
+                    if "Proceso Granel (USD/kg)" in opt_view.columns:
+                        total_proceso = opt_view["Proceso Granel (USD/kg)"].sum()
+                        st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
+            
+            else:
+                # Mostrar tabla normal
+                opt_df = st.dataframe(
+                    opt_view_styled,
+                    column_config=config,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="data_editor_granel"
+                )
 
             # KPIs
             st.subheader("📈 KPIs Óptimos")

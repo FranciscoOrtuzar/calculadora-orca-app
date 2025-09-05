@@ -9,6 +9,9 @@ import io
 from datetime import date
 import sys
 from pathlib import Path
+import math
+import pandas as pd
+from pandas import IndexSlice as idx
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent / "src"))
@@ -18,6 +21,92 @@ from src.state import ensure_session_state, session_state_table
 import pandas as pd
 import numpy as np
 import locale
+
+# ===================== Utilidades =====================
+def add_subtotals(df: pd.DataFrame, group_by_columns: list, numeric_columns: list) -> pd.DataFrame:
+    """
+    Agrega filas de subtotales a un DataFrame agrupado por columnas específicas.
+    
+    Args:
+        df: DataFrame original
+        group_by_columns: Lista de columnas para agrupar
+        numeric_columns: Lista de columnas numéricas para sumar
+        
+    Returns:
+        DataFrame con subtotales agregados
+    """
+    if df.empty:
+        return df
+    
+    # Crear una copia para no modificar el original
+    result_df = df.copy()
+    
+    # Agrupar por las columnas especificadas
+    grouped = df.groupby(group_by_columns)
+    
+    # Calcular subtotales para cada grupo
+    subtotals = []
+    for name, group in grouped:
+        if isinstance(name, tuple):
+            # Si hay múltiples columnas de agrupación
+            subtotal_row = {}
+            for i, col in enumerate(group_by_columns):
+                subtotal_row[col] = name[i]
+        else:
+            # Si hay una sola columna de agrupación
+            subtotal_row = {group_by_columns[0]: name}
+        
+        # Agregar "SUBTOTAL" a la descripción
+        if "Descripcion" in subtotal_row:
+            subtotal_row["Descripcion"] = f"SUBTOTAL - {subtotal_row['Descripcion']}"
+        elif "Descripcion" in group.columns:
+            subtotal_row["Descripcion"] = f"SUBTOTAL - {group['Descripcion'].iloc[0]}"
+        
+        # Calcular sumas para columnas numéricas
+        for col in numeric_columns:
+            if col in group.columns:
+                subtotal_row[col] = group[col].sum()
+            else:
+                subtotal_row[col] = 0
+        
+        # Llenar columnas no numéricas con valores representativos
+        for col in group.columns:
+            if col not in subtotal_row and col not in numeric_columns:
+                if col in ["Marca", "Cliente", "Especie", "Condicion"]:
+                    subtotal_row[col] = group[col].iloc[0] if not group[col].empty else ""
+                elif col == "SKU":
+                    subtotal_row[col] = f"SUBTOTAL-{group[col].iloc[0]}" if not group[col].empty else "SUBTOTAL"
+                elif col == "SKU-Cliente":
+                    subtotal_row[col] = f"SUBTOTAL-{group[col].iloc[0]}" if not group[col].empty else "SUBTOTAL"
+                else:
+                    subtotal_row[col] = ""
+        
+        subtotals.append(subtotal_row)
+    
+    # Convertir subtotales a DataFrame
+    if subtotals:
+        subtotals_df = pd.DataFrame(subtotals)
+        
+        # Concatenar con el DataFrame original
+        result_df = pd.concat([result_df, subtotals_df], ignore_index=True)
+        
+        # Resetear el índice para evitar problemas con estilos
+        result_df = result_df.reset_index(drop=True)
+        
+        # Ordenar para que los subtotales aparezcan después de cada grupo
+        if group_by_columns:
+            # Verificar que las columnas de ordenamiento existan
+            sort_columns = []
+            for col in group_by_columns + ["SKU-Cliente"]:
+                if col in result_df.columns:
+                    sort_columns.append(col)
+            
+            if sort_columns:
+                result_df = result_df.sort_values(sort_columns)
+                # Resetear índice después de ordenar
+                result_df = result_df.reset_index(drop=True)
+    
+    return result_df
 
 # Configurar locale para formato europeo/latinoamericano
 try:
@@ -70,6 +159,21 @@ ensure_session_state()
 
 # Mostrar página Home
 st.title(ST_TITLE)
+
+# ===================== Indicador de Filtros Compartidos =====================
+def show_filter_status_hist():
+    """Muestra el estado de los filtros compartidos"""
+    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
+        sim_filters = st.session_state["sim.filters"]
+        active_count = sum(len(v) for v in sim_filters.values() if v)
+        if active_count > 0:
+            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el simulador")
+            return True
+    return False
+
+# Mostrar estado de filtros si están activos
+if show_filter_status_hist():
+    st.markdown("---")
 
 # ===================== Carga de datos (con persistencia) =====================
 with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
@@ -285,18 +389,95 @@ def _current_selections_hist():
         selections[logical] = st.session_state.get(f"ms_hist_{logical}", [])
     return selections
 
+# ===================== Sistema de Filtros Compartidos =====================
+def sync_filters_from_simulator():
+    """Sincroniza filtros desde el simulador si están disponibles"""
+    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
+        sim_filters = st.session_state["sim.filters"]
+        for logical in FILTER_FIELDS_HIST:
+            if logical in sim_filters and sim_filters[logical]:
+                st.session_state[f"ms_hist_{logical}"] = sim_filters[logical]
+
+def sync_filters_to_simulator():
+    """Sincroniza filtros actuales al simulador"""
+    current_filters = _current_selections_hist()
+    st.session_state["sim.filters"] = current_filters
+
+def clear_all_filters_hist():
+    """Limpia todos los filtros del histórico"""
+    for logical in FILTER_FIELDS_HIST:
+        st.session_state[f"ms_hist_{logical}"] = []
+    st.session_state["sim.filters"] = {}
+
+# Sincronizar filtros desde simulador al cargar la página
+sync_filters_from_simulator()
+
+# UI para gestión de filtros compartidos
+with st.sidebar.expander("🔄 Gestión de Filtros", expanded=False):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Cargar desde Simulador", help="Cargar filtros del simulador"):
+            sync_filters_from_simulator()
+            st.rerun()
+    
+    with col2:
+        if st.button("📤 Enviar a Simulador", help="Enviar filtros actuales al simulador"):
+            sync_filters_to_simulator()
+            st.success("✅ Filtros sincronizados con simulador")
+            st.rerun()
+    
+    if st.button("🗑️ Limpiar Todos", help="Limpiar todos los filtros"):
+        clear_all_filters_hist()
+        st.rerun()
+
+# Mostrar filtros activos
+active_filters = _current_selections_hist()
+active_count = sum(len(v) for v in active_filters.values() if v)
+if active_count > 0:
+    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+    for logical, values in active_filters.items():
+        if values:
+            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
+
 # Guarda filtros en hist.filters
 st.session_state["hist.filters"] = _current_selections_hist()
 
 # Render de filtros en filas (sidebar)
 if FILTER_FIELDS_HIST:
     SELECTIONS_HIST = _current_selections_hist()
+    
+    # Función para actualizar filtros individuales
+    def update_filter_selection_hist(logical):
+        """Actualiza la selección de un filtro específico"""
+        # Forzar actualización del session_state
+        if f"ms_hist_{logical}" in st.session_state:
+            # Marcar que los filtros han cambiado para forzar rerun
+            st.session_state["hist.filters_changed"] = True
+    
+    # Inicializar flag de cambio de filtros
+    if "hist.filters_changed" not in st.session_state:
+        st.session_state["hist.filters_changed"] = False
+    
     for logical in FILTER_FIELDS_HIST:
         real_col = RESOLVED_HIST[logical]
         df_except = _apply_filters_hist(df_base_hist, SELECTIONS_HIST, skip_key=logical)
         opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
         current = [x for x in SELECTIONS_HIST.get(logical, []) if x in opts]
-        st.sidebar.multiselect(logical, options=opts, default=current, key=f"ms_hist_{logical}")
+        
+        # Crear el multiselect con callback para actualizar session_state
+        new_selection = st.sidebar.multiselect(
+            logical, 
+            options=opts, 
+            default=current, 
+            key=f"ms_hist_{logical}",
+            on_change=lambda logical=logical: update_filter_selection_hist(logical)
+        )
+    
+    # Forzar rerun si los filtros cambiaron
+    if st.session_state.get("hist.filters_changed", False):
+        st.session_state["hist.filters_changed"] = False
+        st.rerun()
 else:
     st.sidebar.info("No hay campos disponibles para filtrar")
 
@@ -311,6 +492,9 @@ else:
     df_filtrado = df_filtrado.reset_index(drop=True)
 
 st.session_state["hist.df_filtered"] = df_filtrado.copy()
+
+# Sincronizar filtros al simulador cuando cambien
+sync_filters_to_simulator()
 
 # -------- Filtrar subproductos (SKUs con costos totales = 0) --------
 # Inicializar variable subproductos
@@ -399,6 +583,17 @@ with tab_retail:
     view_base = view_base[base_cols].copy()
     view_base.set_index("SKU-Cliente", inplace=True)
     view_base = view_base.sort_index()
+ 
+    show_subtotals_at_top = st.checkbox(
+        "Subtotales al inicio",
+        value=st.session_state.get("hist.show_subtotals_at_top", False),
+        help="Mostrar fila de subtotales al inicio de la tabla",
+        key="hist_show_subtotals_at_top"
+    )
+    if show_subtotals_at_top != st.session_state.get("hist.show_subtotals_at_top", False):
+        st.session_state["hist.show_subtotals_at_top"] = show_subtotals_at_top
+        st.rerun()
+    
     config = columns_config(editable=False)
     styled_view_base = view_base.style
     # Aplicar negritas a las columnas de totales
@@ -416,20 +611,133 @@ with tab_retail:
     # Aplicar estilos a columnas EBITDA
     ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
     existing_ebitda_columns = [col for col in ebitda_columns if col in view_base.columns]
-
+    
     if existing_ebitda_columns:
         styled_view_base = styled_view_base.set_properties(
             subset=existing_ebitda_columns,
             **{"font-weight": "bold", "background-color": "#fff7ed"}
         )
 
-    st.dataframe(
-        styled_view_base,
-        use_container_width=True, 
-        height="auto",
-        column_config=config,
-        hide_index=True
-    )
+    # Crear fila de subtotales
+    def create_subtotal_row(df, position="bottom"):
+        """Crea una fila de subtotales con manejo de valores None"""
+        subtotal_row = {}
+        
+        # Llenar columnas de agrupación con "TOTAL" o mensaje genérico
+        for col in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
+            if col in df.columns:
+                if col in ["Marca", "Cliente", "Especie", "Condicion"]:
+                    subtotal_row[col] = "TOTAL"
+                else:
+                    subtotal_row[col] = ""  # Mensaje genérico en lugar de None
+        
+        # Calcular sumas para columnas numéricas
+        numeric_cols = ["EBITDA (USD/kg)", "Costos Totales (USD/kg)", "KgEmbarcados", 
+                        "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "Retail Costos Directos (USD/kg)",
+                        "Retail Costos Indirectos (USD/kg)", "Almacenaje MMPP", "Servicios Generales", 
+                        "Comex", "Guarda PT", "Gastos Totales (USD/kg)", "PrecioVenta (USD/kg)"]
+        
+        for col in numeric_cols:
+            if col in df.columns:
+                subtotal_row[col] = df[col].sum()
+        
+        # Manejar columnas que pueden ser None (como EBITDA Pct)
+        for col in ["EBITDA Pct"]:
+            if col in df.columns:
+                # Para porcentajes, calcular el promedio o mostrar mensaje genérico
+                if df[col].notna().any():
+                    subtotal_row[col] = df[col].mean()
+                else:
+                    subtotal_row[col] = ""  # Mensaje genérico en lugar de None
+        
+        return subtotal_row
+    
+    # Aplicar subtotales según la configuración
+    if "Marca" in view_base.columns:
+        # Crear fila de subtotales
+        subtotal_row = create_subtotal_row(view_base)
+        subtotal_df = pd.DataFrame([subtotal_row])
+        
+        if show_subtotals_at_top:
+            # Concatenar subtotales al inicio
+            view_base_with_subtotals = pd.concat([subtotal_df, view_base], ignore_index=True)
+            subtotal_position = 0  # Primera fila
+        else:
+            # Concatenar subtotales al final (por defecto)
+            view_base_with_subtotals = pd.concat([view_base, subtotal_df], ignore_index=True)
+            subtotal_position = len(view_base)  # Última fila
+        
+        # Aplicar estilos a la tabla con subtotales
+        styled_view_base = view_base_with_subtotals.style
+        
+        # Aplicar negritas a las columnas de totales
+        total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+        "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+        "KgEmbarcados"]
+        existing_total_columns = [col for col in total_columns if col in view_base_with_subtotals.columns]
+
+        if existing_total_columns:
+            styled_view_base = styled_view_base.set_properties(
+                subset=existing_total_columns,
+                **{"font-weight": "bold", "background-color": "#f8f9fa"}
+            )
+
+        # Aplicar estilos a columnas EBITDA
+        ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
+        existing_ebitda_columns = [col for col in ebitda_columns if col in view_base_with_subtotals.columns]
+        
+        if existing_ebitda_columns:
+            styled_view_base = styled_view_base.set_properties(
+                subset=existing_ebitda_columns,
+                **{"font-weight": "bold", "background-color": "#fff7ed"}
+            )
+        
+        # Aplicar estilo especial a la fila de subtotales
+        styled_view_base = styled_view_base.set_properties(
+            subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
+            **{
+                "font-weight": "bold",
+                "background-color": "#e8f4fd",
+                "border-top": "2px solid #1f77b4",
+            },
+        )
+        
+        # Mostrar tabla con subtotales
+        st.dataframe(
+            styled_view_base,
+            use_container_width=True, 
+            height="auto",
+            column_config=config,
+            hide_index=True
+        )
+        
+        # Mostrar métricas de subtotales
+        col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+        
+        with col_metrics1:
+            if "EBITDA (USD/kg)" in view_base.columns:
+                total_ebitda = view_base["EBITDA (USD/kg)"].sum()
+                st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
+        
+        with col_metrics2:
+            if "Costos Totales (USD/kg)" in view_base.columns:
+                total_costos = view_base["Costos Totales (USD/kg)"].sum()
+                st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
+        
+        with col_metrics3:
+            if "KgEmbarcados" in view_base.columns:
+                total_kg = view_base["KgEmbarcados"].sum()
+                st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
+    
+    else:
+        # Mostrar tabla normal con estilos
+        st.dataframe(
+            styled_view_base,
+            use_container_width=True, 
+            height="auto",
+            column_config=config,
+            hide_index=True
+        )
 
     # --- Toggle: ver detalle de costos respetando los filtros vigentes ---
     expand = st.toggle("🔎 Expandir costos por SKU (temporada)", value=False)
