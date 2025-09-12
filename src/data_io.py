@@ -2069,7 +2069,7 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
       }}
     }}
     """)
-    // Inyectar helpers y política directamente en los handlers
+    # Inyectar helpers y política directamente en los handlers
     js_on_ready_and_resize = JsCode(f"""
       function(params){{
         // Helpers locales
