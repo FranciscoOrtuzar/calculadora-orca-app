@@ -1900,13 +1900,7 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
         tooltipShowDelay=200, tooltipHideDelay=10000,
         tooltipInteraction=True,
         tooltipShowMode="whenTruncated",
-        enableCellTextSelection=True,
-        tooltipValueGetter=JsCode("""
-            function(params) {
-                if (params.value === null || params.value === undefined) return 'Sin valor';
-                return String(params.value);
-            }
-        """)
+        enableCellTextSelection=True
     )
 
     set_filter_cols = ["SKU", "Marca", "Cliente", "Especie", "Condicion"]
