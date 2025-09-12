@@ -507,34 +507,33 @@ with tab_retail:
             **{"font-weight": "bold", "background-color": "#fff7ed"}
         )
 
-    # AgGrid: Usar filas pinned para subtotales, no insertar en el DataFrame
-    # 1. Resetear índice para que SKU-Cliente sea columna
+    # Streamlit nativo: DataFrame + subtotal separado (arriba o abajo)
     view_base_noidx = view_base.reset_index()
-    
-    # 2. Usar la función existente de data_io.py que ya maneja subtotales
-    df_prepared, grid_options, subtotal_row = create_aggrid_with_subtotals(
-        view_base_noidx, 
-        enable_selection=False, 
-        show_subtotals_at_top=show_subtotals_at_top
+
+    from src.data_io import create_aggrid_subtotal_row
+    subtotal_dict = create_aggrid_subtotal_row(view_base_noidx)
+    subtotal_df = pd.DataFrame([subtotal_dict])
+    subtotal_df = subtotal_df.reindex(columns=[c for c in view_base_noidx.columns if c in subtotal_df.columns], fill_value="")
+
+    col_config = columns_config(editable=False)
+
+    if show_subtotals_at_top:
+        st.caption("Subtotal (ponderado por KgEmbarcados)")
+        st.dataframe(subtotal_df, column_config=col_config, use_container_width=True, hide_index=True)
+
+    st.dataframe(
+        view_base_noidx,
+        column_config=col_config,
+        use_container_width=True,
+        hide_index=True
     )
-    
-    # 3. Renderizar AgGrid con datos preparados y configuración
-    grid_response = AgGrid(
-        df_prepared,
-        gridOptions=grid_options,
-        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        width="100%",
-        theme="balham",
-        custom_css=get_aggrid_custom_css(),
-        allow_unsafe_jscode=True
-    )
-    
-    # 4. SIEMPRE convertir a DataFrame lo que devuelve el grid (filtrado/ordenado)
-    df_filtered_aggrid = pd.DataFrame(grid_response.get("data", []))
+
+    if not show_subtotals_at_top:
+        st.caption("Subtotal (ponderado por KgEmbarcados)")
+        st.dataframe(subtotal_df, column_config=col_config, use_container_width=True, hide_index=True)
 
     # 6. Botón de descarga Excel externo
-    if not df_filtered_aggrid.empty:
+    if not view_base_noidx.empty:
         # Crear botón de descarga Excel
         def create_excel_download_button(df: pd.DataFrame, filename: str = "datos_historicos_filtrados.xlsx"):
             """Crea un botón de descarga Excel para los datos filtrados"""
@@ -545,8 +544,8 @@ with tab_retail:
             
             # Escribir Excel con formato
             with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                # Hoja principal con datos filtrados
-                df.to_excel(writer, index=False, sheet_name="Datos Filtrados")
+                # Hoja principal con datos mostrados
+                df.to_excel(writer, index=False, sheet_name="Datos")
             
             # Crear botón de descarga
             st.download_button(
@@ -558,16 +557,16 @@ with tab_retail:
             )
         
         # Mostrar botón de descarga
-        create_excel_download_button(df_filtered_aggrid)
+        create_excel_download_button(view_base_noidx)
     
     # Mostrar métricas de subtotales
     col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
 
     with col_metrics1:
-        if "EBITDA (USD/kg)" in df_filtered_aggrid.columns and "KgEmbarcados" in df_filtered_aggrid.columns:
+        if "EBITDA (USD/kg)" in view_base_noidx.columns and "KgEmbarcados" in view_base_noidx.columns:
             # Convertir a numérico antes de hacer operaciones
-            ebitda_kg = pd.to_numeric(df_filtered_aggrid["EBITDA (USD/kg)"], errors='coerce')
-            kg_emb = pd.to_numeric(df_filtered_aggrid["KgEmbarcados"], errors='coerce')
+            ebitda_kg = pd.to_numeric(view_base_noidx["EBITDA (USD/kg)"], errors='coerce')
+            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
             total_ebitda_activo = (ebitda_kg * kg_emb).sum()
             st.metric("EBITDA Total Filtrados (USD)", f"{total_ebitda_activo:,.2f}")
 
@@ -576,14 +575,14 @@ with tab_retail:
         st.metric("EBITDA Total (USD)", f"{total_ebitda:,.2f}")
     
     with col_metrics3:
-        if "KgEmbarcados" in df_filtered_aggrid.columns:
+        if "KgEmbarcados" in view_base_noidx.columns:
             # Convertir a numérico antes de sumar
-            kg_emb = pd.to_numeric(df_filtered_aggrid["KgEmbarcados"], errors='coerce')
+            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
             total_kg = kg_emb.sum()
             st.metric("Kg Embarcados Filtrados", f"{total_kg:,.0f}")
             
     with col_metrics4:
-        total_rows = len(df_filtered_aggrid)
+        total_rows = len(view_base_noidx)
         st.metric("SKUs Filtrados", f"{total_rows:,}")
 
 
@@ -1066,4 +1065,14 @@ def render_grid_with_modal(df: pd.DataFrame):
 
     return resp
 
-resp = render_grid_with_modal(view_base_noidx)
+# Con Streamlit nativo, no hay click-to-open por fila.
+# Como alternativa simple, ofrece un selector de SKU-Cliente para ver detalle.
+with st.expander("🔎 Ver detalle de un SKU", expanded=False):
+    opciones = view_base_noidx[["SKU-Cliente","Descripcion"]].astype(str)
+    opciones["label"] = opciones["SKU-Cliente"] + " — " + opciones["Descripcion"].str.slice(0, 60)
+    mapa = dict(zip(opciones["label"], opciones["SKU-Cliente"]))
+    elegido = st.selectbox("Elige un SKU-Cliente", ["(ninguno)"] + list(mapa.keys()))
+    if elegido != "(ninguno)":
+        sku_sel = mapa[elegido]
+        fila = view_base_noidx[view_base_noidx["SKU-Cliente"].astype(str) == str(sku_sel)].head(1)
+        st.dataframe(fila, use_container_width=True, hide_index=True)
