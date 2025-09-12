@@ -1894,13 +1894,25 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
         cellStyle={"fontSize":"12px","fontFamily":"Arial, sans-serif","padding":"4px 6px","lineHeight":"1.2"}
     )
 
+    get_row_id = JsCode("""
+      function(params) {
+        const d = params.data || {};
+        if (d && d['SKU-Cliente'] != null) return String(d['SKU-Cliente']);
+        if (d && d['SKU'] != null) return String(d['SKU']);
+        if (d && d['Descripcion'] != null) return String(d['Descripcion']);
+        // Fallback estable: rowIndex
+        return String(params.node ? params.node.rowIndex : 0);
+      }
+    """)
+
     gb.configure_grid_options(
         domLayout="normal",
         headerHeight=40, rowHeight=32,
         tooltipShowDelay=200, tooltipHideDelay=10000,
         tooltipInteraction=True,
         tooltipShowMode="whenTruncated",
-        enableCellTextSelection=True
+        enableCellTextSelection=True,
+        getRowId=get_row_id
     )
 
     set_filter_cols = ["SKU", "Marca", "Cliente", "Especie", "Condicion"]
