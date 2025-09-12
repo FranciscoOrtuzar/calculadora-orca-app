@@ -323,11 +323,26 @@ def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
         if logical == skip_key or not sel:
             continue
         real_col = RESOLVED[logical]
-        # Mapea el placeholder "(Vacío)" a vacío real
-        valid = [x if x != "(Vacío)" else "" for x in sel]
-        # Normalizar la columna para comparación
-        normalized_col = _norm_series(out[real_col])
-        out = out[normalized_col.isin(sel)]
+        if logical == "Especie":
+            # Coincidencia por pertenencia: si la celda es lista -> que contenga cualquiera seleccionada
+            targets = set([x for x in sel if x != "(Vacío)"])
+            def matches_species(val):
+                if pd.isna(val):
+                    return "(Vacío)" in sel
+                if isinstance(val, list):
+                    return any(v in targets for v in val)
+                s = str(val)
+                if s.strip() == "" and "(Vacío)" in sel:
+                    return True
+                parts = [p.strip() for p in s.split(",") if p.strip()]
+                return any(p in targets for p in parts)
+            out = out[out[real_col].apply(matches_species)]
+        else:
+            # Mapea el placeholder "(Vacío)" a vacío real
+            valid = [x if x != "(Vacío)" else "" for x in sel]
+            # Normalizar la columna para comparación
+            normalized_col = _norm_series(out[real_col])
+            out = out[normalized_col.isin(sel)]
     return out
 
 def _current_selections():
@@ -356,7 +371,22 @@ if FILTER_FIELDS:
     for logical in FILTER_FIELDS:
         real_col = RESOLVED[logical]
         df_except = _apply_filters(df_base_hist, SELECTIONS, skip_key=logical)
-        opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
+        if logical == "Especie":
+            # Aplana especies (listas o cadenas separadas por coma)
+            species = set()
+            col = df_except[real_col].dropna()
+            for v in col:
+                if isinstance(v, list):
+                    species.update([str(x).strip() for x in v if str(x).strip()])
+                else:
+                    parts = [p.strip() for p in str(v).split(",") if p.strip()]
+                    species.update(parts)
+            opts = sorted(list(species))
+            # Incluir placeholder "(Vacío)" si hay nulos o vacíos
+            if df_except[real_col].isna().any() or (df_except[real_col].astype(str).str.strip() == "").any():
+                opts = ["(Vacío)"] + opts
+        else:
+            opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
         
         # Crear el multiselect (igual que en simulador)
         st.sidebar.multiselect(
@@ -370,8 +400,30 @@ else:
 # Releer selecciones ya actualizadas por los widgets y aplicar
 SELECTIONS = _current_selections()
 
+# Búsqueda de texto libre (Descripción, SKU-Cliente, SKU)
+st.sidebar.divider()
+q = st.sidebar.text_input("Buscar texto (Descripción / SKU)", value=st.session_state.get("hist.search", ""))
+st.session_state["hist.search"] = q
+
+# Botón reset
+if st.sidebar.button("Limpiar filtros", type="secondary"):
+    for logical in FILTER_FIELDS:
+        st.session_state[f"ms_hist_{logical}"] = []
+    st.session_state["hist.search"] = ""
+    st.rerun()
+
 # Aplicar filtros a df_base_hist
 df_filtrado = _apply_filters(df_base_hist, SELECTIONS).copy()
+if q.strip():
+    ql = q.strip().lower()
+    mask = pd.Series(True, index=df_filtrado.index)
+    if "Descripcion" in df_filtrado.columns:
+        mask &= df_filtrado["Descripcion"].astype(str).str.lower().str.contains(ql, na=False)
+    if "SKU-Cliente" in df_filtrado.columns:
+        mask |= df_filtrado["SKU-Cliente"].astype(str).str.contains(ql, na=False)
+    if "SKU" in df_filtrado.columns:
+        mask |= df_filtrado["SKU"].astype(str).str.contains(ql, na=False)
+    df_filtrado = df_filtrado[mask]
 
 # Orden por SKU-Cliente si existe y sin índice
 sku_cliente_col = "SKU-Cliente"
