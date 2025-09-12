@@ -2078,6 +2078,7 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
           const vp = params.api.gridBodyCtrl?.eBodyViewport; return (vp && vp.clientWidth) ? vp.clientWidth : (params.clientWidth||0);
         }}
         function __clampLeft(params, minW, maxW){{
+          if(!params || !params.columnApi || !params.columnApi.getAllDisplayedColumns) return;
           (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
             if(c.getPinned()==='left'){{
               const w=c.getActualWidth(); const nw=Math.max(minW, Math.min(maxW, w));
@@ -2086,8 +2087,9 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
           }});
         }}
         function __widthOf(params, id){{
+          if(!params || !params.columnApi || !params.columnApi.getColumn) return 0;
           const c = params.columnApi.getColumn(id);
-          if(!c) return 0;
+          if(!c || typeof c.getActualWidth !== 'function') return 0;
           const w = c.getActualWidth();
           const MIN=40, MAX=95; return Math.max(MIN, Math.min(MAX, w));
         }}
@@ -2099,6 +2101,12 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
         }}
 
         function __applyPinnedPolicy(params){{
+          if(!params || !params.api || !params.columnApi || !params.columnApi.getAllDisplayedColumns) return;
+          // Throttle
+          if(!params.api.__pinPolicy) params.api.__pinPolicy = {{ doneAutoSize:false, lastRunAt:0 }};
+          const now = Date.now();
+          if(now - (params.api.__pinPolicy.lastRunAt||0) < 50) return;
+          params.api.__pinPolicy.lastRunAt = now;
           const orig = {PINNED_ORIG};
           const protectedIds = {PROTECTED};
           const prot = new Set(protectedIds);
@@ -2121,10 +2129,11 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
           (params.columnApi.getAllDisplayedColumns()||[])
             .filter(c=>c.getPinned()==='left' && orig.indexOf(c.getColId())<0)
             .forEach(c=>{{ state.push({{colId:c.getColId(), pinned:null}}); }});
-          params.columnApi.applyColumnState({{ state: state, applyOrder: false }});
+          try {{ params.columnApi.applyColumnState({{ state: state, applyOrder: false }}); }} catch(e){{ }}
         }}
 
-        __applyPinnedPolicy(params);
+        // Ejecutar asíncrono para asegurar APIs listas
+        setTimeout(function(){{ __applyPinnedPolicy(params); }}, 0);
       }}
     """)
 
