@@ -1118,6 +1118,16 @@ with tab_sku:
                 # Crear fila de subtotales
                 subtotal_row = create_subtotal_row(df_edit)
                 subtotal_df = pd.DataFrame([subtotal_row])
+                # Dejar solo métricas: vaciar todas las columnas no numéricas para mayor claridad
+                try:
+                    numeric_cols = set(df_edit.select_dtypes(include=[np.number]).columns.tolist())
+                except Exception:
+                    numeric_cols = set([c for c in df_edit.columns if c not in ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]])
+                for col in df_edit.columns:
+                    if col not in numeric_cols:
+                        subtotal_df[col] = ""
+                # Asegurar el mismo orden/columnas que la tabla principal
+                subtotal_df = subtotal_df.reindex(columns=df_edit.columns, fill_value="")
                 
                 if show_subtotals_at_top:
                     # Concatenar subtotales al inicio
