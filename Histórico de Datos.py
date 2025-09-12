@@ -517,20 +517,46 @@ with tab_retail:
 
     col_config = columns_config(editable=False)
 
+    from src.data_io import inject_streamlit_dataframe_css
+    inject_streamlit_dataframe_css(header_height=64)
+
     if show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(subtotal_df, column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(subtotal_df.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"}), column_config=col_config, use_container_width=True, hide_index=True)
 
-    st.dataframe(
-        view_base_noidx,
-        column_config=col_config,
-        use_container_width=True,
-        hide_index=True
-    )
+    # Aplicar formato y estilos similares al simulador
+    df_disp = view_base_noidx.copy()
+    dims = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
+    fmt = {}
+    for c in df_disp.columns:
+        if c not in dims:
+            if ("Pct" in c) or ("Porcentaje" in c):
+                fmt[c] = "{:.1%}"
+            else:
+                try:
+                    if pd.api.types.is_numeric_dtype(df_disp[c]):
+                        fmt[c] = "{:.3f}"
+                except Exception:
+                    pass
+    sty = df_disp.style
+    if fmt:
+        sty = sty.format(fmt)
+    tot_cols = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+                "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+                "KgEmbarcados"]
+    ex_tot = [c for c in tot_cols if c in df_disp.columns]
+    if ex_tot:
+        sty = sty.set_properties(subset=ex_tot, **{"font-weight":"bold","background-color":"#f8f9fa"})
+    e_cols = ["EBITDA (USD/kg)", "EBITDA Pct"]
+    ex_e = [c for c in e_cols if c in df_disp.columns]
+    if ex_e:
+        sty = sty.set_properties(subset=ex_e, **{"font-weight":"bold","background-color":"#fff7ed"})
+
+    st.dataframe(sty, column_config=col_config, use_container_width=True, hide_index=True)
 
     if not show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(subtotal_df, column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(subtotal_df.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"}), column_config=col_config, use_container_width=True, hide_index=True)
 
     # 6. Botón de descarga Excel externo
     if not view_base_noidx.empty:

@@ -1111,7 +1111,6 @@ with tab_sku:
                     )
                 
                 # Aplicar estilos especiales a filas de subtotales (código legacy removido)
-                # Los subtotales ahora se manejan con la nueva lógica de create_subtotal_row
                 
                 # El DataFrame ya tiene el índice establecido, solo aplicar estilos
                 df_edit_final = df_edit_styled
@@ -1165,6 +1164,13 @@ with tab_sku:
                     },
                 )
                 
+                # Header más alto para permitir 2 líneas
+                try:
+                    from src.data_io import inject_streamlit_dataframe_css
+                    inject_streamlit_dataframe_css(header_height=64)
+                except Exception:
+                    pass
+
                 # Mostrar tabla con subtotales
                 edited_df = st.dataframe(
                     df_edit_styled,

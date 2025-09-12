@@ -1885,6 +1885,31 @@ def get_aggrid_custom_css() -> dict:
         }
     }
 
+def inject_streamlit_dataframe_css(header_height: int = 64):
+    """Inyecta CSS para st.dataframe: header más alto con textos en dos líneas.
+
+    - header_height: altura en px para permitir dos líneas legibles.
+    """
+    css = f"""
+    <style>
+    [data-testid="stDataFrame"] thead tr th,
+    [data-testid="stDataFrame"] [role="columnheader"] {{
+        height: {header_height}px !important;
+        white-space: normal !important;
+        line-height: 1.2 !important;
+        vertical-align: middle !important;
+    }}
+    [data-testid="stDataFrame"] [role="columnheader"] p {{
+        white-space: normal !important;
+        margin: 0 !important;
+    }}
+    </style>
+    """
+    try:
+        st.markdown(css, unsafe_allow_html=True)
+    except Exception:
+        pass
+
 def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
     df_prepared = prepare_dataframe_for_aggrid(df).copy()
     gb = GridOptionsBuilder.from_dataframe(df_prepared)
