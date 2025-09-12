@@ -954,3 +954,88 @@ with st.expander("🔎 Diagnóstico session_state", expanded=False):
 
 st.info("💡 **Navegación**: Usa el menú lateral para acceder al Simulador EBITDA y otras funcionalidades.")
 st.info("💾 **Datos persistentes**: Los archivos cargados se mantienen al cambiar de página.")
+
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+
+# --- Datos de ejemplo, con columna oculta __open para señalizar el click ---
+if "grid_df" not in st.session_state:
+    st.session_state.grid_df = pd.DataFrame({
+        "SKU": [101, 102, 103],
+        "Descripcion": ["Producto A", "Producto B", "Producto C"],
+        "PrecioVenta (USD/kg)": [4.25, 3.80, 5.10],
+    })
+    st.session_state.grid_df["__open"] = False  # flag
+
+df = st.session_state.grid_df
+
+# --- Configuración de AgGrid con botón por fila ---
+gb = GridOptionsBuilder.from_dataframe(df)
+gb.configure_default_column(resizable=True, sortable=True, filter=True)
+
+# Columna de acciones (botón)
+view_btn = JsCode("""
+function(params) {
+  const e = document.createElement('button');
+  e.innerText = 'Ver';
+  e.style.padding = '3px 8px';
+  e.style.cursor = 'pointer';
+  e.onclick = () => {
+    // Señaliza a Python cambiando el valor de la celda oculta __open
+    params.node.setDataValue('__open', true);
+  };
+  return e;
+}
+""")
+
+gb.configure_column(
+    "__open",
+    headerName="__open",
+    hide=True,              # oculta el flag
+    editable=False,
+)
+
+gb.configure_column(
+    "accion",
+    headerName="Acción",
+    cellRenderer=view_btn,  # botón
+    editable=False,
+    filter=False,
+    sortable=False,
+    pinned="left",
+    width=100,
+)
+
+grid_options = gb.build()
+
+# --- Render del grid ---
+resp = AgGrid(
+    df,
+    gridOptions=grid_options,
+    update_mode=GridUpdateMode.MODEL_CHANGED,     # capturar cambios en datos
+    data_return_mode=DataReturnMode.AS_INPUT,     # devolver DF modificado
+    fit_columns_on_grid_load=False,
+    allow_unsafe_jscode=True,
+    height=420,
+)
+
+# --- Round-trip: si alguien pulsó un botón, __open será True en esa(s) fila(s) ---
+new_df = pd.DataFrame(resp["data"])
+clicked = new_df.index[new_df["__open"] == True].tolist()
+
+if clicked:
+    # toma la primera fila clicada
+    row = new_df.iloc[clicked[0]]
+    # abre el modal con la info que quieras
+    with st.modal(f"Detalle SKU {row['SKU']}"):
+        st.write("**Descripción:**", row["Descripcion"])
+        st.write("**PrecioVenta (USD/kg):**", row["PrecioVenta (USD/kg)"])
+        # ejemplo de acción adicional
+        if st.button("Cerrar"):
+            pass
+
+    # IMPORTANTE: resetea el flag para la próxima ejecución
+    new_df.loc[new_df["__open"] == True, "__open"] = False
+    st.session_state.grid_df = new_df  # persiste el DF actualizado
+else:
+    # si no hubo click, igualmente persiste por si hubo otros cambios
+    st.session_state.grid_df = new_df

@@ -2069,12 +2069,93 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
       }}
     }}
     """)
-    js_on_ready_and_resize = JsCode("""
-      function(params){
-        if (typeof __applyPinnedPolicy === 'function') {
-          __applyPinnedPolicy(params);
-        }
-      }
+    // Inyectar helpers y política directamente en los handlers
+    js_on_ready_and_resize = JsCode(f"""
+      function(params){{
+        // Helpers locales
+        function __gridWidth(params){{
+          try {{ const gui = params.api.getGui(); if(gui && gui.clientWidth) return gui.clientWidth; }} catch(e){{}}
+          const vp = params.api.gridBodyCtrl?.eBodyViewport; return (vp && vp.clientWidth) ? vp.clientWidth : (params.clientWidth||0);
+        }}
+        function __pinnedLeftIds(params){{
+          const all = params.columnApi.getAllDisplayedColumns() || [];
+          return all.filter(c=>c.getPinned()==='left').map(c=>c.getColId());
+        }}
+        function __pinnedLeftWidth(params){{
+          const MIN=40, MAX=95; let tot=0;
+          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{ if(c.getPinned()==='left'){{ const w=c.getActualWidth(); tot += Math.max(MIN, Math.min(MAX, w)); }} }});
+          return tot;
+        }}
+        function __clampLeft(params, minW, maxW){{
+          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
+            if(c.getPinned()==='left'){{
+              const w=c.getActualWidth(); const nw=Math.max(minW, Math.min(maxW, w));
+              if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
+            }}
+          }});
+        }}
+        function __compressLeft(params, minW){{
+          const prot = new Set({PROTECTED});
+          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
+            if(c.getPinned()==='left'){{
+              const id=c.getColId(); const w=c.getActualWidth();
+              const factor = prot.has(id) ? 0.95 : 0.90;
+              let nw = Math.floor(w * factor);
+              if(nw < minW) nw = minW;
+              if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
+            }}
+          }});
+        }}
+        function __unpinUntilFits(params, protectedSet, targetW){{
+          const cols = params.columnApi.getAllDisplayedColumns() || [];
+          const left = cols.filter(c=>c.getPinned()==='left');
+          for(let i=left.length-1;i>=0;i--){{
+            const id = left[i].getColId();
+            if(protectedSet.has(id)) continue;
+            params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:null}}], applyOrder:false }});
+            if(__pinnedLeftWidth(params) <= targetW) break;
+          }}
+        }}
+        function __restorePins(params, origOrder, protectedSet, targetW){{
+          const current = new Set(__pinnedLeftIds(params));
+          for(const id of origOrder){{
+            if(current.has(id) || protectedSet.has(id)) continue;
+            const col = params.columnApi.getColumn(id); if(!col) continue;
+            const probeW = Math.max(40, Math.min(95, col.getActualWidth()));
+            const now = __pinnedLeftWidth(params);
+            if(now + probeW <= targetW){{
+              params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:'left'}}], applyOrder:false }});
+              current.add(id);
+            }}
+          }}
+        }}
+        function __autoSizePinnedOnce(params, pinnedIds){{
+          if(!params.api.__pinPolicy) params.api.__pinPolicy = {{ doneAutoSize:false }};
+          if(params.api.__pinPolicy.doneAutoSize) return;
+          try {{ if(pinnedIds && pinnedIds.length) params.columnApi.autoSizeColumns(pinnedIds, false); }} catch(e){{ }}
+          params.api.__pinPolicy.doneAutoSize = true;
+        }}
+
+        function __applyPinnedPolicy(params){{
+          const orig = {PINNED_ORIG};
+          const protectedIds = {PROTECTED};
+          const prot = new Set(protectedIds);
+          const gw = __gridWidth(params);
+          if(!gw) return;
+          const ratio = (gw >= 1024) ? 0.50 : 0.40;
+          const target = Math.floor(gw * ratio);
+          __autoSizePinnedOnce(params, orig);
+          __clampLeft(params, 40, 95);
+          if(__pinnedLeftWidth(params) > target){{
+            for(let k=0;k<4 && __pinnedLeftWidth(params) > target;k++){{ __compressLeft(params, 40); }}
+            if(__pinnedLeftWidth(params) > target){{ __unpinUntilFits(params, prot, target); }}
+          }} else {{
+            __restorePins(params, orig, prot, target);
+          }}
+        }}
+
+        __applyPinnedPolicy(params);
+      }}
     """)
 
     gb.configure_grid_options(
