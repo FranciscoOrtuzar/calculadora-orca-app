@@ -1115,81 +1115,44 @@ with tab_sku:
                 # El DataFrame ya tiene el índice establecido, solo aplicar estilos
                 df_edit_final = df_edit_styled
                 
-                # Crear fila de subtotales
+                # Crear fila de subtotales y preparar una vista solo de métricas (ocultar dimensiones)
                 subtotal_row = create_subtotal_row(df_edit)
                 subtotal_df = pd.DataFrame([subtotal_row])
-                # Dejar solo métricas: vaciar todas las columnas no numéricas para mayor claridad
+                # Columnas numéricas presentes en df_edit
                 try:
-                    numeric_cols = set(df_edit.select_dtypes(include=[np.number]).columns.tolist())
+                    numeric_cols = [c for c in df_edit.columns if pd.api.types.is_numeric_dtype(df_edit[c])]
                 except Exception:
-                    numeric_cols = set([c for c in df_edit.columns if c not in ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]])
-                for col in df_edit.columns:
-                    if col not in numeric_cols:
-                        subtotal_df[col] = ""
-                # Asegurar el mismo orden/columnas que la tabla principal
-                subtotal_df = subtotal_df.reindex(columns=df_edit.columns, fill_value="")
+                    numeric_cols = [c for c in df_edit.columns if c not in ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]]
+                subtotal_numeric = subtotal_df[[c for c in numeric_cols if c in subtotal_df.columns]].copy()
+                # Estilo del subtotal
+                sty_sub = subtotal_numeric.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd","border-top":"2px solid #1f77b4"})
                 
-                if show_subtotals_at_top:
-                    # Concatenar subtotales al inicio
-                    df_edit_with_subtotals = pd.concat([subtotal_df, df_edit], ignore_index=True)
-                    subtotal_position = 0  # Primera fila
-                else:
-                    # Concatenar subtotales al final (por defecto)
-                    df_edit_with_subtotals = pd.concat([df_edit, subtotal_df], ignore_index=True)
-                    subtotal_position = len(df_edit)  # Última fila
-                
-                # Aplicar estilos a la tabla con subtotales
-                df_edit_styled = df_edit_with_subtotals.style
-                
-                # Aplicar negritas a las columnas de totales
-                total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
-                "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                "KgEmbarcados"]
-                existing_total_columns = [col for col in total_columns if col in df_edit_with_subtotals.columns]
-
-                if existing_total_columns:
-                    df_edit_styled = df_edit_styled.set_properties(
-                        subset=existing_total_columns,
-                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
-                    )
-
-                # Aplicar estilos a columnas EBITDA
-                ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-                existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit_with_subtotals.columns]
-                
-                if existing_ebitda_columns:
-                    df_edit_styled = df_edit_styled.set_properties(
-                        subset=existing_ebitda_columns,
-                        **{"font-weight": "bold", "background-color": "#fff7ed"}
-                    )
-                
-                # Aplicar estilo especial a la fila de subtotales
-                from pandas import IndexSlice as idx
-                df_edit_styled = df_edit_styled.set_properties(
-                    subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
-                    **{
-                        "font-weight": "bold",
-                        "background-color": "#e8f4fd",
-                        "border-top": "2px solid #1f77b4",
-                    },
-                )
-                
-                # Header más alto para permitir 2 líneas
+                # Header más alto para permitir 2 líneas y mostrar tablas
                 try:
                     from src.data_io import inject_streamlit_dataframe_css
                     inject_streamlit_dataframe_css(header_height=64)
                 except Exception:
                     pass
 
-                # Mostrar tabla con subtotales
+                # Subtotal arriba (solo métricas) si corresponde
+                if show_subtotals_at_top:
+                    st.caption("Subtotal (ponderado por KgEmbarcados)")
+                    st.dataframe(sty_sub, column_config=editable_columns, width='stretch', hide_index=True)
+
+                # Tabla principal
                 edited_df = st.dataframe(
-                    df_edit_styled,
+                    df_edit_final,
                     column_config=editable_columns,
                     width='stretch',
                     height="auto",
                     key="data_editor_detalle",
                     hide_index=True
                 )
+
+                # Subtotal abajo (solo métricas) si corresponde
+                if not show_subtotals_at_top:
+                    st.caption("Subtotal (ponderado por KgEmbarcados)")
+                    st.dataframe(sty_sub, column_config=editable_columns, width='stretch', hide_index=True)
                 
                 # Mostrar métricas de subtotales
                 col_metrics1, col_metrics2, col_metrics3 = st.columns(3)

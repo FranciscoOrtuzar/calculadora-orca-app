@@ -529,9 +529,17 @@ with tab_retail:
     from src.data_io import inject_streamlit_dataframe_css
     inject_streamlit_dataframe_css(header_height=64)
 
+    # Construir versión sólo con métricas (oculta dimensiones)
+    try:
+        numeric_cols_hist = [c for c in view_base_noidx.columns if pd.api.types.is_numeric_dtype(view_base_noidx[c])]
+    except Exception:
+        numeric_cols_hist = []
+    subtotal_display = subtotal_df[[c for c in numeric_cols_hist if c in subtotal_df.columns]].copy()
+    sty_sub = subtotal_display.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"})
+
     if show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(subtotal_df.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"}), column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
 
     # Aplicar formato y estilos similares al simulador
     df_disp = view_base_noidx.copy()
@@ -565,7 +573,7 @@ with tab_retail:
 
     if not show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(subtotal_df.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"}), column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
 
     # 6. Botón de descarga Excel externo
     if not view_base_noidx.empty:
