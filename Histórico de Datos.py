@@ -957,85 +957,113 @@ st.info("💾 **Datos persistentes**: Los archivos cargados se mantienen al camb
 
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
-# --- Datos de ejemplo, con columna oculta __open para señalizar el click ---
-if "grid_df" not in st.session_state:
-    st.session_state.grid_df = pd.DataFrame({
-        "SKU": [101, 102, 103],
-        "Descripcion": ["Producto A", "Producto B", "Producto C"],
-        "PrecioVenta (USD/kg)": [4.25, 3.80, 5.10],
-    })
-    st.session_state.grid_df["__open"] = False  # flag
+def render_grid_with_modal(df: pd.DataFrame):
+    """
+    Renderiza un AgGrid con una columna de acción '🔍'.
+    Al hacer click, selecciona la fila y abre un modal con el detalle.
+    """
 
-df = st.session_state.grid_df
+    # --- DataFrame base para el grid (no dependemos del índice para abrir el modal) ---
+    grid_df = df.reset_index(drop=True).copy()
+    if "__open" not in grid_df.columns:
+        grid_df.insert(0, "__open", "")  # columna vacía que renderizamos como botón
 
-# --- Configuración de AgGrid con botón por fila ---
-gb = GridOptionsBuilder.from_dataframe(df)
-gb.configure_default_column(resizable=True, sortable=True, filter=True)
+    # --- Renderer de botón (selecciona la fila) ---
+    OPEN_RENDERER = JsCode("""
+    class BtnRenderer {
+      init(params){
+        this.params = params;
+        const b = document.createElement('button');
+        b.textContent = '🔍';
+        b.style.cursor = 'pointer';
+        b.style.padding = '4px 8px';
+        b.style.border = '1px solid #ccc';
+        b.style.borderRadius = '6px';
+        b.style.background = '#f8f9fa';
+        b.addEventListener('click', () => {
+          // selecciona la fila (esto dispara SELECTION_CHANGED en Python)
+          params.api.deselectAll();
+          params.node.setSelected(true);
+        });
+        this.eGui = b;
+      }
+      getGui(){ return this.eGui; }
+      destroy(){ this.eGui = null; }
+    }
+    """)
 
-# Columna de acciones (botón)
-view_btn = JsCode("""
-function(params) {
-  const e = document.createElement('button');
-  e.innerText = 'Ver';
-  e.style.padding = '3px 8px';
-  e.style.cursor = 'pointer';
-  e.onclick = () => {
-    // Señaliza a Python cambiando el valor de la celda oculta __open
-    params.node.setDataValue('__open', true);
-  };
-  return e;
-}
-""")
+    # --- Opciones del grid ---
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+    gb.configure_default_column(resizable=True, sortable=True, filter=True)
 
-gb.configure_column(
-    "__open",
-    headerName="__open",
-    hide=True,              # oculta el flag
-    editable=False,
-)
+    # Columna acción (sin filtro/orden y ancha fija)
+    gb.configure_column(
+        "__open",
+        headerName="",
+        width=60,
+        pinned="left",
+        filter=False,
+        sortable=False,
+        editable=False,
+        cellRenderer=OPEN_RENDERER,
+    )
 
-gb.configure_column(
-    "accion",
-    headerName="Acción",
-    cellRenderer=view_btn,  # botón
-    editable=False,
-    filter=False,
-    sortable=False,
-    pinned="left",
-    width=100,
-)
+    # Selección de fila (single) — importante para que podamos detectar el click
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
 
-grid_options = gb.build()
+    # Altura dinámica (compacta para pocos registros)
+    row_h = 32
+    header_h = 40
+    n = max(len(grid_df), 5)  # mínimo 5 filas de alto para que no quede demasiado chico
+    dynamic_height = min(600, header_h + n * row_h + 8)
 
-# --- Render del grid ---
-resp = AgGrid(
-    df,
-    gridOptions=grid_options,
-    update_mode=GridUpdateMode.MODEL_CHANGED,     # capturar cambios en datos
-    data_return_mode=DataReturnMode.AS_INPUT,     # devolver DF modificado
-    fit_columns_on_grid_load=False,
-    allow_unsafe_jscode=True,
-    height=420,
-)
+    grid_options = gb.build()
 
-# --- Round-trip: si alguien pulsó un botón, __open será True en esa(s) fila(s) ---
-new_df = pd.DataFrame(resp["data"])
-clicked = new_df.index[new_df["__open"] == True].tolist()
+    resp = AgGrid(
+        grid_df,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED,
+        theme="balham",
+        height=dynamic_height,
+        allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=False,
+    )
 
-if clicked:
-    # toma la primera fila clicada
-    row = new_df.iloc[clicked[0]]
-    # abre el modal con la info que quieras
-    with st.modal(f"Detalle SKU {row['SKU']}"):
-        st.write("**Descripción:**", row["Descripcion"])
-        st.write("**PrecioVenta (USD/kg):**", row["PrecioVenta (USD/kg)"])
-        # ejemplo de acción adicional
-        if st.button("Cerrar"):
-            pass
+    # --- Abrir modal cuando hay fila seleccionada ---
+    sel_raw = resp.get("selected_rows", None)
 
-    # IMPORTANTE: resetea el flag para la próxima ejecución
-    new_df.loc[new_df["__open"] == True, "__open"] = False
-    st.session_state.grid_df = new_df  # persiste el DF actualizado
-else:
-    # si no hubo click, igualmente persiste por si hubo otros cambios
-    st.session_state.grid_df = new_df
+    # Normalizar a lista de dicts
+    if sel_raw is None:
+        sel_records = []
+    elif isinstance(sel_raw, pd.DataFrame):
+        sel_records = sel_raw.to_dict("records")
+    elif isinstance(sel_raw, list):
+        sel_records = sel_raw
+    else:
+        # fallback: intenta convertir a una fila/record
+        try:
+            sel_records = pd.DataFrame(sel_raw).to_dict("records")
+        except Exception:
+            sel_records = []
+
+    if len(sel_records) > 0:
+        row = pd.Series(sel_records[0])
+
+        @st.dialog(f"Detalle SKU {row.get('SKU', '')}")
+        def detalle_sku(row: pd.Series):
+            st.title(f"Detalle SKU {row.get('SKU', '')}")
+            st.write("**SKU-Cliente:**", row.get("SKU-Cliente", ""))
+            st.write("**Descripción:**", row.get("Descripcion", ""))
+            st.write("**Marca:**", row.get("Marca", ""))
+            st.write("**Cliente:**", row.get("Cliente", ""))
+            st.write("**Especie:**", row.get("Especie", ""))
+            st.write("**Condición:**", row.get("Condicion", ""))
+            st.write("**PrecioVenta (USD/kg):**", row.get("PrecioVenta (USD/kg)", ""))
+            st.write("**EBITDA (USD/kg):**", row.get("EBITDA (USD/kg)", ""))
+            st.write("**EBITDA Pct:**", row.get("EBITDA Pct", ""))
+        detalle_sku(row)
+
+    return resp
+
+resp = render_grid_with_modal(view_base_noidx)

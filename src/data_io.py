@@ -2077,15 +2077,6 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
           try {{ const gui = params.api.getGui(); if(gui && gui.clientWidth) return gui.clientWidth; }} catch(e){{}}
           const vp = params.api.gridBodyCtrl?.eBodyViewport; return (vp && vp.clientWidth) ? vp.clientWidth : (params.clientWidth||0);
         }}
-        function __pinnedLeftIds(params){{
-          const all = params.columnApi.getAllDisplayedColumns() || [];
-          return all.filter(c=>c.getPinned()==='left').map(c=>c.getColId());
-        }}
-        function __pinnedLeftWidth(params){{
-          const MIN=40, MAX=95; let tot=0;
-          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{ if(c.getPinned()==='left'){{ const w=c.getActualWidth(); tot += Math.max(MIN, Math.min(MAX, w)); }} }});
-          return tot;
-        }}
         function __clampLeft(params, minW, maxW){{
           (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
             if(c.getPinned()==='left'){{
@@ -2094,40 +2085,11 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
             }}
           }});
         }}
-        function __compressLeft(params, minW){{
-          const prot = new Set({PROTECTED});
-          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
-            if(c.getPinned()==='left'){{
-              const id=c.getColId(); const w=c.getActualWidth();
-              const factor = prot.has(id) ? 0.95 : 0.90;
-              let nw = Math.floor(w * factor);
-              if(nw < minW) nw = minW;
-              if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
-            }}
-          }});
-        }}
-        function __unpinUntilFits(params, protectedSet, targetW){{
-          const cols = params.columnApi.getAllDisplayedColumns() || [];
-          const left = cols.filter(c=>c.getPinned()==='left');
-          for(let i=left.length-1;i>=0;i--){{
-            const id = left[i].getColId();
-            if(protectedSet.has(id)) continue;
-            params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:null}}], applyOrder:false }});
-            if(__pinnedLeftWidth(params) <= targetW) break;
-          }}
-        }}
-        function __restorePins(params, origOrder, protectedSet, targetW){{
-          const current = new Set(__pinnedLeftIds(params));
-          for(const id of origOrder){{
-            if(current.has(id) || protectedSet.has(id)) continue;
-            const col = params.columnApi.getColumn(id); if(!col) continue;
-            const probeW = Math.max(40, Math.min(95, col.getActualWidth()));
-            const now = __pinnedLeftWidth(params);
-            if(now + probeW <= targetW){{
-              params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:'left'}}], applyOrder:false }});
-              current.add(id);
-            }}
-          }}
+        function __widthOf(params, id){{
+          const c = params.columnApi.getColumn(id);
+          if(!c) return 0;
+          const w = c.getActualWidth();
+          const MIN=40, MAX=95; return Math.max(MIN, Math.min(MAX, w));
         }}
         function __autoSizePinnedOnce(params, pinnedIds){{
           if(!params.api.__pinPolicy) params.api.__pinPolicy = {{ doneAutoSize:false }};
@@ -2146,12 +2108,20 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
           const target = Math.floor(gw * ratio);
           __autoSizePinnedOnce(params, orig);
           __clampLeft(params, 40, 95);
-          if(__pinnedLeftWidth(params) > target){{
-            for(let k=0;k<4 && __pinnedLeftWidth(params) > target;k++){{ __compressLeft(params, 40); }}
-            if(__pinnedLeftWidth(params) > target){{ __unpinUntilFits(params, prot, target); }}
-          }} else {{
-            __restorePins(params, orig, prot, target);
-          }}
+          // Selección en lote: construir set final de columnas pinned
+          let used = 0; const finalLeft = [];
+          // protegidas primero
+          orig.forEach(id=>{{ if(prot.has(id)){{ const w = __widthOf(params, id); if(used + w <= target || used === 0){{ finalLeft.push(id); used += w; }} }} }});
+          // luego no protegidas
+          orig.forEach(id=>{{ if(!prot.has(id)){{ const w = __widthOf(params, id); if(used + w <= target){{ finalLeft.push(id); used += w; }} }} }});
+          const state = []; const setLeft = new Set(finalLeft);
+          // aplicar para todas las originales
+          orig.forEach(id=>{{ state.push({{colId:id, pinned: setLeft.has(id) ? 'left' : null}}); }});
+          // despinnear adicionales no incluidas en 'orig'
+          (params.columnApi.getAllDisplayedColumns()||[])
+            .filter(c=>c.getPinned()==='left' && orig.indexOf(c.getColId())<0)
+            .forEach(c=>{{ state.push({{colId:c.getColId(), pinned:null}}); }});
+          params.columnApi.applyColumnState({{ state: state, applyOrder: false }});
         }}
 
         __applyPinnedPolicy(params);
