@@ -513,7 +513,16 @@ with tab_retail:
     from src.data_io import create_aggrid_subtotal_row
     subtotal_dict = create_aggrid_subtotal_row(view_base_noidx)
     subtotal_df = pd.DataFrame([subtotal_dict])
+    # Mantener el mismo orden de columnas de la vista
     subtotal_df = subtotal_df.reindex(columns=[c for c in view_base_noidx.columns if c in subtotal_df.columns], fill_value="")
+    # Dejar sólo métricas: limpiar columnas no numéricas para mayor claridad visual
+    try:
+        numeric_cols = set(view_base_noidx.select_dtypes(include=[np.number]).columns.tolist())
+    except Exception:
+        numeric_cols = set()
+    for col in subtotal_df.columns:
+        if col not in numeric_cols:
+            subtotal_df[col] = ""
 
     col_config = columns_config(editable=False)
 
