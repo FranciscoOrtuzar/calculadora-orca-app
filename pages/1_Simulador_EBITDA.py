@@ -36,15 +36,19 @@ def create_subtotal_row(df, position="bottom"):
                     "Precio (USD/kg)", "Costo (USD/kg)", "Óptimo", "Ponderado",
                     "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total",
                     "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                    "Laboratorio", "Mantención", "Utilities", "Fletes Internos",
+                    "Laboratorio", "Mantención", "Mantencion y Maquinaria" "Utilities", "Fletes Internos",
                     "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
                     "Servicios Generales", "Comex", "Guarda PT", "Almacenaje MMPP",
                     "Gastos Totales (USD/kg)", "Costos Directos", "Costos Indirectos"]
     
     for col in numeric_cols:
-        if col in df.columns:
-            # Usar skipna=True para ignorar valores NaN/None
-            subtotal_row[col] = df[col].sum(skipna=True)
+        try:
+            if col == "KgEmbarcados":
+                subtotal_row[col] = df["KgEmbarcados"].sum()
+            elif col in df.columns:
+                subtotal_row[col] = (df[col]*df["KgEmbarcados"]).sum()/df["KgEmbarcados"].sum()
+        except:
+            subtotal_row[col] = ""
     
     # Manejar columnas que pueden ser None (como EBITDA Pct)
     for col in ["EBITDA Pct"]:
@@ -76,8 +80,11 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
     out.columns = [str(c) for c in out.columns]
 
     # 2) Convertir valores no serializables (tuplas, listas, dicts, arrays, sets) a strings JSON
-    def _sanitize_val(x):
-        if isinstance(x, (tuple, list, dict, set, np.ndarray)):
+    # EXCEPTO para la columna Especie que debe mantener las listas para ListColumn
+    def _sanitize_val(x, preserve_lists=False):
+        if preserve_lists and isinstance(x, list):
+            return x  # Preservar listas para ListColumn
+        elif isinstance(x, (tuple, list, dict, set, np.ndarray)):
             try:
                 return json.dumps(x, default=str)
             except Exception:
@@ -90,7 +97,9 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
             # Evita cast innecesario si ya son strings/números/fechas
             sample = out[c].dropna().head(5).tolist()
             if any(isinstance(v, (tuple, list, dict, set, np.ndarray)) for v in sample):
-                out[c] = out[c].map(_sanitize_val)
+                # Preservar listas solo para la columna Especie
+                preserve_lists = (c == "Especie")
+                out[c] = out[c].map(lambda x: _sanitize_val(x, preserve_lists=preserve_lists))
         # Opcional: convertir categorías a string
         if pd.api.types.is_categorical_dtype(out[c].dtype):
             out[c] = out[c].astype(str)
@@ -718,7 +727,7 @@ else:
 tab_sku, tab_granel, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
-    tab_plan, tab_optimos = st.tabs(["🔍 Plan 2026", "🏆 Óptimos"])
+    tab_plan, tab_optimos, tab_comparacion = st.tabs(["🔍 Plan 2026", "🏆 Óptimos", "⚖️ Comparación"])
     with tab_plan:
         # ===================== Bloque 1 - Carga de Planilla =====================
         with st.expander("📁 **Carga de Planilla (SKU-CostoNuevo)**", expanded=False):
@@ -2434,6 +2443,164 @@ with tab_granel:
                     st.metric("Precio Efectivo Promedio Óptimo", f"${kpi_opt.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpi_opt else "N/A")
             except Exception as e:
                 st.error(f"❌ Error KPIs óptimos: {e}")
+    # ===================== PESTAÑA DE COMPARACIÓN =====================
+    with tab_comparacion:
+        st.header("⚖️ Comparación Simulador vs Histórico")
+        st.markdown("Comparación de métricas clave entre el simulador y los datos históricos.")
+        
+        # Verificar que tenemos datos disponibles
+        if "sim.df_filtered" not in st.session_state or st.session_state["sim.df_filtered"] is None:
+            st.error("❌ No hay datos de simulación disponibles")
+            st.info("💡 Aplica filtros en el sidebar para ver los datos")
+            st.stop()
+        
+        if "hist.df_filtered" not in st.session_state or st.session_state["hist.df_filtered"] is None:
+            st.error("❌ No hay datos históricos disponibles")
+            st.info("💡 Ve a la página de Datos Históricos y carga un archivo")
+            st.stop()
+        
+        # Obtener datos filtrados
+        sim_data = st.session_state["sim.df_filtered"].copy()
+        hist_data = st.session_state["hist.df_filtered"].copy()
+        
+        # Asegurar que SKU sea string en ambos datasets para el merge
+        sim_data["SKU"] = sim_data["SKU"].astype(str)
+        hist_data["SKU"] = hist_data["SKU"].astype(str)
+        
+        # Merge de datos simulador e histórico por SKU
+        comparison_data = sim_data.merge(
+            hist_data[["SKU", "PrecioVenta (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]], 
+            on="SKU", 
+            how="inner", 
+            suffixes=("_sim", "_hist")
+        )
+        
+        if comparison_data.empty:
+            st.warning("⚠️ No hay SKUs coincidentes entre simulador e histórico")
+            st.info("💡 Verifica que los filtros permitan ver SKUs comunes")
+            st.stop()
+        
+        # Mostrar métricas de resumen
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("SKUs Comparados", len(comparison_data))
+        
+        with col2:
+            total_sim = comparison_data["EBITDA (USD/kg)_sim"].sum()
+            total_hist = comparison_data["EBITDA (USD/kg)_hist"].sum()
+            diff = total_sim - total_hist
+            st.metric("EBITDA Total Sim", f"${total_sim:,.2f}", f"{diff:+,.2f} vs Hist")
+        
+        with col3:
+            avg_sim = comparison_data["EBITDA Pct_sim"].mean()
+            avg_hist = comparison_data["EBITDA Pct_hist"].mean()
+            diff_pct = avg_sim - avg_hist
+            st.metric("EBITDA % Promedio Sim", f"{avg_sim:.1f}%", f"{diff_pct:+.1f}pp vs Hist")
+        
+        with col4:
+            price_sim = comparison_data["PrecioVenta (USD/kg)_sim"].mean()
+            price_hist = comparison_data["PrecioVenta (USD/kg)_hist"].mean()
+            diff_price = price_sim - price_hist
+            st.metric("Precio Promedio Sim", f"${price_sim:.2f}", f"{diff_price:+.2f} vs Hist")
+        
+        st.markdown("---")
+        
+        # Preparar datos para la tabla de comparación
+        comparison_display = comparison_data[[
+            "SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion",
+            "PrecioVenta (USD/kg)_sim", "PrecioVenta (USD/kg)_hist",
+            "Costos Totales (USD/kg)_sim", "Costos Totales (USD/kg)_hist", 
+            "EBITDA (USD/kg)_sim", "EBITDA (USD/kg)_hist",
+            "EBITDA Pct_sim", "EBITDA Pct_hist"
+        ]].copy()
+        
+        # Renombrar columnas para mejor visualización
+        comparison_display.columns = [
+            "SKU", "Descripción", "Marca", "Cliente", "Especie", "Condición",
+            "Precio Sim", "Precio Hist", 
+            "Costo Sim", "Costo Hist",
+            "EBITDA Sim", "EBITDA Hist", 
+            "EBITDA % Sim", "EBITDA % Hist"
+        ]
+        
+        # Calcular diferencias
+        comparison_display["Δ Precio"] = comparison_display["Precio Sim"] - comparison_display["Precio Hist"]
+        comparison_display["Δ Costo"] = comparison_display["Costo Sim"] - comparison_display["Costo Hist"]
+        comparison_display["Δ EBITDA"] = comparison_display["EBITDA Sim"] - comparison_display["EBITDA Hist"]
+        comparison_display["Δ EBITDA %"] = comparison_display["EBITDA % Sim"] - comparison_display["EBITDA % Hist"]
+        
+        # Aplicar formato a las columnas numéricas
+        numeric_cols = ["Precio Sim", "Precio Hist", "Costo Sim", "Costo Hist", 
+                    "EBITDA Sim", "EBITDA Hist", "EBITDA % Sim", "EBITDA % Hist",
+                    "Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
+        
+        for col in numeric_cols:
+            if col in comparison_display.columns:
+                if "%" in col:
+                    comparison_display[col] = comparison_display[col].round(1)
+                else:
+                    comparison_display[col] = comparison_display[col].round(2)
+        
+        # Crear tabla con estilos
+        st.subheader("📊 Tabla de Comparación Detallada")
+        
+        # Aplicar estilos a la tabla
+        styled_comparison = comparison_display.style
+        
+        # Resaltar diferencias significativas
+        def highlight_differences(val):
+            if isinstance(val, (int, float)):
+                if abs(val) > 0.1:  # Diferencia significativa
+                    return 'background-color: #ffebee'  # Rojo claro
+                elif abs(val) > 0.05:  # Diferencia moderada
+                    return 'background-color: #fff3e0'  # Naranja claro
+            return ''
+        
+        # Aplicar estilos a las columnas de diferencias
+        diff_cols = ["Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
+        for col in diff_cols:
+            if col in comparison_display.columns:
+                styled_comparison = styled_comparison.applymap(highlight_differences, subset=[col])
+        
+        # Mostrar tabla
+        st.dataframe(
+            styled_comparison,
+            use_container_width=True,
+            height=400,
+            hide_index=True
+        )
+        
+        # Mostrar estadísticas de diferencias
+        st.subheader("📈 Análisis de Diferencias")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Diferencias en EBITDA (USD/kg):**")
+            ebitda_diff = comparison_display["Δ EBITDA"]
+            st.write(f"- Promedio: {ebitda_diff.mean():.2f}")
+            st.write(f"- Mediana: {ebitda_diff.median():.2f}")
+            st.write(f"- Desviación: {ebitda_diff.std():.2f}")
+            st.write(f"- Rango: {ebitda_diff.min():.2f} a {ebitda_diff.max():.2f}")
+        
+        with col2:
+            st.write("**Diferencias en EBITDA %:**")
+            ebitda_pct_diff = comparison_display["Δ EBITDA %"]
+            st.write(f"- Promedio: {ebitda_pct_diff.mean():.1f}pp")
+            st.write(f"- Mediana: {ebitda_pct_diff.median():.1f}pp")
+            st.write(f"- Desviación: {ebitda_pct_diff.std():.1f}pp")
+            st.write(f"- Rango: {ebitda_pct_diff.min():.1f}pp a {ebitda_pct_diff.max():.1f}pp")
+        
+        # Botón de descarga
+        csv_data = comparison_display.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar Comparación (CSV)",
+            data=csv_data,
+            file_name=f"comparacion_sim_vs_hist_{len(comparison_data)}_skus.csv",
+            mime="text/csv"
+        )
+
     
 with tab_precio_frutas:
     st.header("🍓 Simulador de Precios de Frutas")

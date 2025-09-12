@@ -7,9 +7,13 @@ import io
 import pandas as pd
 import numpy as np
 import unicodedata
+import ast
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 import streamlit as st
+from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode, JsCode
+import pygwalker as pyg
+import json
 
 # ===================== Configuración =====================
 REQ_SHEETS = {
@@ -323,7 +327,7 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
         if c in ["Fruta_id", "Fruta"]:
             continue
         df[c] = df[c].apply(to_number_safe)
-    
+
     df["Proceso Granel (USD/kg)"] = sum_existing(df, ["MO Directa", "MO Indirecta", "Materiales Directos",
     "Materiales Indirectos", "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales", "Utilities",
     "Fletes", "Comex", "Guarda Producto Terminado"])
@@ -808,7 +812,7 @@ def columns_config(editable: bool = True) -> dict:
         elif col == "EBITDA (USD)":
             editable_columns["EBITDA (USD)"] = st.column_config.NumberColumn(
                 "EBITDA (USD)",
-                help="EBITDA en dólares (desde valores mensuales)",
+                                        help="EBITDA en dólares (desde valores mensuales)",
                 format="%.0f",
                 step=1,
                 disabled=True
@@ -987,6 +991,11 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     costos_detalle_calculado["Proceso Granel (USD/kg)"] = -abs(costos_detalle_calculado["Proceso Granel (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["Proceso Granel (USD/kg)"]))
     costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)", "Proceso Granel (USD/kg) (Calculado)"])
     detalle = costos_detalle_calculado.merge(dim, on="SKU", how="right")
+    
+    # 3.2) Corregir especies basándose en las recetas
+    detalle = correct_species_from_recipes(detalle, sheets["RECETA_SKU"], sheets["INFO_FRUTA"])
+    detalle = ensure_list_species(detalle, "Especie")
+    
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
     if "SKU-Cliente" in dim.columns:
         detalle = detalle.merge(latest, on="SKU-Cliente", how="right")
@@ -1247,6 +1256,129 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ===================== Cálculo de MMPP =====================
+def ensure_list_species(df: pd.DataFrame, col="Especie") -> pd.DataFrame:
+    """
+    Normaliza la columna de especies para PyArrow serialization.
+    Convierte listas a strings con formato especial para ListColumn.
+    
+    Args:
+        df: DataFrame con la columna de especies
+        col: Nombre de la columna de especies (default: "Especie")
+        
+    Returns:
+        DataFrame con la columna normalizada para PyArrow
+    """
+    if col not in df.columns:
+        return df.copy()
+    
+    def to_string_list(v):
+        # None/NaN -> string vacío
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        # ya es lista -> convertir a string con formato especial
+        if isinstance(v, list):
+            if not v:  # lista vacía
+                return ""
+            # Usar formato que PyArrow puede parsear como lista
+            return str(v)
+        # venía como string que "parece lista"
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    val = ast.literal_eval(s)
+                    if isinstance(val, list):
+                        return str(val)
+                except Exception:
+                    pass
+            # string simple -> lista de 1
+            return str([s]) if s else ""
+        # cualquier otro tipo -> lista de 1
+        return str([str(v)])
+    
+    out = df.copy()
+    out[col] = out[col].apply(to_string_list)
+    return out
+
+def correct_species_from_recipes(detalle_df: pd.DataFrame,
+                                 receta_df: pd.DataFrame,
+                                 info_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reemplaza detalle['Especie'] por una LISTA de especies derivadas de la receta del SKU.
+    Si un SKU no tiene receta, deja la especie original tal cual.
+    """
+    try:
+        # Validaciones mínimas
+        if detalle_df is None or detalle_df.empty:
+            return detalle_df
+        if receta_df is None or receta_df.empty:
+            return detalle_df
+        if info_df is None or info_df.empty:
+            return detalle_df
+
+        # Copias de trabajo
+        det = detalle_df.copy()
+        rec = receta_df.copy()
+        info = info_df.copy()
+
+        # Normalizar tipos/llaves
+        rec["SKU"] = rec["SKU"].astype(str).str.strip()
+        rec["Fruta_id"] = rec["Fruta_id"].astype(str).str.strip()
+        info["Fruta_id"] = info["Fruta_id"].astype(str).str.strip()
+
+        # Elegir columna de especie en INFO_FRUTA (ajusta si en tu data es otra)
+        especie_col = "Name" if "Name" in info.columns else (
+            "Especie" if "Especie" in info.columns else None
+        )
+        if especie_col is None:
+            # No hay cómo mapear especies desde INFO_FRUTA
+            return detalle_df
+
+        # Mapa Fruta_id -> Especie (string)
+        fruta_to_especie = (
+            info.set_index("Fruta_id")[especie_col]
+            .astype(str)
+            .str.strip()
+            .to_dict()
+        )
+
+        # Añadir especie a cada fila de la receta
+        rec["Especie_from_rec"] = rec["Fruta_id"].map(fruta_to_especie)
+        rec = rec.dropna(subset=["Especie_from_rec"])
+
+        # Diccionario SKU -> lista única y ordenada de especies
+        sku_to_species = (
+            rec.groupby("SKU")["Especie_from_rec"]
+               .apply(lambda s: sorted(set(s.dropna().astype(str).str.strip())))
+               .to_dict()
+        )
+
+        # Mapear al detalle
+        det["SKU_str"] = det["SKU"].astype(str).str.strip()
+        det["Especie_rec"] = det["SKU_str"].map(sku_to_species)
+
+        # Reemplazar solo donde hay receta (listas) y convertir el resto a listas
+        mask = det["Especie_rec"].notna()
+        # Asegura dtype objeto para poder guardar listas
+        det["Especie"] = det["Especie"].astype(object)
+        
+        # Donde hay receta, usar la lista de especies de la receta
+        det.loc[mask, "Especie"] = det.loc[mask, "Especie_rec"]
+        
+        # Donde NO hay receta, convertir el string original a lista
+        no_receta_mask = ~mask
+        det.loc[no_receta_mask, "Especie"] = det.loc[no_receta_mask, "Especie"].apply(
+            lambda x: [str(x)] if pd.notna(x) and str(x).strip() else []
+        )
+
+        # Limpiar columnas auxiliares
+        det = det.drop(columns=["SKU_str", "Especie_rec"])
+
+        return det
+
+    except Exception as e:
+        print(f"Error corrigiendo especies: {e}")
+        return detalle_df
 
 def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1281,31 +1413,31 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         # 2. Copia y normalización de datos
         df_receta = receta_df[required_receta_cols].copy()
         df_info = info_df[required_info_cols].copy()
-        
+
         # Normalizar 'Fruta_id' a string y limpiar espacios
         df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str).str.strip()
         df_info["Fruta_id"] = df_info["Fruta_id"].astype(str).str.strip()
-        
-        # Convertir columnas a tipo numérico
+
+                    # Convertir columnas a tipo numérico
         df_receta["Porcentaje"] = df_receta["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_receta["Óptimo"] = df_receta["Óptimo"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Precio"] = df_info["Precio"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Rendimiento"] = df_info["Rendimiento"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
-        
+
         # 3. Filtrado y validación de rangos
-        # df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
+                    # df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
         df_info.dropna(subset=["Precio", "Rendimiento", "Almacenaje"], inplace=True)
-        
-        # df_receta = df_receta[df_receta["Porcentaje"] > 0]
+
+                    # df_receta = df_receta[df_receta["Porcentaje"] > 0]
         df_receta = df_receta[(df_receta["Óptimo"] > 0) | (df_receta["Porcentaje"] > 0)]
         df_info = df_info[
             (df_info["Precio"] >= 0) &
             (df_info["Rendimiento"] > 0) &
             (df_info["Rendimiento"] <= 1) &
-            (df_info["Almacenaje"] != 0)
-        ]
-        
+                        (df_info["Almacenaje"] != 0)
+                    ]
+                    
         # 4. Preparar datos de granel (si existen)
         if granel_df is not None and not granel_df.empty:
             # Verificar si granel_df tiene la columna Proceso Granel ya calculada
@@ -1318,7 +1450,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
             else:
                 # Calcular Proceso Granel desde columnas de costos
                 cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos", 
-                               "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
+                            "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
                 available_cost_cols = [col for col in cost_columns if col in granel_df.columns]
                 
                 if available_cost_cols:
@@ -1342,7 +1474,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         # 5. Cálculo optimizado usando merge y operaciones vectorizadas
         # Unir receta con info (TODAS las frutas)
         df_merged = pd.merge(df_receta, df_info, on="Fruta_id", how="inner")
-        
+                    
         # Unir con granel (solo frutas que están en granel)
         df_merged = pd.merge(df_merged, df_granel, on="Fruta_id", how="left")
         
@@ -1380,14 +1512,14 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
                 "Proceso Granel (USD/kg)": pd.NamedAgg(column='Costo_Proceso_Granel', aggfunc='sum')
             }
         ).reset_index()
-        
+                    
         # 8. Aplicar signos negativos (costos)
         df_result["MMPP (Fruta) (USD/kg)"] = -abs(df_result["MMPP (Fruta) (USD/kg)"])
         df_result["Almacenaje"] = -abs(df_result["Almacenaje"])
         df_result["Proceso Granel (USD/kg)"] = -abs(df_result["Proceso Granel (USD/kg)"])
-        
+
         return df_result
-        
+                
     except Exception as e:
         print(f"ERROR en compute_mmpp_unified: {e}")
         import traceback
@@ -1664,3 +1796,466 @@ INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
    - INFO_FRUTA: Hoja con columnas [Fruta_id, PrecioUSD_kg, Eficiencia]
    - Usar load_receta_sku() y load_info_fruta() para cargar
 """
+
+# ===================== Funciones de AgGrid =====================
+def get_aggrid_custom_css() -> dict:
+    """
+    Retorna CSS personalizado para mejorar la apariencia de AgGrid con diseño compacto
+    """
+    return {
+        ".ag-header": {
+            "background-color": "#1976d2",
+            "color": "white",
+            "font-weight": "600",
+            "font-size": "12px",
+            "height": "40px !important",
+            "line-height": "1.3"
+        },
+        ".ag-header-cell": {
+            "border-right": "1px solid #1565c0",
+            "padding": "6px 8px !important",
+            "white-space": "normal",
+            "word-wrap": "break-word",
+            "text-align": "center",
+            "vertical-align": "middle",
+            "height": "40px !important"
+        },
+        ".ag-header-cell-label": {
+            "white-space": "normal",
+            "word-wrap": "break-word",
+            "line-height": "1.2",
+            "height": "auto",
+            "min-height": "32px",
+            "max-height": "60px",
+            "display": "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            "padding": "6px 4px",
+            "text-align": "center"
+        },
+        ".ag-row-odd": {
+            "background-color": "#fafafa",
+            "height": "32px !important"
+        },
+        ".ag-row-even": {
+            "background-color": "white",
+            "height": "32px !important"
+        },
+        ".ag-row-hover": {
+            "background-color": "#e3f2fd"
+        },
+        ".ag-cell": {
+            "font-size": "12px",
+            "font-family": "Arial, sans-serif",
+            "padding": "6px 8px !important",
+            "line-height": "1.3",
+            "height": "32px !important",
+            "vertical-align": "middle"
+        },
+        ".ag-cell-value": {
+            "font-size": "13px",
+            "font-weight": "500"
+        },
+        ".ag-cell[col-id*='USD'], .ag-cell[col-id*='costo'], .ag-cell[col-id*='precio'], .ag-cell[col-id*='ebitda'], .ag-cell[col-id*='margen'], .ag-cell[col-id*='total'], .ag-cell[col-id*='almacenaje'], .ag-cell[col-id*='servicio'], .ag-cell[col-id*='comex'], .ag-cell[col-id*='guarda'], .ag-cell[col-id*='material'], .ag-cell[col-id*='laboratorio'], .ag-cell[col-id*='mantencion'], .ag-cell[col-id*='proceso']": {
+            "font-size": "13px",
+            "font-weight": "600"
+        },
+        ".ag-header-cell-text": {
+            "font-weight": "600",
+            "color": "white"
+        },
+        ".ag-header-group-cell": {
+            "background-color": "#1565c0",
+            "border-right": "1px solid #0d47a1"
+        },
+        ".ag-header-group-cell-label": {
+            "color": "white",
+            "font-weight": "700"
+        },
+        ".ag-row-pinned": {
+            "background-color": "#e8f4fd !important",
+            "font-weight": "bold !important",
+            "border-top": "2px solid #1f77b4 !important",
+            "font-size": "13px !important"
+        },
+        ".ag-row-pinned .ag-cell": {
+            "font-size": "13px !important",
+            "font-weight": "600 !important",
+            "background-color": "#e8f4fd !important"
+        }
+    }
+
+def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
+    df_prepared = prepare_dataframe_for_aggrid(df).copy()
+    gb = GridOptionsBuilder.from_dataframe(df_prepared)
+
+    gb.configure_default_column(
+        filter=False, sortable=True, resizable=True, editable=False,
+        cellStyle={"fontSize":"12px","fontFamily":"Arial, sans-serif","padding":"4px 6px","lineHeight":"1.2"}
+    )
+
+    gb.configure_grid_options(
+        domLayout="normal",
+        headerHeight=40, rowHeight=32,
+        tooltipShowDelay=200, tooltipHideDelay=10000,
+        tooltipInteraction=True,
+        tooltipShowMode="whenTruncated",
+        enableCellTextSelection=True,
+        tooltipValueGetter=JsCode("""
+            function(params) {
+                if (params.value === null || params.value === undefined) return 'Sin valor';
+                return String(params.value);
+            }
+        """)
+    )
+
+    set_filter_cols = ["SKU", "Marca", "Cliente", "Especie", "Condicion"]
+
+    def is_pct(col): return "pct" in col.lower() or "porc" in col.lower() or col.endswith("%")
+    def is_num(col):  return col not in set_filter_cols and any(
+        k in col.lower() for k in ["usd","costo","precio","ebitda","margen","total","almacen","servicio","comex","guarda","material","laboratorio","mantencion","proceso","kg"]
+    )
+
+    FMT_3DEC = JsCode("function(p){ if(p.value==null||isNaN(p.value)) return ''; return Number(p.value).toFixed(3); }")
+    FMT_INT  = JsCode("function(p){ if(p.value==null||isNaN(p.value)) return ''; return String(Math.round(Number(p.value))); }")
+    FMT_PCT  = JsCode("""
+      function(p){
+        if(p.value==null||isNaN(p.value)) return '';
+        var v=Number(p.value); if(Math.abs(v)<=1.0001) v*=100.0; return v.toFixed(1)+'%';
+      }
+    """)
+
+    # Layout base de columnas pineadas a la izquierda
+    pinned_left_cols = ["SKU", "Descripcion", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
+    protected_cols   = ["SKU"]  # Nunca se despinan
+
+    for col in df_prepared.columns:
+        kwargs = {"resizable": True}
+        if col == "SKU-Cliente":
+            kwargs["hide"] = True
+        elif col in pinned_left_cols:
+            kwargs["pinned"] = "left"
+            kwargs["minWidth"] = 40
+            kwargs["maxWidth"] = 95
+            kwargs["suppressSizeToFit"] = True
+            kwargs["cellStyle"] = {
+                "backgroundColor": "#f8f9fa",
+                "fontWeight": "600",
+                "borderRight": "2px solid #dee2e6",
+                "fontSize": "11px",
+                "padding": "2px 4px"
+            }
+
+        if col == "EBITDA Pct":
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_PCT
+            kwargs["cellStyle"] = {"textAlign":"right"}
+        elif col == "KgEmbarcados":
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_INT
+            kwargs["cellStyle"] = {"textAlign":"right"}
+        elif is_num(col):
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_3DEC
+            kwargs["cellStyle"] = {"textAlign":"right"}
+
+        kwargs["tooltipField"] = col
+        gb.configure_column(col, **kwargs)
+
+    # --------- POLÍTICA RESPONSIVA DE PINNED IZQUIERDA ---------
+    PINNED_ORIG = json.dumps(pinned_left_cols)        # orden original
+    PROTECTED   = json.dumps(protected_cols)          # nunca se despinan
+    js_policy = JsCode(f"""
+    function __ensurePinPolicyState(api){{
+      if(!api.__pinPolicy){{ api.__pinPolicy = {{ doneAutoSize:false, lastW:0 }}; }}
+      return api.__pinPolicy;
+    }}
+
+    function __gridWidth(params){{
+      try {{ const gui = params.api.getGui(); if(gui && gui.clientWidth) return gui.clientWidth; }} catch(e){{}}
+      const vp = params.api.gridBodyCtrl?.eBodyViewport; return (vp && vp.clientWidth) ? vp.clientWidth : (params.clientWidth||0);
+    }}
+
+    function __pinnedLeftIds(params){{
+      const all = params.columnApi.getAllDisplayedColumns() || [];
+      return all.filter(c=>c.getPinned()==='left').map(c=>c.getColId());
+    }}
+
+    function __pinnedLeftWidth(params){{
+      const MIN=40, MAX=95; let tot=0;
+      (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{ if(c.getPinned()==='left'){{ const w=c.getActualWidth(); tot += Math.max(MIN, Math.min(MAX, w)); }} }});
+      return tot;
+    }}
+
+    function __autoSizePinnedOnce(params, pinnedIds){{
+      const state = __ensurePinPolicyState(params.api);
+      if(state.doneAutoSize) return;
+      try {{ if(pinnedIds && pinnedIds.length) params.columnApi.autoSizeColumns(pinnedIds, false); }} catch(e){{ /* ignore */ }}
+      state.doneAutoSize = true;
+    }}
+
+    function __clampLeft(params, minW, maxW){{
+      (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
+        if(c.getPinned()==='left'){{
+          const w=c.getActualWidth(); const nw=Math.max(minW, Math.min(maxW, w));
+          if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
+        }}
+      }});
+    }}
+
+    function __compressLeft(params, minW){{
+      // Reduce 10% iterativamente todas las pinned left hasta minW (no protegidas se verán afectadas)
+      const prot = new Set({PROTECTED});
+      (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
+        if(c.getPinned()==='left'){{
+          const id=c.getColId(); const w=c.getActualWidth();
+          const factor = prot.has(id) ? 0.95 : 0.90; // Protegidas se comprimen un poco menos
+          let nw = Math.floor(w * factor);
+          if(nw < minW) nw = minW;
+          if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
+        }}
+      }});
+    }}
+
+    function __unpinUntilFits(params, protectedSet, targetW){{
+      // Despinea desde la derecha de la banda pineada; saltar protegidas
+      const cols = params.columnApi.getAllDisplayedColumns() || [];
+      const left = cols.filter(c=>c.getPinned()==='left');
+      for(let i=left.length-1;i>=0;i--){{
+        const id = left[i].getColId();
+        if(protectedSet.has(id)) continue;
+        params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:null}}], applyOrder:false }});
+        if(__pinnedLeftWidth(params) <= targetW) break;
+      }}
+    }}
+
+    function __restorePins(params, origOrder, protectedSet, targetW){{
+      // Re-pinea en orden original si hay espacio
+      const current = new Set(__pinnedLeftIds(params));
+      for(const id of origOrder){{
+        if(current.has(id) || protectedSet.has(id)) continue; // ya pinned u obligado a pinned aparte
+        const col = params.columnApi.getColumn(id); if(!col) continue;
+        const probeW = Math.max(40, Math.min(95, col.getActualWidth()));
+        const now = __pinnedLeftWidth(params);
+        if(now + probeW <= targetW){{
+          params.columnApi.applyColumnState({{ state:[{{colId:id,pinned:'left'}}], applyOrder:false }});
+          current.add(id);
+        }}
+      }}
+    }}
+
+    function __applyPinnedPolicy(params){{
+      const orig = {PINNED_ORIG};
+      const protectedIds = {PROTECTED};
+      const prot = new Set(protectedIds);
+      const state = __ensurePinPolicyState(params.api);
+
+      const gw = __gridWidth(params);
+      if(!gw) return;
+      const ratio = (gw >= 1024) ? 0.50 : 0.40; // 50% desktop ancho, 40% móvil/estrecho
+      const target = Math.floor(gw * ratio);
+
+      // 1) Autosize inicial de pinned y clamp a [40,95]
+      __autoSizePinnedOnce(params, orig);
+      __clampLeft(params, 40, 95);
+
+      // 2) Si excede el presupuesto, comprimir y luego despinnear desde la derecha
+      if(__pinnedLeftWidth(params) > target){{
+        for(let k=0;k<4 && __pinnedLeftWidth(params) > target;k++){{ __compressLeft(params, 40); }}
+        if(__pinnedLeftWidth(params) > target){{ __unpinUntilFits(params, prot, target); }}
+      }} else {{
+        // 3) Si hay espacio, intentar restaurar pins en orden original
+        __restorePins(params, orig, prot, target);
+      }}
+    }}
+    """)
+    js_on_ready_and_resize = JsCode("""
+      function(params){
+        if (typeof __applyPinnedPolicy === 'function') {
+          __applyPinnedPolicy(params);
+        }
+      }
+    """)
+
+    gb.configure_grid_options(
+        onGridReady=js_on_ready_and_resize,
+        onFirstDataRendered=js_on_ready_and_resize,
+        onGridSizeChanged=js_on_ready_and_resize,
+        onDisplayedColumnsChanged=js_on_ready_and_resize,
+        onColumnResized=js_on_ready_and_resize
+    )
+    # ---------------------------------------------------------------
+
+    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=1000)
+    gb.configure_grid_options(suppressPaginationPanel=True)
+
+    gb.configure_selection(selection_mode="single" if enable_selection else "none", use_checkbox=False)
+    return df_prepared, gb.build()
+
+def create_aggrid_with_subtotals(df: pd.DataFrame, enable_selection: bool = False, show_subtotals_at_top: bool = False) -> tuple:
+    """
+    Crea configuración de AgGrid con subtotales nativos integrados usando filas pinned.
+    
+    Args:
+        df: DataFrame para mostrar
+        enable_selection: Si habilitar selección de filas
+        show_subtotals_at_top: Si mostrar subtotales al inicio
+        
+    Returns:
+        Tuple con (df_prepared, grid_options, subtotal_data)
+    """
+    # Preparar DataFrame
+    df_prepared = prepare_dataframe_for_aggrid(df).copy()
+    
+    # Crear subtotales
+    subtotal_row = create_aggrid_subtotal_row(df_prepared)
+    
+    # Crear configuración base
+    df_prepared, grid_options = create_aggrid_config(df_prepared, enable_selection)
+    
+    # Configurar subtotales usando filas pinned con estilo especial
+    if show_subtotals_at_top:
+        grid_options["pinnedTopRowData"] = [subtotal_row]
+        if "pinnedBottomRowData" in grid_options:
+            del grid_options["pinnedBottomRowData"]
+    else:
+        grid_options["pinnedBottomRowData"] = [subtotal_row]
+        if "pinnedTopRowData" in grid_options:
+            del grid_options["pinnedTopRowData"]
+    
+    # Configurar estilo especial para fila de subtotales
+    grid_options["getRowStyle"] = JsCode("""
+        function(params) {
+            if (params.node && params.node.rowPinned) {
+                return {
+                    'background-color': '#e8f4fd',
+                    'font-weight': 'bold',
+                    'border-top': '2px solid #1f77b4',
+                    'font-size': '13px'
+                };
+            }
+            return null;
+        }
+    """)
+    
+    # Configurar altura de fila para subtotales
+    grid_options["getRowHeight"] = JsCode("""
+        function(params) {
+            if (params.node && params.node.rowPinned) {
+                return 40; // Fila de subtotales más alta
+            }
+            return 32; // Altura normal
+        }
+    """)
+    
+    return df_prepared, grid_options, subtotal_row
+
+def create_aggrid_subtotal_row(df: pd.DataFrame) -> dict:
+    """
+    Crea una fila de subtotales nativa de AgGrid con formato especial.
+    
+    Args:
+        df: DataFrame para calcular subtotales
+        
+    Returns:
+        Diccionario con los subtotales calculados para AgGrid
+    """
+    subtotal_row = {}
+    
+    # Columnas numéricas para sumar
+    numeric_cols = [
+        "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total", 
+        "Materiales Directos", "Materiales Indirectos", "Materiales Total", 
+        "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales",
+        "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+        "Almacenaje MMPP", "Comex", "Guarda PT", "Gastos Totales (USD/kg)",
+        "Costos Totales (USD/kg)", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)",
+        "KgEmbarcados", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)"
+    ]
+    
+    # Calcular subtotales para columnas numéricas existentes
+    for col in numeric_cols:
+        if col in df.columns:
+            # Convertir a numérico antes de sumar
+            numeric_series = pd.to_numeric(df[col], errors="coerce")
+            kg_emb = pd.to_numeric(df["KgEmbarcados"], errors="coerce")
+            subtotal_row[col] = (numeric_series * kg_emb).sum(skipna=True)/kg_emb.sum(skipna=True)
+    
+    # Columnas no numéricas - mostrar mensaje genérico o vacío
+    non_numeric_cols = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", 
+                       "Especie", "Condicion", "EBITDA Pct"]
+    
+    for col in non_numeric_cols:
+        if col in df.columns:
+            if col == "EBITDA Pct":
+                # Calcular EBITDA Pct como promedio ponderado
+                if "EBITDA (USD/kg)" in df.columns and "PrecioVenta (USD/kg)" in df.columns:
+                    # Convertir a numérico antes de hacer operaciones
+                    ebitda_series = pd.to_numeric(df["EBITDA (USD/kg)"], errors="coerce")
+                    precio_series = pd.to_numeric(df["PrecioVenta (USD/kg)"], errors="coerce")
+                    total_ebitda = ebitda_series.sum(skipna=True)
+                    total_precio = precio_series.sum(skipna=True)
+                    if total_precio != 0 and not pd.isna(total_ebitda) and not pd.isna(total_precio):
+                        subtotal_row[col] = (total_ebitda / total_precio) * 100
+                    else:
+                        subtotal_row[col] = 0
+                else:
+                    subtotal_row[col] = ""
+            else:
+                subtotal_row[col] = ""
+    
+    # Agregar identificador de subtotal
+    subtotal_row["SKU"] = "SUBTOTAL"
+    
+    return subtotal_row
+
+def prepare_dataframe_for_aggrid(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepara un DataFrame para ser mostrado en AgGrid, limpiando tipos de datos problemáticos.
+    
+    Args:
+        df: DataFrame original
+        
+    Returns:
+        DataFrame preparado para AgGrid
+    """
+    df_prepared = df.copy()
+    
+    # Identificar columnas numéricas que deben mantenerse como números
+    numeric_cols = [
+        "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total", 
+        "Materiales Directos", "Materiales Indirectos", "Materiales Total", 
+        "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales",
+        "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+        "Almacenaje MMPP", "Comex", "Guarda PT", "Gastos Totales (USD/kg)",
+        "Costos Totales (USD/kg)", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)",
+        "KgEmbarcados", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)",
+        "EBITDA Pct", "EBITDA Simple (USD)"
+    ]
+    
+    # Limpiar columnas no numéricas para compatibilidad con Arrow
+    for col in df_prepared.columns:
+        if col not in numeric_cols:
+            # Convertir listas y tuplas a strings
+            def _clean_value(x):
+                if x is None or (isinstance(x, float) and pd.isna(x)):
+                    return ""
+                elif isinstance(x, (list, tuple)):
+                    return ", ".join(map(str, x))
+                elif isinstance(x, str) and x.strip().startswith("[") and x.strip().endswith("]"):
+                    try:
+                        lst = ast.literal_eval(x)
+                        if isinstance(lst, (list, tuple)):
+                            return ", ".join(map(str, lst))
+                    except Exception:
+                        pass
+                return str(x)
+            
+            df_prepared[col] = df_prepared[col].apply(_clean_value)
+    
+    # Mantener columnas numéricas como números, pero limpiar valores problemáticos
+    for col in numeric_cols:
+        if col in df_prepared.columns:
+            # Convertir a numérico, manteniendo NaN para valores inválidos
+            df_prepared[col] = pd.to_numeric(df_prepared[col], errors='coerce')
+    return df_prepared
