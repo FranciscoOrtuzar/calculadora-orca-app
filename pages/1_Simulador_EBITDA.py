@@ -135,7 +135,7 @@ try:
         apply_granel_filters, get_granel_filter_options, apply_granel_global_overrides,
         recalculate_granel_totals, apply_granel_universal_adjustments, calculate_granel_kpis,
         get_top_bottom_granel, create_granel_cost_chart, export_granel_escenario,
-        sync_granel_changes_to_retail
+        sync_granel_changes_to_retail, get_data_for_download, get_mime_type, get_file_extension
     )
 except ImportError as e:
     st.warning(f"⚠️ Error importando desde src/: {e}")
@@ -496,16 +496,31 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                 hide_index=True
             )
             
-            # Botón de exportación
-            csv_skus_excluidos = skus_excluidos.to_csv(index=False)
-            st.download_button(
-                label="📥 Descargar Lista Completa de SKUs excluidos (CSV)",
-                data=csv_skus_excluidos,
-                file_name="subproductos_excluidos_completo.csv",
-                mime="text/csv",
-                width='stretch',
-                key="download_skus_excluidos_sim_1"
-            )
+            # Botón de exportación con selector de formato
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                format_skus_excluidos = st.selectbox(
+                    "Formato:",
+                    options=["csv", "excel"],
+                    format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                    help="Selecciona el formato de descarga",
+                    key="skus_excluidos_format_1"
+                )
+            
+            with col2:
+                data_skus_excluidos = get_data_for_download(skus_excluidos, format_skus_excluidos)
+                mime_type_skus_excluidos = get_mime_type(format_skus_excluidos)
+                extension_skus_excluidos = get_file_extension(format_skus_excluidos)
+                
+                st.download_button(
+                    label=f"📥 Descargar Lista Completa de SKUs excluidos ({format_skus_excluidos.upper()})",
+                    data=data_skus_excluidos,
+                    file_name=f"subproductos_excluidos_completo.{extension_skus_excluidos}",
+                    mime=mime_type_skus_excluidos,
+                    width='stretch',
+                    key="download_skus_excluidos_sim_1"
+                )
 
 # Filtros Dinamicos de la libreria streamlit-dynamic-filters
 st.sidebar.header("🔍 Filtros Dinámicos")
@@ -1244,16 +1259,31 @@ with tab_sku:
                         width='stretch'
                     )
                     
-                    # Botón de exportación
-                    csv_subproductos = subproductos.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Descargar Lista Completa de Subproductos (CSV)",
-                        data=csv_subproductos,
-                        file_name="subproductos_excluidos_completo.csv",
-                        mime="text/csv",
-                        width='stretch',
-                        key="download_subproductos_sim_2"
-                    )
+                    # Botón de exportación con selector de formato
+                    col1, col2 = st.columns([1, 1])
+                    
+                    with col1:
+                        format_subproductos = st.selectbox(
+                            "Formato:",
+                            options=["csv", "excel"],
+                            format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                            help="Selecciona el formato de descarga",
+                            key="subproductos_format_2"
+                        )
+                    
+                    with col2:
+                        data_subproductos = get_data_for_download(subproductos, format_subproductos)
+                        mime_type_subproductos = get_mime_type(format_subproductos)
+                        extension_subproductos = get_file_extension(format_subproductos)
+                        
+                        st.download_button(
+                            label=f"📥 Descargar Lista Completa de Subproductos ({format_subproductos.upper()})",
+                            data=data_subproductos,
+                            file_name=f"subproductos_excluidos_completo.{extension_subproductos}",
+                            mime=mime_type_subproductos,
+                            width='stretch',
+                            key="download_subproductos_sim_2"
+                        )
 
         st.header("📊 KPIs")
 
@@ -1415,7 +1445,7 @@ with tab_sku:
         # ===================== Export =====================
         st.header("💾 Exportar Escenario")
 
-        col1, col2 = st.columns([2, 1])
+        col1, col2, col3 = st.columns([2, 1, 1])
 
         with col1:
             filename_prefix = st.text_input(
@@ -1425,25 +1455,35 @@ with tab_sku:
             )
 
         with col2:
-            if st.button("📥 Exportar a CSV", type="primary"):
+            export_format = st.selectbox(
+                "Formato:",
+                options=["csv", "excel"],
+                format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                help="Selecciona el formato de exportación"
+            )
+
+        with col3:
+            if st.button("📥 Exportar", type="primary"):
                 try:
-                    # Exportar escenario
-                    export_path = export_escenario(df_current, filename_prefix)
+                    # Generar datos para descarga
+                    data = get_data_for_download(df_current, export_format)
+                    mime_type = get_mime_type(export_format)
+                    extension = get_file_extension(export_format)
                     
-                    # Leer archivo para descarga
-                    with open(export_path, 'r', encoding='utf-8') as f:
-                        csv_content = f.read()
+                    # Generar nombre de archivo con timestamp
+                    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+                    filename = f"{filename_prefix}_{timestamp}.{extension}"
                     
                     # Botón de descarga
                     st.download_button(
-                        label="⬇️ Descargar CSV",
-                        data=csv_content,
-                        file_name=export_path.name,
-                        mime="text/csv",
-                        key="download_escenario_csv"
+                        label=f"⬇️ Descargar {export_format.upper()}",
+                        data=data,
+                        file_name=filename,
+                        mime=mime_type,
+                        key="download_escenario"
                     )
                     
-                    st.success(f"✅ Escenario exportado exitosamente a: {export_path}")
+                    st.success(f"✅ Escenario listo para descarga en formato {export_format.upper()}")
                     
                 except Exception as e:
                     st.error(f"❌ Error exportando escenario: {e}")
@@ -2128,27 +2168,41 @@ with tab_granel:
 
         # --------- Export ---------
         st.subheader("💾 Exportar Escenario de Granel")
-        ec1, ec2 = st.columns([2, 1])
+        ec1, ec2, ec3 = st.columns([2, 1, 1])
         with ec1:
             filename_prefix_granel = st.text_input(
                 "Prefijo del archivo:",
                 value="escenario_granel",
-                help="Nombre base para el CSV"
+                help="Nombre base para el archivo"
             )
         with ec2:
-            if st.button("📥 Exportar a CSV", type="primary", key="export_granel_csv"):
+            export_format_granel = st.selectbox(
+                "Formato:",
+                options=["csv", "excel"],
+                format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                help="Selecciona el formato de exportación",
+                key="granel_format"
+            )
+        with ec3:
+            if st.button("📥 Exportar", type="primary", key="export_granel"):
                 try:
-                    export_path = export_granel_escenario(st.session_state["sim.granel_df"], filename_prefix_granel)
-                    with open(export_path, 'r', encoding='utf-8') as f:
-                        csv_content = f.read()
+                    # Generar datos para descarga
+                    data = get_data_for_download(st.session_state["sim.granel_df"], export_format_granel)
+                    mime_type = get_mime_type(export_format_granel)
+                    extension = get_file_extension(export_format_granel)
+                    
+                    # Generar nombre de archivo con timestamp
+                    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+                    filename = f"{filename_prefix_granel}_{timestamp}.{extension}"
+                    
                     st.download_button(
-                        label="⬇️ Descargar CSV",
-                        data=csv_content,
-                        file_name=export_path.name,
-                        mime="text/csv",
-                        key="download_granel_csv"
+                        label=f"⬇️ Descargar {export_format_granel.upper()}",
+                        data=data,
+                        file_name=filename,
+                        mime=mime_type,
+                        key="download_granel"
                     )
-                    st.success(f"✅ Exportado: {export_path}")
+                    st.success(f"✅ Escenario de granel listo para descarga en formato {export_format_granel.upper()}")
                 except Exception as e:
                     st.error(f"❌ Error exportando: {e}")
 
@@ -2411,12 +2465,18 @@ with tab_granel:
         
         # Resaltar diferencias significativas
         def highlight_differences(val):
-            if isinstance(val, (int, float)):
-                if abs(val) > 0.1:  # Diferencia significativa
-                    return 'background-color: #ffebee'  # Rojo claro
-                elif abs(val) > 0.05:  # Diferencia moderada
-                    return 'background-color: #fff3e0'  # Naranja claro
-            return ''
+            if col == "Δ EBITDA %":
+                if abs(val) > 10:
+                    return 'background-color: #ffebee'
+                elif abs(val) > 5:
+                    return 'background-color: #fff3e0'
+            else:
+                if isinstance(val, (int, float)):
+                    if abs(val) > 0.1:  # Diferencia significativa
+                        return 'background-color: #ffebee'  # Rojo claro
+                    elif abs(val) > 0.05:  # Diferencia moderada
+                        return 'background-color: #fff3e0'  # Naranja claro
+                return ''
         
         # Aplicar estilos a las columnas de diferencias
         diff_cols = ["Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
@@ -2424,9 +2484,24 @@ with tab_granel:
             if col in comparison_display.columns:
                 styled_comparison = styled_comparison.applymap(highlight_differences, subset=[col])
         
+        config = {}
+        for col in styled_comparison.columns:
+            if col not in ["SKU", "Descripción", "Marca", "Cliente", "Especie", "Condición"]:
+                if col == "Δ EBITDA %":
+                    config[col] = st.column_config.NumberColumn(
+                        col,
+                        format="%.1f%%"
+                    )
+                else:
+                    config[col] = st.column_config.NumberColumn(
+                        col,
+                        format="%.2f"
+                    )
+
         # Mostrar tabla
         st.dataframe(
             styled_comparison,
+            column_config=config,
             use_container_width=True,
             height=400,
             hide_index=True
@@ -2453,14 +2528,30 @@ with tab_granel:
             st.write(f"- Desviación: {ebitda_pct_diff.std():.1f}pp")
             st.write(f"- Rango: {ebitda_pct_diff.min():.1f}pp a {ebitda_pct_diff.max():.1f}pp")
         
-        # Botón de descarga
-        csv_data = comparison_display.to_csv(index=False)
-        st.download_button(
-            label="📥 Descargar Comparación (CSV)",
-            data=csv_data,
-            file_name=f"comparacion_sim_vs_hist_{len(comparison_data)}_skus.csv",
-            mime="text/csv"
-        )
+        # Botón de descarga con selector de formato
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            export_format_comparison = st.selectbox(
+                "Formato de descarga:",
+                options=["csv", "excel"],
+                format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                help="Selecciona el formato de descarga",
+                key="comparison_format"
+            )
+        
+        with col2:
+            data = get_data_for_download(comparison_display, export_format_comparison)
+            mime_type = get_mime_type(export_format_comparison)
+            extension = get_file_extension(export_format_comparison)
+            
+            st.download_button(
+                label=f"📥 Descargar Comparación ({export_format_comparison.upper()})",
+                data=data,
+                file_name=f"comparacion_sim_vs_hist_{len(comparison_data)}_skus.{extension}",
+                mime=mime_type,
+                key="download_comparison"
+            )
 
     
 with tab_precio_frutas:
@@ -3354,12 +3445,25 @@ with tab_receta:
     with col1:
         # Descargar recetas filtradas
         if not receta_filtrada.empty:
-            csv_recetas = receta_filtrada.to_csv(index=False)
+            st.write("**Recetas Filtradas:**")
+            format_recetas = st.selectbox(
+                "Formato:",
+                options=["csv", "excel"],
+                format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                help="Selecciona el formato de descarga",
+                key="recetas_format"
+            )
+            
+            data_recetas = get_data_for_download(receta_filtrada, format_recetas)
+            mime_type_recetas = get_mime_type(format_recetas)
+            extension_recetas = get_file_extension(format_recetas)
+            
             st.download_button(
-                label="📥 Descargar Recetas Filtradas (CSV)",
-                data=csv_recetas,
-                file_name=f"recetas_filtradas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                label=f"📥 Descargar Recetas Filtradas ({format_recetas.upper()})",
+                data=data_recetas,
+                file_name=f"recetas_filtradas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.{extension_recetas}",
+                mime=mime_type_recetas,
+                key="download_recetas"
             )
         else:
             st.info("No hay recetas para descargar")
@@ -3367,12 +3471,25 @@ with tab_receta:
     with col2:
         # Descargar estadísticas por fruta
         if 'stats_fruta' in locals() and not stats_fruta.empty:
-            csv_stats = stats_fruta.to_csv(index=False)
+            st.write("**Estadísticas por Fruta:**")
+            format_stats = st.selectbox(
+                "Formato:",
+                options=["csv", "excel"],
+                format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                help="Selecciona el formato de descarga",
+                key="stats_format"
+            )
+            
+            data_stats = get_data_for_download(stats_fruta, format_stats)
+            mime_type_stats = get_mime_type(format_stats)
+            extension_stats = get_file_extension(format_stats)
+            
             st.download_button(
-                label="📥 Descargar Estadísticas por Fruta (CSV)",
-                data=csv_stats,
-                file_name=f"stats_frutas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                label=f"📥 Descargar Estadísticas por Fruta ({format_stats.upper()})",
+                data=data_stats,
+                file_name=f"stats_frutas_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.{extension_stats}",
+                mime=mime_type_stats,
+                key="download_stats"
             )
         else:
             st.info("No hay estadísticas para descargar")
