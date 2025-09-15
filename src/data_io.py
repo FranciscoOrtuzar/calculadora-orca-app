@@ -7,9 +7,13 @@ import io
 import pandas as pd
 import numpy as np
 import unicodedata
+import ast
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 import streamlit as st
+from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode, JsCode
+import pygwalker as pyg
+import json
 
 # ===================== Configuración =====================
 REQ_SHEETS = {
@@ -323,7 +327,7 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
         if c in ["Fruta_id", "Fruta"]:
             continue
         df[c] = df[c].apply(to_number_safe)
-    
+
     df["Proceso Granel (USD/kg)"] = sum_existing(df, ["MO Directa", "MO Indirecta", "Materiales Directos",
     "Materiales Indirectos", "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales", "Utilities",
     "Fletes", "Comex", "Guarda Producto Terminado"])
@@ -693,6 +697,12 @@ def columns_config(editable: bool = True) -> dict:
                 width="medium",
                 pinned="left"
             )
+        elif col == "Especie":
+            editable_columns[col] = st.column_config.ListColumn(
+                col,
+                disabled=True,
+                help=f"{col} (no editable)",
+            )
         else:
             editable_columns[col] = st.column_config.TextColumn(
                 col,
@@ -808,7 +818,7 @@ def columns_config(editable: bool = True) -> dict:
         elif col == "EBITDA (USD)":
             editable_columns["EBITDA (USD)"] = st.column_config.NumberColumn(
                 "EBITDA (USD)",
-                help="EBITDA en dólares (desde valores mensuales)",
+                                        help="EBITDA en dólares (desde valores mensuales)",
                 format="%.0f",
                 step=1,
                 disabled=True
@@ -987,6 +997,11 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Option
     costos_detalle_calculado["Proceso Granel (USD/kg)"] = -abs(costos_detalle_calculado["Proceso Granel (USD/kg) (Calculado)"].fillna(costos_detalle_calculado["Proceso Granel (USD/kg)"]))
     costos_detalle_calculado = costos_detalle_calculado.drop(columns=["MMPP (Fruta) (USD/kg) (Calculado)", "Almacenaje (Calculado)", "Proceso Granel (USD/kg) (Calculado)"])
     detalle = costos_detalle_calculado.merge(dim, on="SKU", how="right")
+    
+    # 3.2) Corregir especies basándose en las recetas
+    detalle = correct_species_from_recipes(detalle, sheets["RECETA_SKU"], sheets["INFO_FRUTA"])
+    detalle = ensure_list_species(detalle, "Especie")
+    
     # Si ambos tienen SKU-Cliente, unir por esa columna; si no, unir por SKU
     if "SKU-Cliente" in dim.columns:
         detalle = detalle.merge(latest, on="SKU-Cliente", how="right")
@@ -1148,6 +1163,69 @@ def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANE
     granel_ponderado = build_fact_granel_ponderado(sheets[sheet_granel[1]])
     return granel, granel_ponderado
 
+def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Devuelve un DataFrame de UNA FILA con el subtotal ponderado por KgEmbarcados.
+    - Para columnas numéricas (unitarias) hace promedio ponderado por KgEmbarcados.
+    - 'KgEmbarcados' se suma.
+    - 'EBITDA Pct' se calcula como (Σ(EBITDA/kg * Kg) / Σ(PrecioVenta/kg * Kg)) * 100,
+      si ambas columnas existen; de lo contrario, promedio ponderado simple.
+    - En 'SKU' pone 'Subtotal' y deja vacíos en las demás no numéricas.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+
+    # pesos
+    w = pd.to_numeric(work.get("KgEmbarcados"), errors="coerce").fillna(0.0)
+    W = float(w.sum())
+
+    subtotal = {}
+
+    # Etiquetas / no numéricas
+    label_cols = {"SKU": "Subtotal", "SKU-Cliente": "", "Marca": "", "Cliente": "",
+                  "Especie": "", "Condicion": "", "Descripcion": ""}
+    for c, val in label_cols.items():
+        if c in work.columns:
+            subtotal[c] = val
+
+    # KgEmbarcados -> suma
+    if "KgEmbarcados" in work.columns:
+        subtotal["KgEmbarcados"] = W
+
+    # EBITDA Pct especial (si hay columnas base)
+    if "EBITDA Pct" in work.columns:
+        eb = pd.to_numeric(work.get("EBITDA (USD/kg)"), errors="coerce")
+        pv = pd.to_numeric(work.get("PrecioVenta (USD/kg)"), errors="coerce")
+        if eb is not None and pv is not None and W > 0:
+            eb_sum = (eb * w).sum(skipna=True)
+            pv_sum = (pv * w).sum(skipna=True)
+            subtotal["EBITDA Pct"] = float((eb_sum / pv_sum) * 100) if pv_sum and not np.isnan(pv_sum) else 0.0
+        else:
+            # fallback: promedio ponderado de la columna existente
+            pct = pd.to_numeric(work["EBITDA Pct"], errors="coerce")
+            subtotal["EBITDA Pct"] = float((pct * w).sum(skipna=True) / W) if W > 0 else 0.0
+
+    # Resto de columnas numéricas -> promedio ponderado
+    for c in work.columns:
+        if c in subtotal:  # ya calculadas arriba
+            continue
+        if c in label_cols:  # no numéricas
+            continue
+        s = pd.to_numeric(work[c], errors="coerce")
+        if s.notna().any():
+            if c == "KgEmbarcados":
+                # ya calculado
+                continue
+            # promedio ponderado por Kg
+            subtotal[c] = float((s * w).sum(skipna=True) / W) if W > 0 else 0.0
+        else:
+            subtotal[c] = ""
+
+    # Devolver como UNA fila
+    return pd.DataFrame([subtotal])
+
 # ===================== Carga de datos de fruta =====================
 def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1185,8 +1263,75 @@ def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
     
     # Resetear índice
     df = df.reset_index(drop=True)
-    
     return df
+
+
+def load_especies(
+    df_receta: pd.DataFrame,
+    df_detalle: pd.DataFrame,
+    info_df: pd.DataFrame,
+    *,
+    as_list: bool = True,   # True -> guarda listas; False -> "A, B, C"
+    sep: str = ", "
+) -> pd.DataFrame:
+    det = df_detalle.copy()
+
+    # --- Normaliza llaves a string (evita 1020 vs 1020.0) ---
+    det["SKU"] = det["SKU"].astype(str)
+    df_receta = df_receta.copy()
+    info_df   = info_df.copy()
+    df_receta["SKU"] = df_receta["SKU"].astype(str)
+    df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str)
+    info_df["Fruta_id"]   = info_df["Fruta_id"].astype(str)
+
+    # --- Fruta_id -> Nombre ---
+    lu = (info_df.dropna(subset=["Fruta_id", "Name"])
+                  .drop_duplicates("Fruta_id")
+                  .set_index("Fruta_id")["Name"])
+
+    # --- SKU -> lista de nombres únicos/ordenados ---
+    rec = df_receta.loc[:, ["SKU", "Fruta_id"]].dropna().copy()
+    rec["Name"] = rec["Fruta_id"].map(lu)
+    rec = rec.dropna(subset=["Name"])
+
+    names_by_sku = rec.groupby("SKU")["Name"].apply(
+        lambda s: sorted({str(x).strip() for x in s if str(x).strip()})
+    )  # Series: SKU -> List[str]
+
+    # Serie con listas (o NaN) alineada al índice de det
+    mapped = det["SKU"].map(names_by_sku)
+    # Asegura que los valores de mapped sean listas (por si vienen como str)
+    mapped = mapped.apply(lambda v: v if isinstance(v, list) or pd.isna(v) else [v])
+
+    # --- Fallback: usa Especie existente convertida a lista ---
+    def _to_list(v):
+        if isinstance(v, list):
+            return v
+        if pd.isna(v):
+            return []
+        # Si viene como texto tipo "['A','B']" intentar parsear
+        s = str(v).strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                val = ast.literal_eval(s)
+                if isinstance(val, list):
+                    return [str(x) for x in val]
+            except Exception:
+                pass
+        return [s]
+
+    current = det["Especie"] if "Especie" in det.columns else pd.Series(index=det.index, dtype=object)
+    current_list = current.apply(_to_list)
+
+    # Construye la nueva columna: donde hay receta usa mapped, si no, usa current_list
+    new_especie = current_list.copy()
+    mask = mapped.notna()
+    new_especie.loc[mask] = mapped.loc[mask]
+
+    # Guarda como listas o como string "A, B, C"
+    det["Especie"] = new_especie if as_list else new_especie.apply(lambda lst: sep.join(lst))
+
+    return det
 
 
 def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
@@ -1247,6 +1392,129 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ===================== Cálculo de MMPP =====================
+def ensure_list_species(df: pd.DataFrame, col="Especie") -> pd.DataFrame:
+    """
+    Normaliza la columna de especies para PyArrow serialization.
+    Convierte listas a strings con formato especial para ListColumn.
+    
+    Args:
+        df: DataFrame con la columna de especies
+        col: Nombre de la columna de especies (default: "Especie")
+        
+    Returns:
+        DataFrame con la columna normalizada para PyArrow
+    """
+    if col not in df.columns:
+        return df.copy()
+    
+    def to_string_list(v):
+        # None/NaN -> string vacío
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        # ya es lista -> convertir a string con formato especial
+        if isinstance(v, list):
+            if not v:  # lista vacía
+                return ""
+            # Usar formato que PyArrow puede parsear como lista
+            return str(v)
+        # venía como string que "parece lista"
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    val = ast.literal_eval(s)
+                    if isinstance(val, list):
+                        return str(val)
+                except Exception:
+                    pass
+            # string simple -> lista de 1
+            return str([s]) if s else ""
+        # cualquier otro tipo -> lista de 1
+        return str([str(v)])
+    
+    out = df.copy()
+    out[col] = out[col].apply(to_string_list)
+    return out
+
+def correct_species_from_recipes(detalle_df: pd.DataFrame,
+                                 receta_df: pd.DataFrame,
+                                 info_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Reemplaza detalle['Especie'] por una LISTA de especies derivadas de la receta del SKU.
+    Si un SKU no tiene receta, deja la especie original tal cual.
+    """
+    try:
+        # Validaciones mínimas
+        if detalle_df is None or detalle_df.empty:
+            return detalle_df
+        if receta_df is None or receta_df.empty:
+            return detalle_df
+        if info_df is None or info_df.empty:
+            return detalle_df
+
+        # Copias de trabajo
+        det = detalle_df.copy()
+        rec = receta_df.copy()
+        info = info_df.copy()
+
+        # Normalizar tipos/llaves
+        rec["SKU"] = rec["SKU"].astype(str).str.strip()
+        rec["Fruta_id"] = rec["Fruta_id"].astype(str).str.strip()
+        info["Fruta_id"] = info["Fruta_id"].astype(str).str.strip()
+
+        # Elegir columna de especie en INFO_FRUTA (ajusta si en tu data es otra)
+        especie_col = "Name" if "Name" in info.columns else (
+            "Especie" if "Especie" in info.columns else None
+        )
+        if especie_col is None:
+            # No hay cómo mapear especies desde INFO_FRUTA
+            return detalle_df
+
+        # Mapa Fruta_id -> Especie (string)
+        fruta_to_especie = (
+            info.set_index("Fruta_id")[especie_col]
+            .astype(str)
+            .str.strip()
+            .to_dict()
+        )
+
+        # Añadir especie a cada fila de la receta
+        rec["Especie_from_rec"] = rec["Fruta_id"].map(fruta_to_especie)
+        rec = rec.dropna(subset=["Especie_from_rec"])
+
+        # Diccionario SKU -> lista única y ordenada de especies
+        sku_to_species = (
+            rec.groupby("SKU")["Especie_from_rec"]
+               .apply(lambda s: sorted(set(s.dropna().astype(str).str.strip())))
+               .to_dict()
+        )
+
+        # Mapear al detalle
+        det["SKU_str"] = det["SKU"].astype(str).str.strip()
+        det["Especie_rec"] = det["SKU_str"].map(sku_to_species)
+
+        # Reemplazar solo donde hay receta (listas) y convertir el resto a listas
+        mask = det["Especie_rec"].notna()
+        # Asegura dtype objeto para poder guardar listas
+        det["Especie"] = det["Especie"].astype(object)
+        
+        # Donde hay receta, usar la lista de especies de la receta
+        det.loc[mask, "Especie"] = det.loc[mask, "Especie_rec"]
+        
+        # Donde NO hay receta, convertir el string original a lista
+        no_receta_mask = ~mask
+        det.loc[no_receta_mask, "Especie"] = det.loc[no_receta_mask, "Especie"].apply(
+            lambda x: [str(x)] if pd.notna(x) and str(x).strip() else []
+        )
+
+        # Limpiar columnas auxiliares
+        det = det.drop(columns=["SKU_str", "Especie_rec"])
+
+        return det
+
+    except Exception as e:
+        print(f"Error corrigiendo especies: {e}")
+        return detalle_df
 
 def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1281,31 +1549,31 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         # 2. Copia y normalización de datos
         df_receta = receta_df[required_receta_cols].copy()
         df_info = info_df[required_info_cols].copy()
-        
+
         # Normalizar 'Fruta_id' a string y limpiar espacios
         df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str).str.strip()
         df_info["Fruta_id"] = df_info["Fruta_id"].astype(str).str.strip()
-        
-        # Convertir columnas a tipo numérico
+
+                    # Convertir columnas a tipo numérico
         df_receta["Porcentaje"] = df_receta["Porcentaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_receta["Óptimo"] = df_receta["Óptimo"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Precio"] = df_info["Precio"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Rendimiento"] = df_info["Rendimiento"].apply(lambda x: to_number_safe(x, comma_decimal=True))
         df_info["Almacenaje"] = df_info["Almacenaje"].apply(lambda x: to_number_safe(x, comma_decimal=True))
-        
+
         # 3. Filtrado y validación de rangos
-        # df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
+                    # df_receta.dropna(subset=["Porcentaje", "Óptimo"], inplace=True)
         df_info.dropna(subset=["Precio", "Rendimiento", "Almacenaje"], inplace=True)
-        
-        # df_receta = df_receta[df_receta["Porcentaje"] > 0]
+
+                    # df_receta = df_receta[df_receta["Porcentaje"] > 0]
         df_receta = df_receta[(df_receta["Óptimo"] > 0) | (df_receta["Porcentaje"] > 0)]
         df_info = df_info[
             (df_info["Precio"] >= 0) &
             (df_info["Rendimiento"] > 0) &
             (df_info["Rendimiento"] <= 1) &
-            (df_info["Almacenaje"] != 0)
-        ]
-        
+                        (df_info["Almacenaje"] != 0)
+                    ]
+                    
         # 4. Preparar datos de granel (si existen)
         if granel_df is not None and not granel_df.empty:
             # Verificar si granel_df tiene la columna Proceso Granel ya calculada
@@ -1318,7 +1586,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
             else:
                 # Calcular Proceso Granel desde columnas de costos
                 cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos", 
-                               "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
+                            "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
                 available_cost_cols = [col for col in cost_columns if col in granel_df.columns]
                 
                 if available_cost_cols:
@@ -1342,7 +1610,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
         # 5. Cálculo optimizado usando merge y operaciones vectorizadas
         # Unir receta con info (TODAS las frutas)
         df_merged = pd.merge(df_receta, df_info, on="Fruta_id", how="inner")
-        
+                    
         # Unir con granel (solo frutas que están en granel)
         df_merged = pd.merge(df_merged, df_granel, on="Fruta_id", how="left")
         
@@ -1380,14 +1648,14 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
                 "Proceso Granel (USD/kg)": pd.NamedAgg(column='Costo_Proceso_Granel', aggfunc='sum')
             }
         ).reset_index()
-        
+                    
         # 8. Aplicar signos negativos (costos)
         df_result["MMPP (Fruta) (USD/kg)"] = -abs(df_result["MMPP (Fruta) (USD/kg)"])
         df_result["Almacenaje"] = -abs(df_result["Almacenaje"])
         df_result["Proceso Granel (USD/kg)"] = -abs(df_result["Proceso Granel (USD/kg)"])
-        
+
         return df_result
-        
+                
     except Exception as e:
         print(f"ERROR en compute_mmpp_unified: {e}")
         import traceback
@@ -1664,3 +1932,232 @@ INSTRUCCIONES PARA AGREGAR NUEVAS FUENTES DE DATOS:
    - INFO_FRUTA: Hoja con columnas [Fruta_id, PrecioUSD_kg, Eficiencia]
    - Usar load_receta_sku() y load_info_fruta() para cargar
 """
+
+# ===================== Funciones de AgGrid =====================
+def get_aggrid_custom_css() -> dict:
+    """
+    Retorna CSS personalizado para mejorar la apariencia de AgGrid con diseño compacto
+    """
+    return {
+        ".ag-header": {
+            "background-color": "#1976d2",
+            "color": "white",
+            "font-weight": "600",
+            "font-size": "12px",
+            "height": "40px !important",
+            "line-height": "1.3"
+        },
+        ".ag-header-cell": {
+            "border-right": "1px solid #1565c0",
+            "padding": "6px 8px !important",
+            "white-space": "normal",
+            "word-wrap": "break-word",
+            "text-align": "center",
+            "vertical-align": "middle",
+            "height": "40px !important"
+        },
+        ".ag-header-cell-label": {
+            "white-space": "normal",
+            "word-wrap": "break-word",
+            "line-height": "1.2",
+            "height": "auto",
+            "min-height": "32px",
+            "max-height": "60px",
+            "display": "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            "padding": "6px 4px",
+            "text-align": "center"
+        },
+        ".ag-row-odd": {
+            "background-color": "#fafafa",
+            "height": "32px !important"
+        },
+        ".ag-row-even": {
+            "background-color": "white",
+            "height": "32px !important"
+        },
+        ".ag-row-hover": {
+            "background-color": "#e3f2fd"
+        },
+        ".ag-cell": {
+            "font-size": "12px",
+            "font-family": "Arial, sans-serif",
+            "padding": "6px 8px !important",
+            "line-height": "1.3",
+            "height": "32px !important",
+            "vertical-align": "middle"
+        },
+        ".ag-cell-value": {
+            "font-size": "13px",
+            "font-weight": "500"
+        },
+        ".ag-cell[col-id*='USD'], .ag-cell[col-id*='costo'], .ag-cell[col-id*='precio'], .ag-cell[col-id*='ebitda'], .ag-cell[col-id*='margen'], .ag-cell[col-id*='total'], .ag-cell[col-id*='almacenaje'], .ag-cell[col-id*='servicio'], .ag-cell[col-id*='comex'], .ag-cell[col-id*='guarda'], .ag-cell[col-id*='material'], .ag-cell[col-id*='laboratorio'], .ag-cell[col-id*='mantencion'], .ag-cell[col-id*='proceso']": {
+            "font-size": "13px",
+            "font-weight": "600"
+        },
+        ".ag-header-cell-text": {
+            "font-weight": "600",
+            "color": "white"
+        },
+        ".ag-header-group-cell": {
+            "background-color": "#1565c0",
+            "border-right": "1px solid #0d47a1"
+        },
+        ".ag-header-group-cell-label": {
+            "color": "white",
+            "font-weight": "700"
+        },
+        ".ag-row-pinned": {
+            "background-color": "#e8f4fd !important",
+            "font-weight": "bold !important",
+            "border-top": "2px solid #1f77b4 !important",
+            "font-size": "13px !important"
+        },
+        ".ag-row-pinned .ag-cell": {
+            "font-size": "13px !important",
+            "font-weight": "600 !important",
+            "background-color": "#e8f4fd !important"
+        }
+    }
+
+def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
+    df_prepared = prepare_dataframe_for_aggrid(df).copy()
+    gb = GridOptionsBuilder.from_dataframe(df_prepared)
+
+    gb.configure_default_column(
+        filter=False, sortable=True, resizable=True, editable=False,
+        cellStyle={"fontSize":"12px","fontFamily":"Arial, sans-serif","padding":"4px 6px","lineHeight":"1.2"}
+    )
+
+    get_row_id = JsCode("""
+      function(params) {
+        const d = params.data || {};
+        if (d && d['SKU-Cliente'] != null) return String(d['SKU-Cliente']);
+        if (d && d['SKU'] != null) return String(d['SKU']);
+        if (d && d['Descripcion'] != null) return String(d['Descripcion']);
+        // Fallback estable: rowIndex
+        return String(params.node ? params.node.rowIndex : 0);
+      }
+    """)
+
+    gb.configure_grid_options(
+        domLayout="normal",
+        headerHeight=40, rowHeight=32,
+        tooltipShowDelay=200, tooltipHideDelay=10000,
+        tooltipInteraction=True,
+        tooltipShowMode="whenTruncated",
+        enableCellTextSelection=True,
+        getRowId=get_row_id
+    )
+
+    set_filter_cols = ["SKU", "Marca", "Cliente", "Especie", "Condicion"]
+
+    def is_pct(col): return "pct" in col.lower() or "porc" in col.lower() or col.endswith("%")
+    def is_num(col):  return col not in set_filter_cols and any(
+        k in col.lower() for k in ["usd","costo","precio","ebitda","margen","total","almacen","servicio","comex","guarda","material","laboratorio","mantencion","proceso","kg"]
+    )
+
+    FMT_3DEC = JsCode("function(p){ if(p.value==null||isNaN(p.value)) return ''; return Number(p.value).toFixed(3); }")
+    FMT_INT  = JsCode("function(p){ if(p.value==null||isNaN(p.value)) return ''; return String(Math.round(Number(p.value))); }")
+    FMT_PCT  = JsCode("""
+      function(p){
+        if(p.value==null||isNaN(p.value)) return '';
+        var v=Number(p.value); if(Math.abs(v)<=1.0001) v*=100.0; return v.toFixed(1)+'%';
+      }
+    """)
+
+    # Layout base de columnas pineadas a la izquierda
+    pinned_left_cols = ["SKU", "Descripcion", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]
+    protected_cols   = ["SKU"]  # Nunca se despinan
+
+    for col in df_prepared.columns:
+        kwargs = {"resizable": True}
+        if col == "SKU-Cliente":
+            kwargs["hide"] = True
+        elif col in pinned_left_cols:
+            kwargs["pinned"] = "left"
+            kwargs["minWidth"] = 40
+            kwargs["maxWidth"] = 95
+            kwargs["suppressSizeToFit"] = True
+            kwargs["cellStyle"] = {
+                "backgroundColor": "#f8f9fa",
+                "fontWeight": "600",
+                "borderRight": "2px solid #dee2e6",
+                "fontSize": "11px",
+                "padding": "2px 4px"
+            }
+
+        if col == "EBITDA Pct":
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_PCT
+            kwargs["cellStyle"] = {"textAlign":"right"}
+        elif col == "KgEmbarcados":
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_INT
+            kwargs["cellStyle"] = {"textAlign":"right"}
+        elif is_num(col):
+            kwargs["type"] = ["numericColumn"]
+            kwargs["valueFormatter"] = FMT_3DEC
+            kwargs["cellStyle"] = {"textAlign":"right"}
+
+        kwargs["tooltipField"] = col
+        gb.configure_column(col, **kwargs)
+    # ---------------------------------------------------------------
+
+    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=1000)
+    gb.configure_grid_options(suppressPaginationPanel=True)
+
+    gb.configure_selection(selection_mode="single" if enable_selection else "none", use_checkbox=False)
+    return df_prepared, gb.build()
+
+def prepare_dataframe_for_aggrid(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepara un DataFrame para ser mostrado en AgGrid, limpiando tipos de datos problemáticos.
+    
+    Args:
+        df: DataFrame original
+        
+    Returns:
+        DataFrame preparado para AgGrid
+    """
+    df_prepared = df.copy()
+    
+    # Identificar columnas numéricas que deben mantenerse como números
+    numeric_cols = [
+        "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total", 
+        "Materiales Directos", "Materiales Indirectos", "Materiales Total", 
+        "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales",
+        "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+        "Almacenaje MMPP", "Comex", "Guarda PT", "Gastos Totales (USD/kg)",
+        "Costos Totales (USD/kg)", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)",
+        "KgEmbarcados", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)",
+        "EBITDA Pct", "EBITDA Simple (USD)"
+    ]
+    
+    # Limpiar columnas no numéricas para compatibilidad con Arrow
+    for col in df_prepared.columns:
+        if col not in numeric_cols:
+            # Convertir listas y tuplas a strings
+            def _clean_value(x):
+                if x is None or (isinstance(x, float) and pd.isna(x)):
+                    return ""
+                elif isinstance(x, (list, tuple)):
+                    return ", ".join(map(str, x))
+                elif isinstance(x, str) and x.strip().startswith("[") and x.strip().endswith("]"):
+                    try:
+                        lst = ast.literal_eval(x)
+                        if isinstance(lst, (list, tuple)):
+                            return ", ".join(map(str, lst))
+                    except Exception:
+                        pass
+                return str(x)
+            
+            df_prepared[col] = df_prepared[col].apply(_clean_value)
+    
+    # Mantener columnas numéricas como números, pero limpiar valores problemáticos
+    for col in numeric_cols:
+        if col in df_prepared.columns:
+            # Convertir a numérico, manteniendo NaN para valores inválidos
+            df_prepared[col] = pd.to_numeric(df_prepared[col], errors='coerce')
+    return df_prepared

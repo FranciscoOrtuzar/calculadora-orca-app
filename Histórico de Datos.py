@@ -13,109 +13,48 @@ import math
 import pandas as pd
 from pandas import IndexSlice as idx
 
+from src.dynamic_filters import DynamicFiltersWithList
+
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel
-from src.state import ensure_session_state, session_state_table
+from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel, get_aggrid_custom_css, create_aggrid_config, build_subtotal_row, recalculate_totals, load_especies
+from src.state import ensure_session_state, session_state_table, sync_filters_to_shared, sync_filters_from_shared
+from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
+import pygwalker as pyg
 import pandas as pd
 import numpy as np
 import locale
 
 # ===================== Utilidades =====================
-def add_subtotals(df: pd.DataFrame, group_by_columns: list, numeric_columns: list) -> pd.DataFrame:
+
+
+
+def create_pygwalker_chart(df: pd.DataFrame, title: str = "Análisis de Datos"):
     """
-    Agrega filas de subtotales a un DataFrame agrupado por columnas específicas.
+    Crea un visualizador PyGWalker para análisis exploratorio de datos.
     
     Args:
-        df: DataFrame original
-        group_by_columns: Lista de columnas para agrupar
-        numeric_columns: Lista de columnas numéricas para sumar
+        df: DataFrame a analizar
+        title: Título del visualizador
         
     Returns:
-        DataFrame con subtotales agregados
+        PyGWalker chart object
     """
-    if df.empty:
-        return df
+    # Configurar PyGWalker
+    pyg_chart = pyg.walk(
+        df,
+        spec="./gw_config.json",  # Archivo de configuración opcional
+        debug=False,
+        use_kernel_calc=True,  # Usar kernel de Python para cálculos
+        theme="light",  # Tema claro
+        dark="light",   # Forzar tema claro
+        show_cloud_tool=False,  # Deshabilitar herramientas de nube
+        height=600,     # Altura del visualizador
+        width="100%"    # Ancho completo
+    )
     
-    # Crear una copia para no modificar el original
-    result_df = df.copy()
-    
-    # Agrupar por las columnas especificadas
-    grouped = df.groupby(group_by_columns)
-    
-    # Calcular subtotales para cada grupo
-    subtotals = []
-    for name, group in grouped:
-        if isinstance(name, tuple):
-            # Si hay múltiples columnas de agrupación
-            subtotal_row = {}
-            for i, col in enumerate(group_by_columns):
-                subtotal_row[col] = name[i]
-        else:
-            # Si hay una sola columna de agrupación
-            subtotal_row = {group_by_columns[0]: name}
-        
-        # Agregar "SUBTOTAL" a la descripción
-        if "Descripcion" in subtotal_row:
-            subtotal_row["Descripcion"] = f"SUBTOTAL - {subtotal_row['Descripcion']}"
-        elif "Descripcion" in group.columns:
-            subtotal_row["Descripcion"] = f"SUBTOTAL - {group['Descripcion'].iloc[0]}"
-        
-        # Calcular sumas para columnas numéricas
-        for col in numeric_columns:
-            if col in group.columns:
-                subtotal_row[col] = group[col].sum()
-            else:
-                subtotal_row[col] = 0
-        
-        # Llenar columnas no numéricas con valores representativos
-        for col in group.columns:
-            if col not in subtotal_row and col not in numeric_columns:
-                if col in ["Marca", "Cliente", "Especie", "Condicion"]:
-                    subtotal_row[col] = group[col].iloc[0] if not group[col].empty else ""
-                elif col == "SKU":
-                    subtotal_row[col] = f"SUBTOTAL-{group[col].iloc[0]}" if not group[col].empty else "SUBTOTAL"
-                elif col == "SKU-Cliente":
-                    subtotal_row[col] = f"SUBTOTAL-{group[col].iloc[0]}" if not group[col].empty else "SUBTOTAL"
-                else:
-                    subtotal_row[col] = ""
-        
-        subtotals.append(subtotal_row)
-    
-    # Convertir subtotales a DataFrame
-    if subtotals:
-        subtotals_df = pd.DataFrame(subtotals)
-        
-        # Concatenar con el DataFrame original
-        result_df = pd.concat([result_df, subtotals_df], ignore_index=True)
-        
-        # Resetear el índice para evitar problemas con estilos
-        result_df = result_df.reset_index(drop=True)
-        
-        # Ordenar para que los subtotales aparezcan después de cada grupo
-        if group_by_columns:
-            # Verificar que las columnas de ordenamiento existan
-            sort_columns = []
-            for col in group_by_columns + ["SKU-Cliente"]:
-                if col in result_df.columns:
-                    sort_columns.append(col)
-            
-            if sort_columns:
-                result_df = result_df.sort_values(sort_columns)
-                # Resetear índice después de ordenar
-                result_df = result_df.reset_index(drop=True)
-    
-    return result_df
-
-# Configurar locale para formato europeo/latinoamericano
-try:
-    locale.setlocale(locale.LC_ALL, 'es_ES.UTF-8')  # Para Linux/Mac
-except:
-    try:
-        locale.setlocale(locale.LC_ALL, 'Spanish_Spain.1252')  # Para Windows
-    except:
-        pass  # Si no funciona, usar formato por defecto
+    return pyg_chart
 
 def format_currency_european(value, decimals=0):
     """Formatea un número como moneda con punto para miles y coma para decimales"""
@@ -159,21 +98,6 @@ ensure_session_state()
 
 # Mostrar página Home
 st.title(ST_TITLE)
-
-# ===================== Indicador de Filtros Compartidos =====================
-def show_filter_status_hist():
-    """Muestra el estado de los filtros compartidos"""
-    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
-        sim_filters = st.session_state["sim.filters"]
-        active_count = sum(len(v) for v in sim_filters.values() if v)
-        if active_count > 0:
-            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el simulador")
-            return True
-    return False
-
-# Mostrar estado de filtros si están activos
-if show_filter_status_hist():
-    st.markdown("---")
 
 # ===================== Carga de datos (con persistencia) =====================
 with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
@@ -268,6 +192,7 @@ if st.session_state["hist.df"] is None:
             with st.spinner("Procesando archivo..."):
                 df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
                 detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, df_granel=df_granel_ponderado)
+                
                 detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, optimo=True, df_granel=df_granel_ponderado)
                 ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
                 
@@ -293,37 +218,33 @@ if st.session_state["hist.df"] is None:
                 st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
                 st.session_state["hist.df"] = detalle
                 st.session_state["hist.df_optimo"] = detalle_optimo
-                # st.dataframe(ebitda_mensual, use_container_width=True, hide_index=True)
-                # st.dataframe(costos_mensuales, use_container_width=True, hide_index=True)
-                # st.dataframe(volumen_mensual, use_container_width=True, hide_index=True)
-                # st.dataframe(precios_mensuales, use_container_width=True, hide_index=True)
-                # st.dataframe(df_granel, use_container_width=True, hide_index=True)
-                # st.stop()
                 
-                # Cargar datos de fruta si están disponibles
-                try:
-                    with st.spinner("Cargando datos de fruta..."):
-                        # Leer el archivo Excel completo
-                        from src.data_io import read_workbook
-                        sheets = read_workbook(st.session_state["hist.file_bytes"])
-                        
-                        # Cargar RECETA_SKU si existe
-                        if "RECETA_SKU" in sheets:
-                            receta_df = load_receta_sku(sheets["RECETA_SKU"])
-                            st.session_state["fruta.receta_df"] = receta_df
-                        else:
-                            st.info("ℹ️ Hoja RECETA_SKU no encontrada")
-                        
-                        # Cargar INFO_FRUTA si existe
-                        if "INFO_FRUTA" in sheets:
-                            info_df = load_info_fruta(sheets["INFO_FRUTA"])
-                            st.session_state["fruta.info_df"] = info_df
-                        else:
-                            st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
+                # # Cargar datos de fruta si están disponibles
+                # try:
+                with st.spinner("Cargando datos de fruta..."):
+                    # Leer el archivo Excel completo
+                    from src.data_io import read_workbook
+                    sheets = read_workbook(st.session_state["hist.file_bytes"])
+                    
+                    # Cargar INFO_FRUTA si existe
+                    if "INFO_FRUTA" in sheets:
+                        info_df = load_info_fruta(sheets["INFO_FRUTA"])
+                        st.session_state["fruta.info_df"] = info_df
+                    else:
+                        st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
+                    
+                    # Cargar RECETA_SKU si existe
+                    if "RECETA_SKU" in sheets:
+                        receta_df = load_receta_sku(sheets["RECETA_SKU"])
+                        detalle = load_especies(receta_df, detalle, info_df, as_list=True)
+                        st.session_state["hist.df"] = detalle
+                        st.session_state["fruta.receta_df"] = receta_df
+                    else:
+                        st.info("ℹ️ Hoja RECETA_SKU no encontrada")
                             
-                except Exception as e:
-                    st.warning(f"⚠️ Error cargando datos de fruta: {e}")
-                    st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
+                # except Exception as e:
+                #     st.warning(f"⚠️ Error cargando datos de fruta: {e}")
+                #     st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
                     
         # except Exception as e:
         #     st.error(f"Error procesando el archivo: {e}")
@@ -341,168 +262,40 @@ if 'detalle' not in locals() or detalle is None:
     st.info("💡 Por favor, sube tu archivo Excel primero")
     st.stop()
 
-# ===================== Sidebar - Filtros Dinámicos (igual a Simulación) =====================
-st.sidebar.header("🔍 Filtros Dinámicos")
-
-# Base de Históricos
-df_base_hist = st.session_state["hist.df"].copy()
-
-# Aliases igual que en Simulación (puedes ampliarlos si quieres)
-FIELD_ALIASES = {
-    "Marca": ["Marca", "Brand"],
-    "Cliente": ["Cliente", "Customer", "Cliente ID", "ClienteID"],
-    "Especie": ["Especie", "Species"],
-    "Condicion": ["Condicion", "Condición", "Condition"],
-    "SKU": ["SKU"],
-}
-
-def resolve_columns(df, aliases_map):
-    resolved = {}
-    cols_lower = {c.lower(): c for c in df.columns}
-    for logical, options in aliases_map.items():
-        for opt in options:
-            c = cols_lower.get(opt.lower())
-            if c is not None:
-                resolved[logical] = c
-                break
-    return resolved
-
-RESOLVED_HIST = resolve_columns(df_base_hist, FIELD_ALIASES)
-FILTER_FIELDS_HIST = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED_HIST]
-
-def _norm_series(s: pd.Series):
-    return s.fillna("(Vacío)").astype(str).str.strip()
-
-def _apply_filters_hist(df: pd.DataFrame, selections: dict, skip_key=None):
-    out = df.copy()
-    for logical, sel in selections.items():
-        if logical == skip_key or not sel:
-            continue
-        real_col = RESOLVED_HIST[logical]
-        valid = [x if x != "(Vacío)" else "" for x in sel]
-        out = out[out[real_col].fillna("").astype(str).str.strip().isin(valid)]
-    return out
-
-def _current_selections_hist():
-    selections = {}
-    for logical in FILTER_FIELDS_HIST:
-        selections[logical] = st.session_state.get(f"ms_hist_{logical}", [])
-    return selections
-
-# ===================== Sistema de Filtros Compartidos =====================
-def sync_filters_from_shared():
-    """Sincroniza filtros desde el estado compartido (solo cuando se solicita)"""
-    from src.state import sync_filters_from_shared
-    shared_filters = sync_filters_from_shared("hist")
-    for logical in FILTER_FIELDS_HIST:
-        if logical in shared_filters and shared_filters[logical]:
-            st.session_state[f"ms_hist_{logical}"] = shared_filters[logical]
-
-def sync_filters_to_shared():
-    """Sincroniza filtros actuales al estado compartido"""
-    from src.state import sync_filters_to_shared
-    current_filters = _current_selections_hist()
-    sync_filters_to_shared("hist", current_filters)
-
-def clear_all_filters_hist():
-    """Limpia todos los filtros del histórico"""
-    from src.state import clear_shared_filters
-    for logical in FILTER_FIELDS_HIST:
-        st.session_state[f"ms_hist_{logical}"] = []
-    clear_shared_filters()
-
-# Detectar si es la primera carga de la página o cambio de página
-current_page = "hist"
-if "hist.page_loaded" not in st.session_state or st.session_state.get("shared.current_page") != current_page:
-    st.session_state["hist.page_loaded"] = True
-    st.session_state["shared.current_page"] = current_page
-    # Primera carga o cambio de página: sincronizar automáticamente desde el estado compartido
-    sync_filters_from_shared()
-
-# Mostrar filtros activos
-active_filters = _current_selections_hist()
-active_count = sum(len(v) for v in active_filters.values() if v)
-if active_count > 0:
-    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-    for logical, values in active_filters.items():
-        if values:
-            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-
-# Guarda filtros en hist.filters
-st.session_state["hist.filters"] = _current_selections_hist()
-
-# Render de filtros en filas (sidebar)
-if FILTER_FIELDS_HIST:
-    # Obtener filtros actuales del session_state
-    SELECTIONS_HIST = _current_selections_hist()
-    
-    # Función de callback para actualizar estado compartido
-    def update_shared_filters_hist():
-        """Callback que actualiza el estado compartido cuando cambian los filtros"""
-        current_filters = _current_selections_hist()
-        sync_filters_to_shared()
-    
-    for logical in FILTER_FIELDS_HIST:
-        real_col = RESOLVED_HIST[logical]
-        df_except = _apply_filters_hist(df_base_hist, SELECTIONS_HIST, skip_key=logical)
-        opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
-        
-        # Crear el multiselect con key y on_change (sin default para evitar pisar valores)
-        st.sidebar.multiselect(
-            logical, 
-            options=opts, 
-            key=f"ms_hist_{logical}",
-            on_change=update_shared_filters_hist
-        )
-else:
-    st.sidebar.info("No hay campos disponibles para filtrar")
-
-# Releer selecciones actualizadas y aplicar
-SELECTIONS_HIST = _current_selections_hist()
-df_filtrado = _apply_filters_hist(df_base_hist, SELECTIONS_HIST).copy()
-
-# Orden y persistencia del filtrado
-if "SKU-Cliente" in df_filtrado.columns:
-    df_filtrado = df_filtrado.sort_values(["SKU-Cliente"]).reset_index(drop=True)
-else:
-    df_filtrado = df_filtrado.reset_index(drop=True)
-
-st.session_state["hist.df_filtered"] = df_filtrado.copy()
-
-# Los filtros se sincronizan automáticamente via on_change de los widgets
-
-# -------- Filtrar subproductos (SKUs con costos totales = 0) --------
-# Inicializar variable subproductos
-subproductos = pd.DataFrame()
-sin_ventas = pd.DataFrame()
-
-# Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
-if "Costos Totales (USD/kg)" in df_filtrado.columns:
-    original_count = len(df_filtrado)
-    subproductos = df_filtrado[(df_filtrado["Costos Totales (USD/kg)"] == 0) | (df_filtrado["Costos Totales (USD/kg)"] is None)].copy()
-    sin_ventas = df_filtrado[df_filtrado["Comex"] == 0].copy()
+# Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
+if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
+    original_count = len(detalle)
+    # if st.session_state["sim.df_filtered"] is not None:
+    #     df_base = st.session_state["sim.df_filtered"]
+    # Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
+    subproductos = detalle[detalle["Costos Totales (USD/kg)"] == 0].copy()
+    sin_ventas = detalle[detalle["Comex"] == 0].copy()
     skus_excluidos = pd.concat([subproductos, sin_ventas])
     skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
-    df_filtrado = df_filtrado[~df_filtrado["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
-    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas o no en plan 2026
+    df_base = detalle[~detalle["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
+    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas
     skus_excluidos["Subproducto"] = skus_excluidos["SKU-Cliente"].isin(subproductos["SKU-Cliente"])
     skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
+    # Ordenar por SKU-Cliente
     skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
     skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
-    df_filtrado["EBITDA Pct"] = df_filtrado["EBITDA Pct"] / 100
-    
-    filtered_count = len(df_filtrado)
+    filtered_count = len(df_base)
     skus_excluidos_count = len(skus_excluidos)
     
-    if original_count > filtered_count:    
+    if original_count > filtered_count:        
+        # IMPORTANTE: Recalcular totales en los datos cargados para asegurar que EBITDA Pct esté correcto
+        if "EBITDA Pct" in df_base.columns:
+            df_base = recalculate_totals(df_base)
         # Mostrar información sobre subproductos excluidos
         with st.expander(f"📋 **SKUs excluidos** ({skus_excluidos_count} SKUs)", expanded=False):
             st.write("**¿Por qué se excluyen estos SKUs?**")
-            st.write("Son SKUs sin ventas, o con costos totales = 0, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
+            st.write("Son SKUs sin ventas, con costos totales = 0, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
             
             # Estadísticas de subproductos
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
+            
             with col1:
+                st.metric("**Sin ventas:**", len(sin_ventas))
                 if "Marca" in skus_excluidos.columns:
                     marca_counts = skus_excluidos["Marca"].value_counts()
                     st.write("**Por Marca:**")
@@ -510,37 +303,57 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
                         st.write(f"- {marca}: {count}")
             
             with col2:
+                st.metric("**Con costos totales = 0:**", len(subproductos))
                 if "Cliente" in skus_excluidos.columns:
                     cliente_counts = skus_excluidos["Cliente"].value_counts()
                     st.write("**Por Cliente:**")
                     for cliente, count in cliente_counts.head(3).items():
                         st.write(f"- {cliente}: {count}")
             
-            with col3:
-                if "Especie" in skus_excluidos.columns:
-                    especie_counts = skus_excluidos["Especie"].value_counts()
-                    st.write("**Por Especie:**")
-                    for especie, count in especie_counts.head(3).items():
-                        st.write(f"- {especie}: {count}")
-            
             # Tabla completa de subproductos
-            st.write("**Lista completa de subproductos y SKUs sin ventas excluidos:**")
+            st.write("**Lista completa de subproductos excluidos:**")
             st.dataframe(
                 skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas"]],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
             
             # Botón de exportación
-            csv_subproductos = skus_excluidos.to_csv(index=False)
+            csv_skus_excluidos = skus_excluidos.to_csv(index=False)
             st.download_button(
-                label="📥 Descargar Lista Completa de Subproductos y SKUs sin ventas (CSV)",
-                data=csv_subproductos,
-                file_name="subproductos_sin_ventas_excluidos_completo.csv",
+                label="📥 Descargar Lista Completa de SKUs excluidos (CSV)",
+                data=csv_skus_excluidos,
+                file_name="subproductos_excluidos_completo.csv",
                 mime="text/csv",
-                use_container_width=True,
-                key="download_subproductos_sin_ventas_home"
+                width='stretch',
+                key="download_skus_excluidos_sim_1"
             )
+
+# Filtros Dinamicos de la libreria streamlit-dynamic-filters
+st.sidebar.header("🔍 Filtros Dinámicos")
+with st.sidebar.container():
+    if "hist.filters" in st.session_state:
+        st.session_state["hist.filters"] = sync_filters_from_shared(page="hist")
+        active_filters = st.session_state["hist.filters"]
+        active_count = sum(len(v) for v in active_filters.values() if v)
+        if active_count > 0:
+            if active_count == 1:
+                st.sidebar.info(f"🔍 **{active_count} filtro activo**")
+            else:
+                st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+            for logical, values in active_filters.items():
+                if values:
+                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
+    dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', "Especie", 'Condicion', 'SKU'], filters_name='hist.filters')
+    dynamic_filters.check_state()
+    dynamic_filters.display_filters(location='sidebar')
+    df_filtrado = dynamic_filters.filter_df()
+    st.session_state["hist.df_filtered"] = df_filtrado
+
+with st.sidebar.container():
+    st.button("Resetear Filtros", on_click=dynamic_filters.reset_filters)
+
+sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # ===================== Pestañas del Histórico =====================
 tab_retail, tab_granel = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)"])
@@ -558,13 +371,14 @@ with tab_retail:
     view_base = view_base[base_cols].copy()
     view_base.set_index("SKU-Cliente", inplace=True)
     view_base = view_base.sort_index()
- 
+     
     show_subtotals_at_top = st.checkbox(
         "Subtotales al inicio",
         value=st.session_state.get("hist.show_subtotals_at_top", False),
         help="Mostrar fila de subtotales al inicio de la tabla",
         key="hist_show_subtotals_at_top"
     )
+    
     if show_subtotals_at_top != st.session_state.get("hist.show_subtotals_at_top", False):
         st.session_state["hist.show_subtotals_at_top"] = show_subtotals_at_top
         st.rerun()
@@ -586,133 +400,129 @@ with tab_retail:
     # Aplicar estilos a columnas EBITDA
     ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
     existing_ebitda_columns = [col for col in ebitda_columns if col in view_base.columns]
-    
+
     if existing_ebitda_columns:
         styled_view_base = styled_view_base.set_properties(
             subset=existing_ebitda_columns,
             **{"font-weight": "bold", "background-color": "#fff7ed"}
         )
 
-    # Crear fila de subtotales
-    def create_subtotal_row(df, position="bottom"):
-        """Crea una fila de subtotales con manejo de valores None"""
-        subtotal_row = {}
-        
-        # Llenar columnas de agrupación con "TOTAL" o mensaje genérico
-        for col in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion"]:
-            if col in df.columns:
-                if col in ["Marca", "Cliente", "Especie", "Condicion"]:
-                    subtotal_row[col] = "TOTAL"
-                else:
-                    subtotal_row[col] = ""  # Mensaje genérico en lugar de None
-        
-        # Calcular sumas para columnas numéricas
-        numeric_cols = ["EBITDA (USD/kg)", "Costos Totales (USD/kg)", "KgEmbarcados", 
-                        "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "Retail Costos Directos (USD/kg)",
-                        "Retail Costos Indirectos (USD/kg)", "Almacenaje MMPP", "Servicios Generales", 
-                        "Comex", "Guarda PT", "Gastos Totales (USD/kg)", "PrecioVenta (USD/kg)"]
-        
-        for col in numeric_cols:
-            if col in df.columns:
-                subtotal_row[col] = df[col].sum()
-        
-        # Manejar columnas que pueden ser None (como EBITDA Pct)
-        for col in ["EBITDA Pct"]:
-            if col in df.columns:
-                # Para porcentajes, calcular el promedio o mostrar mensaje genérico
-                if df[col].notna().any():
-                    subtotal_row[col] = df[col].mean()
-                else:
-                    subtotal_row[col] = ""  # Mensaje genérico en lugar de None
-        
-        return subtotal_row
-    
-    # Aplicar subtotales según la configuración
-    if "Marca" in view_base.columns:
-        # Crear fila de subtotales
-        subtotal_row = create_subtotal_row(view_base)
-        subtotal_df = pd.DataFrame([subtotal_row])
-        
-        if show_subtotals_at_top:
-            # Concatenar subtotales al inicio
-            view_base_with_subtotals = pd.concat([subtotal_df, view_base], ignore_index=True)
-            subtotal_position = 0  # Primera fila
-        else:
-            # Concatenar subtotales al final (por defecto)
-            view_base_with_subtotals = pd.concat([view_base, subtotal_df], ignore_index=True)
-            subtotal_position = len(view_base)  # Última fila
-        
-        # Aplicar estilos a la tabla con subtotales
-        styled_view_base = view_base_with_subtotals.style
-        
-        # Aplicar negritas a las columnas de totales
-        total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
-        "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-        "KgEmbarcados"]
-        existing_total_columns = [col for col in total_columns if col in view_base_with_subtotals.columns]
+    # Streamlit nativo: DataFrame + subtotal separado (arriba o abajo)
+    view_base_noidx = view_base.reset_index()
+    subtotal_df = build_subtotal_row(view_base_noidx)
 
-        if existing_total_columns:
-            styled_view_base = styled_view_base.set_properties(
-                subset=existing_total_columns,
-                **{"font-weight": "bold", "background-color": "#f8f9fa"}
-            )
+    # Mantener el mismo orden de columnas de la vista
+    subtotal_df = subtotal_df.reindex(columns=[c for c in view_base_noidx.columns if c in subtotal_df.columns], fill_value="")
+    # Dejar sólo métricas: limpiar columnas no numéricas para mayor claridad visual
+    try:
+        numeric_cols = set(view_base_noidx.select_dtypes(include=[np.number]).columns.tolist())
+    except Exception:
+        numeric_cols = set()
+    for col in subtotal_df.columns:
+        if col not in numeric_cols:
+            subtotal_df[col] = ""
 
-        # Aplicar estilos a columnas EBITDA
-        ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-        existing_ebitda_columns = [col for col in ebitda_columns if col in view_base_with_subtotals.columns]
-        
-        if existing_ebitda_columns:
-            styled_view_base = styled_view_base.set_properties(
-                subset=existing_ebitda_columns,
-                **{"font-weight": "bold", "background-color": "#fff7ed"}
+    col_config = columns_config(editable=False)
+
+    # Construir versión sólo con métricas (oculta dimensiones)
+    try:
+        numeric_cols_hist = [c for c in view_base_noidx.columns if pd.api.types.is_numeric_dtype(view_base_noidx[c])]
+    except Exception:
+        numeric_cols_hist = []
+    subtotal_display = subtotal_df[[c for c in numeric_cols_hist if c in subtotal_df.columns]].copy()
+    sty_sub = subtotal_display.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd"})
+
+    if show_subtotals_at_top:
+        st.caption("Subtotal (ponderado por KgEmbarcados)")
+        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
+
+    # Aplicar formato y estilos similares al simulador
+    df_disp = view_base_noidx.copy()
+    dims = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
+    fmt = {}
+    for c in df_disp.columns:
+        if c not in dims:
+            if ("Pct" in c) or ("Porcentaje" in c):
+                fmt[c] = "{:.1%}"
+            else:
+                try:
+                    if pd.api.types.is_numeric_dtype(df_disp[c]):
+                        fmt[c] = "{:.3f}"
+                except Exception:
+                    pass
+    sty = df_disp.style
+    if fmt:
+        sty = sty.format(fmt)
+    tot_cols = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
+                "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
+                "KgEmbarcados"]
+    ex_tot = [c for c in tot_cols if c in df_disp.columns]
+    if ex_tot:
+        sty = sty.set_properties(subset=ex_tot, **{"font-weight":"bold","background-color":"#f8f9fa"})
+    e_cols = ["EBITDA (USD/kg)", "EBITDA Pct"]
+    ex_e = [c for c in e_cols if c in df_disp.columns]
+    if ex_e:
+        sty = sty.set_properties(subset=ex_e, **{"font-weight":"bold","background-color":"#fff7ed"})
+
+    st.dataframe(sty, column_config=col_config, use_container_width=True, hide_index=True)
+
+    if not show_subtotals_at_top:
+        st.caption("Subtotal (ponderado por KgEmbarcados)")
+        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
+
+    # 6. Botón de descarga Excel externo
+    if not view_base_noidx.empty:
+        # Crear botón de descarga Excel
+        def create_excel_download_button(df: pd.DataFrame, filename: str = "datos_historicos_filtrados.xlsx"):
+            """Crea un botón de descarga Excel para los datos filtrados"""
+            from io import BytesIO
+            
+            # Crear buffer en memoria
+            buf = BytesIO()
+            
+            # Escribir Excel con formato
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                # Hoja principal con datos mostrados
+                df.to_excel(writer, index=False, sheet_name="Datos")
+            
+            # Crear botón de descarga
+            st.download_button(
+                label="📥 Descargar Excel (Datos Filtrados)",
+                data=buf.getvalue(),
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_historico_excel"
             )
         
-        # Aplicar estilo especial a la fila de subtotales
-        styled_view_base = styled_view_base.set_properties(
-            subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
-            **{
-                "font-weight": "bold",
-                "background-color": "#e8f4fd",
-                "border-top": "2px solid #1f77b4",
-            },
-        )
-        
-        # Mostrar tabla con subtotales
-        st.dataframe(
-            styled_view_base,
-            use_container_width=True, 
-            height="auto",
-            column_config=config,
-            hide_index=True
-        )
-        
-        # Mostrar métricas de subtotales
-        col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
-        
-        with col_metrics1:
-            if "EBITDA (USD/kg)" in view_base.columns:
-                total_ebitda = view_base["EBITDA (USD/kg)"].sum()
-                st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
-        
-        with col_metrics2:
-            if "Costos Totales (USD/kg)" in view_base.columns:
-                total_costos = view_base["Costos Totales (USD/kg)"].sum()
-                st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
-        
-        with col_metrics3:
-            if "KgEmbarcados" in view_base.columns:
-                total_kg = view_base["KgEmbarcados"].sum()
-                st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
+        # Mostrar botón de descarga
+        create_excel_download_button(view_base_noidx)
     
-    else:
-        # Mostrar tabla normal con estilos
-        st.dataframe(
-            styled_view_base,
-            use_container_width=True, 
-            height="auto",
-            column_config=config,
-            hide_index=True
-        )
+    # Mostrar métricas de subtotales
+    col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
+
+    with col_metrics1:
+        if "EBITDA (USD/kg)" in view_base_noidx.columns and "KgEmbarcados" in view_base_noidx.columns:
+            # Convertir a numérico antes de hacer operaciones
+            ebitda_kg = pd.to_numeric(view_base_noidx["EBITDA (USD/kg)"], errors='coerce')
+            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
+            total_ebitda_activo = (ebitda_kg * kg_emb).sum()
+            st.metric("EBITDA Total Filtrados (USD)", f"{total_ebitda_activo:,.2f}")
+
+    with col_metrics2:
+        total_ebitda = st.session_state["hist.ebitda_simple_total"]
+        st.metric("EBITDA Total (USD)", f"{total_ebitda:,.2f}")
+    
+    with col_metrics3:
+        if "KgEmbarcados" in view_base_noidx.columns:
+            # Convertir a numérico antes de sumar
+            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
+            total_kg = kg_emb.sum()
+            st.metric("Kg Embarcados Filtrados", f"{total_kg:,.0f}")
+            
+    with col_metrics4:
+        total_rows = len(view_base_noidx)
+        st.metric("SKUs Filtrados", f"{total_rows:,}")
+
 
     # --- Toggle: ver detalle de costos respetando los filtros vigentes ---
     expand = st.toggle("🔎 Expandir costos por SKU (temporada)", value=False)
@@ -836,7 +646,7 @@ with tab_granel:
     if granel_ponderado is None or granel_ponderado.empty:
         st.error("❌ **No hay datos de granel disponibles**")
         st.info("💡 **Para ver los datos de granel, asegúrate de que tu archivo Excel contenga la hoja 'FACT_GRANEL_POND'**")
-    else:        
+    else:
         # Mostrar tabla de granel
         st.subheader("📊 Costos de Granel por Fruta")
         
@@ -1018,7 +828,10 @@ with col1:
         st.caption(f"⚠️ {len(skus_excluidos)} skus excluidos (costos o ventas = 0)")
 
 with col2:
-    st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
+    if total_skus > 0:
+        st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
+    else:
+        st.metric("SKUs Rentables", skus_rentables, "0.0%")
 
 # with col3:
 #     st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
@@ -1078,3 +891,126 @@ with st.expander("🔎 Diagnóstico session_state", expanded=False):
 
 st.info("💡 **Navegación**: Usa el menú lateral para acceder al Simulador EBITDA y otras funcionalidades.")
 st.info("💾 **Datos persistentes**: Los archivos cargados se mantienen al cambiar de página.")
+
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+
+def render_grid_with_modal(df: pd.DataFrame):
+    """
+    Renderiza un AgGrid con una columna de acción '🔍'.
+    Al hacer click, selecciona la fila y abre un modal con el detalle.
+    """
+
+    # --- DataFrame base para el grid (no dependemos del índice para abrir el modal) ---
+    grid_df = df.reset_index(drop=True).copy()
+    if "__open" not in grid_df.columns:
+        grid_df.insert(0, "__open", "")  # columna vacía que renderizamos como botón
+
+    # --- Renderer de botón (selecciona la fila) ---
+    OPEN_RENDERER = JsCode("""
+    class BtnRenderer {
+      init(params){
+        this.params = params;
+        const b = document.createElement('button');
+        b.textContent = '🔍';
+        b.style.cursor = 'pointer';
+        b.style.padding = '4px 8px';
+        b.style.border = '1px solid #ccc';
+        b.style.borderRadius = '6px';
+        b.style.background = '#f8f9fa';
+        b.addEventListener('click', () => {
+          // selecciona la fila (esto dispara SELECTION_CHANGED en Python)
+          params.api.deselectAll();
+          params.node.setSelected(true);
+        });
+        this.eGui = b;
+      }
+      getGui(){ return this.eGui; }
+      destroy(){ this.eGui = null; }
+    }
+    """)
+
+    # --- Opciones del grid ---
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+    gb.configure_default_column(resizable=True, sortable=True, filter=True)
+
+    # Columna acción (sin filtro/orden y ancha fija)
+    gb.configure_column(
+        "__open",
+        headerName="",
+        width=60,
+        pinned="left",
+        filter=False,
+        sortable=False,
+        editable=False,
+        cellRenderer=OPEN_RENDERER,
+    )
+
+    # Selección de fila (single) — importante para que podamos detectar el click
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+
+    # Altura dinámica (compacta para pocos registros)
+    row_h = 32
+    header_h = 40
+    n = max(len(grid_df), 5)  # mínimo 5 filas de alto para que no quede demasiado chico
+    dynamic_height = min(600, header_h + n * row_h + 8)
+
+    grid_options = gb.build()
+
+    resp = AgGrid(
+        grid_df,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.SELECTION_CHANGED | GridUpdateMode.FILTERING_CHANGED,
+        theme="balham",
+        height=dynamic_height,
+        allow_unsafe_jscode=True,
+        fit_columns_on_grid_load=False,
+    )
+
+    # --- Abrir modal cuando hay fila seleccionada ---
+    sel_raw = resp.get("selected_rows", None)
+
+    # Normalizar a lista de dicts
+    if sel_raw is None:
+        sel_records = []
+    elif isinstance(sel_raw, pd.DataFrame):
+        sel_records = sel_raw.to_dict("records")
+    elif isinstance(sel_raw, list):
+        sel_records = sel_raw
+    else:
+        # fallback: intenta convertir a una fila/record
+        try:
+            sel_records = pd.DataFrame(sel_raw).to_dict("records")
+        except Exception:
+            sel_records = []
+
+    if len(sel_records) > 0:
+        row = pd.Series(sel_records[0])
+
+        @st.dialog(f"Detalle SKU {row.get('SKU', '')}")
+        def detalle_sku(row: pd.Series):
+            st.title(f"Detalle SKU {row.get('SKU', '')}")
+            st.write("**SKU-Cliente:**", row.get("SKU-Cliente", ""))
+            st.write("**Descripción:**", row.get("Descripcion", ""))
+            st.write("**Marca:**", row.get("Marca", ""))
+            st.write("**Cliente:**", row.get("Cliente", ""))
+            st.write("**Especie:**", row.get("Especie", ""))
+            st.write("**Condición:**", row.get("Condicion", ""))
+            st.write("**PrecioVenta (USD/kg):**", row.get("PrecioVenta (USD/kg)", ""))
+            st.write("**EBITDA (USD/kg):**", row.get("EBITDA (USD/kg)", ""))
+            st.write("**EBITDA Pct:**", row.get("EBITDA Pct", ""))
+        detalle_sku(row)
+
+    return resp
+
+# Con Streamlit nativo, no hay click-to-open por fila.
+# Como alternativa simple, ofrece un selector de SKU-Cliente para ver detalle.
+with st.expander("🔎 Ver detalle de un SKU", expanded=False):
+    opciones = view_base_noidx[["SKU-Cliente","Descripcion"]].astype(str)
+    opciones["label"] = opciones["SKU-Cliente"] + " — " + opciones["Descripcion"].str.slice(0, 60)
+    mapa = dict(zip(opciones["label"], opciones["SKU-Cliente"]))
+    elegido = st.selectbox("Elige un SKU-Cliente", ["(ninguno)"] + list(mapa.keys()))
+    if elegido != "(ninguno)":
+        sku_sel = mapa[elegido]
+        fila = view_base_noidx[view_base_noidx["SKU-Cliente"].astype(str) == str(sku_sel)].head(1)
+        st.dataframe(fila, use_container_width=True, hide_index=True)

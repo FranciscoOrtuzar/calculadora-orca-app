@@ -13,6 +13,8 @@ from pathlib import Path
 import io
 import streamlit.components.v1 as components
 import json
+from src.state import sync_filters_to_shared, sync_filters_from_shared
+from src.dynamic_filters import DynamicFiltersWithList
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
@@ -36,15 +38,19 @@ def create_subtotal_row(df, position="bottom"):
                     "Precio (USD/kg)", "Costo (USD/kg)", "Óptimo", "Ponderado",
                     "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total",
                     "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                    "Laboratorio", "Mantención", "Utilities", "Fletes Internos",
+                    "Laboratorio", "Mantención", "Mantencion y Maquinaria" "Utilities", "Fletes Internos",
                     "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
                     "Servicios Generales", "Comex", "Guarda PT", "Almacenaje MMPP",
                     "Gastos Totales (USD/kg)", "Costos Directos", "Costos Indirectos"]
     
     for col in numeric_cols:
-        if col in df.columns:
-            # Usar skipna=True para ignorar valores NaN/None
-            subtotal_row[col] = df[col].sum(skipna=True)
+        try:
+            if col == "KgEmbarcados":
+                subtotal_row[col] = df["KgEmbarcados"].sum()
+            elif col in df.columns:
+                subtotal_row[col] = (df[col]*df["KgEmbarcados"]).sum()/df["KgEmbarcados"].sum()
+        except:
+            subtotal_row[col] = ""
     
     # Manejar columnas que pueden ser None (como EBITDA Pct)
     for col in ["EBITDA Pct"]:
@@ -76,8 +82,11 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
     out.columns = [str(c) for c in out.columns]
 
     # 2) Convertir valores no serializables (tuplas, listas, dicts, arrays, sets) a strings JSON
-    def _sanitize_val(x):
-        if isinstance(x, (tuple, list, dict, set, np.ndarray)):
+    # EXCEPTO para la columna Especie que debe mantener las listas para ListColumn
+    def _sanitize_val(x, preserve_lists=False):
+        if preserve_lists and isinstance(x, list):
+            return x  # Preservar listas para ListColumn
+        elif isinstance(x, (tuple, list, dict, set, np.ndarray)):
             try:
                 return json.dumps(x, default=str)
             except Exception:
@@ -90,7 +99,9 @@ def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
             # Evita cast innecesario si ya son strings/números/fechas
             sample = out[c].dropna().head(5).tolist()
             if any(isinstance(v, (tuple, list, dict, set, np.ndarray)) for v in sample):
-                out[c] = out[c].map(_sanitize_val)
+                # Preservar listas solo para la columna Especie
+                preserve_lists = (c == "Especie")
+                out[c] = out[c].map(lambda x: _sanitize_val(x, preserve_lists=preserve_lists))
         # Opcional: convertir categorías a string
         if pd.api.types.is_categorical_dtype(out[c].dtype):
             out[c] = out[c].astype(str)
@@ -379,21 +390,6 @@ st.set_page_config(
 st.title("Simulador de EBITDA por SKU (USD/kg)")
 st.markdown("Simula escenarios de variación en costos y analiza impacto en rentabilidad por SKU.")
 
-# ===================== Indicador de Filtros Compartidos =====================
-def show_filter_status():
-    """Muestra el estado de los filtros compartidos"""
-    if "hist.filters" in st.session_state and st.session_state["hist.filters"]:
-        hist_filters = st.session_state["hist.filters"]
-        active_count = sum(len(v) for v in hist_filters.values() if v)
-        if active_count > 0:
-            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el histórico")
-            return True
-    return False
-
-# Mostrar estado de filtros si están activos
-if show_filter_status():
-    st.markdown("---")
-
 # ===================== Carga de datos =====================
 def load_base_data():
     """Carga los datos base desde archivo local o sesión."""
@@ -511,137 +507,30 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                 key="download_skus_excluidos_sim_1"
             )
 
-# ===================== Sidebar - Filtros Dinámicos =====================
+# Filtros Dinamicos de la libreria streamlit-dynamic-filters
 st.sidebar.header("🔍 Filtros Dinámicos")
+with st.sidebar.container():
+    if "hist.filters" in st.session_state:
+        st.session_state["hist.filters"] = sync_filters_from_shared(page="hist")
+        active_filters = st.session_state["hist.filters"]
+        active_count = sum(len(v) for v in active_filters.values() if v)
+        if active_count > 0:
+            if active_count == 1:
+                st.sidebar.info(f"🔍 **{active_count} filtro activo**")
+            else:
+                st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+            for logical, values in active_filters.items():
+                if values:
+                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
+    dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU'], filters_name='hist.filters')
+    dynamic_filters.check_state()
+    dynamic_filters.display_filters(location='sidebar')
+    df_filtered = dynamic_filters.filter_df()
 
-# Sistema de filtros dinámico (igual que en datos históricos)
-FIELD_ALIASES = {
-    "Marca": ["Marca", "Brand"],
-    "Cliente": ["Cliente", "Customer"],
-    "Especie": ["Especie", "Species"],
-    "Condicion": ["Condicion", "Condición", "Condition"],
-    "SKU": ["SKU"]
-}
+with st.sidebar.container():
+    st.button("Resetear Filtros", on_click=dynamic_filters.reset_filters)
 
-# Resolver alias -> columna real presente en df_base
-def resolve_columns(df, aliases_map):
-    resolved = {}
-    cols_lower = {c.lower(): c for c in df.columns}
-    for logical, options in aliases_map.items():
-        found = None
-        for opt in options:
-            c = cols_lower.get(opt.lower())
-            if c is not None:
-                found = c
-                break
-        if found:
-            resolved[logical] = found
-    return resolved
-
-RESOLVED = resolve_columns(df_base, FIELD_ALIASES)
-
-# Lista final de filtros (solo los que existen en la data)
-FILTER_FIELDS = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED]
-
-def _norm_series(s: pd.Series):
-    return s.fillna("(Vacío)").astype(str).str.strip()
-
-def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
-    out = df.copy()
-    for logical, sel in selections.items():
-        if logical == skip_key or not sel:
-            continue
-        real_col = RESOLVED[logical]
-        # Mapea el placeholder "(Vacío)" a vacío real
-        valid = [x if x != "(Vacío)" else "" for x in sel]
-        out = out[out[real_col].fillna("").astype(str).str.strip().isin(valid)]
-    return out
-
-def _current_selections():
-    selections = {}
-    for logical in FILTER_FIELDS:
-        selections[logical] = st.session_state.get(f"ms_sim_{logical}", [])
-    return selections
-
-# ===================== Sistema de Filtros Compartidos =====================
-def sync_filters_from_shared():
-    """Sincroniza filtros desde el estado compartido (solo cuando se solicita)"""
-    from src.state import sync_filters_from_shared
-    shared_filters = sync_filters_from_shared("sim")
-    for logical in FILTER_FIELDS:
-        if logical in shared_filters and shared_filters[logical]:
-            st.session_state[f"ms_sim_{logical}"] = shared_filters[logical]
-
-def sync_filters_to_shared():
-    """Sincroniza filtros actuales al estado compartido"""
-    from src.state import sync_filters_to_shared
-    current_filters = _current_selections()
-    sync_filters_to_shared("sim", current_filters)
-
-def clear_all_filters():
-    """Limpia todos los filtros"""
-    from src.state import clear_shared_filters
-    for logical in FILTER_FIELDS:
-        st.session_state[f"ms_sim_{logical}"] = []
-    clear_shared_filters()
-
-# Detectar si es la primera carga de la página o cambio de página
-current_page = "sim"
-if "sim.page_loaded" not in st.session_state or st.session_state.get("shared.current_page") != current_page:
-    st.session_state["sim.page_loaded"] = True
-    st.session_state["shared.current_page"] = current_page
-    # Primera carga o cambio de página: sincronizar automáticamente desde el estado compartido
-    sync_filters_from_shared()
-
-# Mostrar filtros activos
-active_filters = _current_selections()
-active_count = sum(len(v) for v in active_filters.values() if v)
-if active_count > 0:
-    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-    for logical, values in active_filters.items():
-        if values:
-            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-
-# Guardar filtros en sim.filters
-st.session_state["sim.filters"] = _current_selections()
-
-# Crear filtros en filas (uno abajo del otro)
-if FILTER_FIELDS:
-    # Obtener filtros actuales del session_state
-    SELECTIONS = _current_selections()
-    
-    # Función de callback para actualizar estado compartido
-    def update_shared_filters():
-        """Callback que actualiza el estado compartido cuando cambian los filtros"""
-        current_filters = _current_selections()
-        sync_filters_to_shared()
-    
-    for logical in FILTER_FIELDS:
-        real_col = RESOLVED[logical]
-        df_except = _apply_filters(df_base, SELECTIONS, skip_key=logical)
-        opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
-        
-        # Crear el multiselect con key y on_change (sin default para evitar pisar valores)
-        st.sidebar.multiselect(
-            logical, 
-            options=opts, 
-            key=f"ms_sim_{logical}",
-            on_change=update_shared_filters
-        )
-else:
-    st.sidebar.info("No hay campos disponibles para filtrar")
-
-# Releer selecciones ya actualizadas por los widgets y aplicar
-SELECTIONS = _current_selections()
-
-# IMPORTANTE: Aplicar ajustes universales ANTES de filtrar
-# Usar sim.df si existe y tiene ajustes, sino usar df_base
-if "sim.df" in st.session_state and st.session_state["sim.df"] is not None and st.session_state.get("sim.overrides_row"):
-    # Aplicar filtros a sim.df que ya incluye ajustes universales
-    df_filtered = _apply_filters(st.session_state["sim.df"], SELECTIONS).copy()
-else:
-    # Aplicar filtros a df_base (sin ajustes universales)
-    df_filtered = _apply_filters(df_base, SELECTIONS).copy()
+sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # Orden por SKU-Cliente si existe y sin índice
 sku_cliente_col = "SKU-Cliente"
@@ -718,7 +607,7 @@ else:
 tab_sku, tab_granel, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
-    tab_plan, tab_optimos = st.tabs(["🔍 Plan 2026", "🏆 Óptimos"])
+    tab_plan, tab_optimos, tab_comparacion = st.tabs(["🔍 Plan 2026", "🏆 Óptimos", "⚖️ Comparación"])
     with tab_plan:
         # ===================== Bloque 1 - Carga de Planilla =====================
         with st.expander("📁 **Carga de Planilla (SKU-CostoNuevo)**", expanded=False):
@@ -1102,69 +991,48 @@ with tab_sku:
                     )
                 
                 # Aplicar estilos especiales a filas de subtotales (código legacy removido)
-                # Los subtotales ahora se manejan con la nueva lógica de create_subtotal_row
                 
                 # El DataFrame ya tiene el índice establecido, solo aplicar estilos
                 df_edit_final = df_edit_styled
                 
-                # Crear fila de subtotales
+                # Crear fila de subtotales y preparar una vista solo de métricas (ocultar dimensiones)
                 subtotal_row = create_subtotal_row(df_edit)
                 subtotal_df = pd.DataFrame([subtotal_row])
+                # Columnas numéricas presentes en df_edit
+                try:
+                    numeric_cols = [c for c in df_edit.columns if pd.api.types.is_numeric_dtype(df_edit[c])]
+                except Exception:
+                    numeric_cols = [c for c in df_edit.columns if c not in ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]]
+                subtotal_numeric = subtotal_df[[c for c in numeric_cols if c in subtotal_df.columns]].copy()
+                # Estilo del subtotal
+                sty_sub = subtotal_numeric.style.set_properties(**{"font-weight":"bold","background-color":"#e8f4fd","border-top":"2px solid #1f77b4"})
                 
+                # Header más alto para permitir 2 líneas y mostrar tablas
+                try:
+                    from src.data_io import inject_streamlit_dataframe_css
+                    inject_streamlit_dataframe_css(header_height=64)
+                except Exception:
+                    pass
+
+                # Subtotal arriba (solo métricas) si corresponde
                 if show_subtotals_at_top:
-                    # Concatenar subtotales al inicio
-                    df_edit_with_subtotals = pd.concat([subtotal_df, df_edit], ignore_index=True)
-                    subtotal_position = 0  # Primera fila
-                else:
-                    # Concatenar subtotales al final (por defecto)
-                    df_edit_with_subtotals = pd.concat([df_edit, subtotal_df], ignore_index=True)
-                    subtotal_position = len(df_edit)  # Última fila
-                
-                # Aplicar estilos a la tabla con subtotales
-                df_edit_styled = df_edit_with_subtotals.style
-                
-                # Aplicar negritas a las columnas de totales
-                total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
-                "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                "KgEmbarcados"]
-                existing_total_columns = [col for col in total_columns if col in df_edit_with_subtotals.columns]
+                    st.caption("Subtotal (ponderado por KgEmbarcados)")
+                    st.dataframe(sty_sub, column_config=editable_columns, width='stretch', hide_index=True)
 
-                if existing_total_columns:
-                    df_edit_styled = df_edit_styled.set_properties(
-                        subset=existing_total_columns,
-                        **{"font-weight": "bold", "background-color": "#f8f9fa"}
-                    )
-
-                # Aplicar estilos a columnas EBITDA
-                ebitda_columns = ["EBITDA (USD/kg)", "EBITDA Pct"]
-                existing_ebitda_columns = [col for col in ebitda_columns if col in df_edit_with_subtotals.columns]
-                
-                if existing_ebitda_columns:
-                    df_edit_styled = df_edit_styled.set_properties(
-                        subset=existing_ebitda_columns,
-                        **{"font-weight": "bold", "background-color": "#fff7ed"}
-                    )
-                
-                # Aplicar estilo especial a la fila de subtotales
-                from pandas import IndexSlice as idx
-                df_edit_styled = df_edit_styled.set_properties(
-                    subset=idx[subtotal_position, :],  # Fila de subtotales, todas las columnas
-                    **{
-                        "font-weight": "bold",
-                        "background-color": "#e8f4fd",
-                        "border-top": "2px solid #1f77b4",
-                    },
-                )
-                
-                # Mostrar tabla con subtotales
+                # Tabla principal
                 edited_df = st.dataframe(
-                    df_edit_styled,
+                    df_edit_final,
                     column_config=editable_columns,
                     width='stretch',
                     height="auto",
                     key="data_editor_detalle",
                     hide_index=True
                 )
+
+                # Subtotal abajo (solo métricas) si corresponde
+                if not show_subtotals_at_top:
+                    st.caption("Subtotal (ponderado por KgEmbarcados)")
+                    st.dataframe(sty_sub, column_config=editable_columns, width='stretch', hide_index=True)
                 
                 # Mostrar métricas de subtotales
                 col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
@@ -2434,6 +2302,164 @@ with tab_granel:
                     st.metric("Precio Efectivo Promedio Óptimo", f"${kpi_opt.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpi_opt else "N/A")
             except Exception as e:
                 st.error(f"❌ Error KPIs óptimos: {e}")
+    # ===================== PESTAÑA DE COMPARACIÓN =====================
+    with tab_comparacion:
+        st.header("⚖️ Comparación Simulador vs Histórico")
+        st.markdown("Comparación de métricas clave entre el simulador y los datos históricos.")
+        
+        # Verificar que tenemos datos disponibles
+        if "sim.df_filtered" not in st.session_state or st.session_state["sim.df_filtered"] is None:
+            st.error("❌ No hay datos de simulación disponibles")
+            st.info("💡 Aplica filtros en el sidebar para ver los datos")
+            st.stop()
+        
+        if "hist.df_filtered" not in st.session_state or st.session_state["hist.df_filtered"] is None:
+            st.error("❌ No hay datos históricos disponibles")
+            st.info("💡 Ve a la página de Datos Históricos y carga un archivo")
+            st.stop()
+        
+        # Obtener datos filtrados
+        sim_data = st.session_state["sim.df_filtered"].copy()
+        hist_data = st.session_state["hist.df_filtered"].copy()
+        
+        # Asegurar que SKU sea string en ambos datasets para el merge
+        sim_data["SKU"] = sim_data["SKU"].astype(str)
+        hist_data["SKU"] = hist_data["SKU"].astype(str)
+        
+        # Merge de datos simulador e histórico por SKU
+        comparison_data = sim_data.merge(
+            hist_data[["SKU", "PrecioVenta (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]], 
+            on="SKU", 
+            how="inner", 
+            suffixes=("_sim", "_hist")
+        )
+        
+        if comparison_data.empty:
+            st.warning("⚠️ No hay SKUs coincidentes entre simulador e histórico")
+            st.info("💡 Verifica que los filtros permitan ver SKUs comunes")
+            st.stop()
+        
+        # Mostrar métricas de resumen
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("SKUs Comparados", len(comparison_data))
+        
+        with col2:
+            total_sim = comparison_data["EBITDA (USD/kg)_sim"].sum()
+            total_hist = comparison_data["EBITDA (USD/kg)_hist"].sum()
+            diff = total_sim - total_hist
+            st.metric("EBITDA Total Sim", f"${total_sim:,.2f}", f"{diff:+,.2f} vs Hist")
+        
+        with col3:
+            avg_sim = comparison_data["EBITDA Pct_sim"].mean()
+            avg_hist = comparison_data["EBITDA Pct_hist"].mean()
+            diff_pct = avg_sim - avg_hist
+            st.metric("EBITDA % Promedio Sim", f"{avg_sim:.1f}%", f"{diff_pct:+.1f}pp vs Hist")
+        
+        with col4:
+            price_sim = comparison_data["PrecioVenta (USD/kg)_sim"].mean()
+            price_hist = comparison_data["PrecioVenta (USD/kg)_hist"].mean()
+            diff_price = price_sim - price_hist
+            st.metric("Precio Promedio Sim", f"${price_sim:.2f}", f"{diff_price:+.2f} vs Hist")
+        
+        st.markdown("---")
+        
+        # Preparar datos para la tabla de comparación
+        comparison_display = comparison_data[[
+            "SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion",
+            "PrecioVenta (USD/kg)_sim", "PrecioVenta (USD/kg)_hist",
+            "Costos Totales (USD/kg)_sim", "Costos Totales (USD/kg)_hist", 
+            "EBITDA (USD/kg)_sim", "EBITDA (USD/kg)_hist",
+            "EBITDA Pct_sim", "EBITDA Pct_hist"
+        ]].copy()
+        
+        # Renombrar columnas para mejor visualización
+        comparison_display.columns = [
+            "SKU", "Descripción", "Marca", "Cliente", "Especie", "Condición",
+            "Precio Sim", "Precio Hist", 
+            "Costo Sim", "Costo Hist",
+            "EBITDA Sim", "EBITDA Hist", 
+            "EBITDA % Sim", "EBITDA % Hist"
+        ]
+        
+        # Calcular diferencias
+        comparison_display["Δ Precio"] = comparison_display["Precio Sim"] - comparison_display["Precio Hist"]
+        comparison_display["Δ Costo"] = comparison_display["Costo Sim"] - comparison_display["Costo Hist"]
+        comparison_display["Δ EBITDA"] = comparison_display["EBITDA Sim"] - comparison_display["EBITDA Hist"]
+        comparison_display["Δ EBITDA %"] = comparison_display["EBITDA % Sim"] - comparison_display["EBITDA % Hist"]
+        
+        # Aplicar formato a las columnas numéricas
+        numeric_cols = ["Precio Sim", "Precio Hist", "Costo Sim", "Costo Hist", 
+                    "EBITDA Sim", "EBITDA Hist", "EBITDA % Sim", "EBITDA % Hist",
+                    "Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
+        
+        for col in numeric_cols:
+            if col in comparison_display.columns:
+                if "%" in col:
+                    comparison_display[col] = comparison_display[col].round(1)
+                else:
+                    comparison_display[col] = comparison_display[col].round(2)
+        
+        # Crear tabla con estilos
+        st.subheader("📊 Tabla de Comparación Detallada")
+        
+        # Aplicar estilos a la tabla
+        styled_comparison = comparison_display.style
+        
+        # Resaltar diferencias significativas
+        def highlight_differences(val):
+            if isinstance(val, (int, float)):
+                if abs(val) > 0.1:  # Diferencia significativa
+                    return 'background-color: #ffebee'  # Rojo claro
+                elif abs(val) > 0.05:  # Diferencia moderada
+                    return 'background-color: #fff3e0'  # Naranja claro
+            return ''
+        
+        # Aplicar estilos a las columnas de diferencias
+        diff_cols = ["Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
+        for col in diff_cols:
+            if col in comparison_display.columns:
+                styled_comparison = styled_comparison.applymap(highlight_differences, subset=[col])
+        
+        # Mostrar tabla
+        st.dataframe(
+            styled_comparison,
+            use_container_width=True,
+            height=400,
+            hide_index=True
+        )
+        
+        # Mostrar estadísticas de diferencias
+        st.subheader("📈 Análisis de Diferencias")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Diferencias en EBITDA (USD/kg):**")
+            ebitda_diff = comparison_display["Δ EBITDA"]
+            st.write(f"- Promedio: {ebitda_diff.mean():.2f}")
+            st.write(f"- Mediana: {ebitda_diff.median():.2f}")
+            st.write(f"- Desviación: {ebitda_diff.std():.2f}")
+            st.write(f"- Rango: {ebitda_diff.min():.2f} a {ebitda_diff.max():.2f}")
+        
+        with col2:
+            st.write("**Diferencias en EBITDA %:**")
+            ebitda_pct_diff = comparison_display["Δ EBITDA %"]
+            st.write(f"- Promedio: {ebitda_pct_diff.mean():.1f}pp")
+            st.write(f"- Mediana: {ebitda_pct_diff.median():.1f}pp")
+            st.write(f"- Desviación: {ebitda_pct_diff.std():.1f}pp")
+            st.write(f"- Rango: {ebitda_pct_diff.min():.1f}pp a {ebitda_pct_diff.max():.1f}pp")
+        
+        # Botón de descarga
+        csv_data = comparison_display.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar Comparación (CSV)",
+            data=csv_data,
+            file_name=f"comparacion_sim_vs_hist_{len(comparison_data)}_skus.csv",
+            mime="text/csv"
+        )
+
     
 with tab_precio_frutas:
     st.header("🍓 Simulador de Precios de Frutas")
@@ -2567,14 +2593,14 @@ with tab_precio_frutas:
 
                 override_data = {"price": {"type": "dollars", "value": nuevo_precio}}
         else:
-            nueva_Rendimiento = st.number_input(
-                "Nueva Rendimiento:",
+            nuevo_Rendimiento = st.number_input(
+                "Nuevo Rendimiento:",
                 min_value=0.01, max_value=1.0, value=float(Rendimiento_actual),
                 step=0.01, format="%.2f",
                 help="Rendimiento debe estar entre 0.01 y 1.0"
             )
-            cambio_Rendimiento = ((nueva_Rendimiento / Rendimiento_actual) - 1) * 100 if Rendimiento_actual else 0.0
-            override_data = {"efficiency": {"type": "absolute", "value": nueva_Rendimiento}}
+            cambio_Rendimiento = ((nuevo_Rendimiento / Rendimiento_actual) - 1) * 100 if Rendimiento_actual else 0.0
+            override_data = {"rendimiento": {"type": "absolute", "value": nuevo_Rendimiento}}
 
         # --- SELECTORES ABAJO (actualizan estado y relanzan) ---
         sel1, sel2 = st.columns(2)
@@ -2622,7 +2648,7 @@ with tab_precio_frutas:
                 st.write(f"**Precio:** ${precio_actual:.3f} → ${nuevo_precio:.3f}")
         else:
             st.write(f"**Ajuste:** {cambio_Rendimiento:+.1f}%")
-            st.write(f"**Rendimiento:** {Rendimiento_actual:.1%} → {nueva_Rendimiento:.1%}")
+            st.write(f"**Rendimiento:** {Rendimiento_actual:.1%} → {nuevo_Rendimiento:.1%}")
         
         # Botón para aplicar
         if st.button("🚀 Aplicar Ajuste", type="primary", width='stretch'):

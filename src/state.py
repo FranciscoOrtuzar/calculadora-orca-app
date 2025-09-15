@@ -17,7 +17,7 @@ def ensure_defaults() -> None:
     
     # Histórico
     st.session_state.setdefault("hist.df", None)
-    st.session_state.setdefault("hist.filters", {})
+    # st.session_state.setdefault("hist.filters", {})
     st.session_state.setdefault("hist.df_filtered", None)
     st.session_state.setdefault("hist.last_loaded_at", None)
     st.session_state.setdefault("hist.skus_excluidos", None)

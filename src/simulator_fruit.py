@@ -51,7 +51,7 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
     Aplica overrides de PRECIO por fruta.
     Overrides esperados por fruta_id:
     {"price": {"type": "percentage"|"dollars", "value": float}}
-    Rendimiento NO se ajusta aquí (queda base). Clip: Precio>=0, Rendimiento en [0.01, 1.0].
+    {"rendimiento": {"type": "absolute", "value": float}}
     
     Args:
         info_df: DataFrame base con [Fruta_id, Precio, Rendimiento, Name]
@@ -88,6 +88,7 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
             if not isinstance(ov, dict): 
                 continue
             price_ov = ov.get("price")
+            rendimiento_ov = ov.get("rendimiento")
             if price_ov:
                 mask = params["Fruta_id"] == fruta_id
                 if price_ov.get("type") == "percentage":
@@ -99,6 +100,12 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
                 elif price_ov.get("type") == "dollars":
                     val = max(0.0, float(price_ov.get("value", 0.0)))
                     params.loc[mask, "PrecioAjustadoUSD_kg"] = val
+                    params.loc[mask, "CostoEfectivoAjustado"] = params.loc[mask, "PrecioAjustadoUSD_kg"] / params.loc[mask, "RendimientoAjustado"]
+            if rendimiento_ov:
+                mask = params["Fruta_id"] == fruta_id
+                if rendimiento_ov.get("type") == "absolute":
+                    val = max(0.01, float(rendimiento_ov.get("value", 1.0)))
+                    params.loc[mask, "RendimientoAjustado"] = val
                     params.loc[mask, "CostoEfectivoAjustado"] = params.loc[mask, "PrecioAjustadoUSD_kg"] / params.loc[mask, "RendimientoAjustado"]
 
     # Clips defensivos
@@ -115,7 +122,7 @@ def get_adjusted_fruit_params(info_df: pd.DataFrame, fruit_overrides: Dict) -> p
 def compute_mmpp_fruta_per_sku(receta_df: pd.DataFrame, params_df: pd.DataFrame) -> pd.DataFrame:
     """
     Une receta (largo) con params ajustados y calcula:
-      contrib_pos = PrecioAjustadoUSD_kg * Porcentaje / EficienciaAjustada
+      contrib_pos = PrecioAjustadoUSD_kg * Porcentaje / RendimientoAjustado
     MMPP (Fruta) (USD/kg) por SKU = - SUMA(contrib_pos)  (negativo)
     
     Args:

@@ -39,7 +39,20 @@ def apply_filters(df: pd.DataFrame, cliente: List[str] = None, marca: List[str] 
         df_filtered = df_filtered[df_filtered["Marca"].isin(marca)]
     
     if especie and len(especie) > 0 and "Todos" not in especie:
-        df_filtered = df_filtered[df_filtered["Especie"].isin(especie)]
+        # Filtro especial para especies: buscar si alguna de las especies seleccionadas
+        # está contenida en la columna Especie (que ahora es una lista)
+        if "Especie" in df_filtered.columns:
+            def has_matching_species(sku_especies):
+                if isinstance(sku_especies, list):
+                    # Si es una lista, verificar si alguna especie seleccionada está en la lista
+                    return any(esp in especie for esp in sku_especies)
+                else:
+                    # Si es string (fallback), verificar si alguna especie seleccionada está en el string
+                    especies_str = str(sku_especies)
+                    return any(esp in especies_str for esp in especie)
+            
+            especie_mask = df_filtered["Especie"].apply(has_matching_species)
+            df_filtered = df_filtered[especie_mask]
     
     if condicion and len(condicion) > 0 and "Todos" not in condicion:
         df_filtered = df_filtered[df_filtered["Condicion"].isin(condicion)]
@@ -61,8 +74,24 @@ def get_filter_options(df: pd.DataFrame) -> Dict[str, List[str]]:
     
     for col in filter_columns:
         if col in df.columns:
-            values = df[col].dropna().unique().tolist()
-            values = sorted([str(v) for v in values if str(v).strip()])
+            if col == "Especie":
+                # Para especies, extraer todas las especies individuales de las listas
+                all_species = set()
+                for especies_list in df[col].dropna():
+                    if isinstance(especies_list, list):
+                        # Si es una lista, agregar todas las especies
+                        all_species.update(especies_list)
+                    else:
+                        # Si es string (fallback), dividir por coma
+                        especies_str = str(especies_list)
+                        especies_split = [esp.strip() for esp in especies_str.split(",")]
+                        all_species.update(especies_split)
+                
+                values = sorted([esp for esp in all_species if esp and esp.strip()])
+            else:
+                values = df[col].dropna().unique().tolist()
+                values = sorted([str(v) for v in values if str(v).strip()])
+            
             options[col] = ["Todos"] + values
         else:
             options[col] = ["Todos"]
