@@ -265,10 +265,10 @@ if 'detalle' not in locals() or detalle is None:
 # Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
 if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
     original_count = len(detalle)
-    # if st.session_state["sim.df_filtered"] is not None:
-    #     df_base = st.session_state["sim.df_filtered"]
+
     # Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
     subproductos = detalle[detalle["Costos Totales (USD/kg)"] == 0].copy()
+    # sin_ventas = detalle[detalle["KgEmbarcados"] == 0].copy()
     sin_ventas = detalle[detalle["Comex"] == 0].copy()
     skus_excluidos = pd.concat([subproductos, sin_ventas])
     skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
