@@ -521,9 +521,8 @@ with st.sidebar.container():
                 st.sidebar.info(f"🔍 **{active_count} filtros activos**")
             for logical, values in active_filters.items():
                 if values:
-                    st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-    df_base_hist = st.session_state["hist.df"].copy()
-    dynamic_filters = DynamicFiltersWithList(df=df_base_hist, filters=['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU'], filters_name='hist.filters')
+                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
+    dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU'], filters_name='hist.filters')
     dynamic_filters.check_state()
     dynamic_filters.display_filters(location='sidebar')
     df_filtered = dynamic_filters.filter_df()
@@ -2594,14 +2593,14 @@ with tab_precio_frutas:
 
                 override_data = {"price": {"type": "dollars", "value": nuevo_precio}}
         else:
-            nueva_Rendimiento = st.number_input(
-                "Nueva Rendimiento:",
+            nuevo_Rendimiento = st.number_input(
+                "Nuevo Rendimiento:",
                 min_value=0.01, max_value=1.0, value=float(Rendimiento_actual),
                 step=0.01, format="%.2f",
                 help="Rendimiento debe estar entre 0.01 y 1.0"
             )
-            cambio_Rendimiento = ((nueva_Rendimiento / Rendimiento_actual) - 1) * 100 if Rendimiento_actual else 0.0
-            override_data = {"efficiency": {"type": "absolute", "value": nueva_Rendimiento}}
+            cambio_Rendimiento = ((nuevo_Rendimiento / Rendimiento_actual) - 1) * 100 if Rendimiento_actual else 0.0
+            override_data = {"rendimiento": {"type": "absolute", "value": nuevo_Rendimiento}}
 
         # --- SELECTORES ABAJO (actualizan estado y relanzan) ---
         sel1, sel2 = st.columns(2)
@@ -2649,7 +2648,7 @@ with tab_precio_frutas:
                 st.write(f"**Precio:** ${precio_actual:.3f} → ${nuevo_precio:.3f}")
         else:
             st.write(f"**Ajuste:** {cambio_Rendimiento:+.1f}%")
-            st.write(f"**Rendimiento:** {Rendimiento_actual:.1%} → {nueva_Rendimiento:.1%}")
+            st.write(f"**Rendimiento:** {Rendimiento_actual:.1%} → {nuevo_Rendimiento:.1%}")
         
         # Botón para aplicar
         if st.button("🚀 Aplicar Ajuste", type="primary", width='stretch'):

@@ -343,9 +343,8 @@ with st.sidebar.container():
                 st.sidebar.info(f"🔍 **{active_count} filtros activos**")
             for logical, values in active_filters.items():
                 if values:
-                    st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-    df_base_hist = st.session_state["hist.df"].copy()
-    dynamic_filters = DynamicFiltersWithList(df=df_base_hist, filters=['Marca', 'Cliente', "Especie", 'Condicion', 'SKU'], filters_name='hist.filters')
+                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
+    dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', "Especie", 'Condicion', 'SKU'], filters_name='hist.filters')
     dynamic_filters.check_state()
     dynamic_filters.display_filters(location='sidebar')
     df_filtrado = dynamic_filters.filter_df()
