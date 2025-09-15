@@ -263,12 +263,13 @@ def build_tbl_costos_pond(df_costos: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Dat
 
     return out
 
-def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
+def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFrame) -> pd.DataFrame:
     """
     Procesa la tabla de costos de granel ponderados por fruta_id.
     
     Args:
         df_granel: DataFrame con los costos de granel por fruta
+        info_fruta: DataFrame con la información de las frutas
         
     Returns:
         DataFrame con costos procesados por fruta_id
@@ -338,7 +339,9 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame) -> pd.DataFrame:
     # Quedarse con fruta_id + Fruta + columnas de costos
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
     out = df[["Fruta_id", "Fruta"] + cost_cols].dropna(subset=["Fruta_id"]).reset_index(drop=True)
-
+    # Agregar Name de info_fruta
+    info_fruta_subset = info_fruta[['Fruta_id', 'Name', 'Nombre']]
+    out = out.merge(info_fruta_subset, on='Fruta_id', how='left')
     return out
 
 def build_fact_costos_mensuales(df_c: pd.DataFrame, start, end, fill_before_first=False) -> pd.DataFrame:
@@ -951,7 +954,7 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
     return detalle
 # ===================== Construcción del mart =====================
 @st.cache_data(show_spinner=True)
-def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str, ref_ym: Optional[int], optimo: bool = False, df_granel: pd.DataFrame = None) -> pd.DataFrame:
+def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str = "global", ref_ym: Optional[int] = None, optimo: bool = False, df_granel: pd.DataFrame = None) -> pd.DataFrame:
     """
     Pipeline completo para construir el detalle de datos.
     
@@ -1160,7 +1163,7 @@ def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANE
     if optimo:
         sheet_granel[1] = "FACT_GRANEL_POND_OPTIMO"
     granel = build_fact_granel(sheets[sheet_granel[0]], fill_before_first=True)
-    granel_ponderado = build_fact_granel_ponderado(sheets[sheet_granel[1]])
+    granel_ponderado = build_fact_granel_ponderado(sheets[sheet_granel[1]], info_fruta=sheets["INFO_FRUTA"])
     return granel, granel_ponderado
 
 def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:

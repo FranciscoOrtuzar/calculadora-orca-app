@@ -171,19 +171,16 @@ with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
                 st.session_state["hist.uploaded_file"] = up
                 st.session_state["hist.file_bytes"] = up.read()
                 st.rerun()
-    with col2:
-        st.subheader("2) Parámetros de precio vigente")
-        modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
-        ref_ym = None
-        if modo == "to_date":
-            # Selecciona una fecha (Año-Mes) para construir YYYYMM
-            ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1), key="ref_date_home")
-            ref_ym = ref_date.year*100 + ref_date.month
+    # with col2:
+        # st.subheader("2) Parámetros de precio vigente")
+        # modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
+        # ref_ym = None
+        # if modo == "to_date":
+        #     # Selecciona una fecha (Año-Mes) para construir YYYYMM
+        #     ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1), key="ref_date_home")
+        #     ref_ym = ref_date.year*100 + ref_date.month
     
     st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
-
-    st.markdown("---")
-    st.caption("Consejo: si tus números vienen con coma decimal (3,071), este app los limpia automáticamente.")
 
 # Procesar datos solo si no están en caché o si se recargó
 if st.session_state["hist.df"] is None:
@@ -191,9 +188,9 @@ if st.session_state["hist.df"] is None:
         # try:
             with st.spinner("Procesando archivo..."):
                 df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
-                detalle = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, df_granel=df_granel_ponderado)
+                detalle = build_detalle(st.session_state["hist.file_bytes"], df_granel=df_granel_ponderado)
                 
-                detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], ultimo_precio_modo=modo, ref_ym=ref_ym, optimo=True, df_granel=df_granel_ponderado)
+                detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], optimo=True, df_granel=df_granel_ponderado)
                 ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
                 
                 # Generar datos óptimos de granel si están disponibles
@@ -356,11 +353,11 @@ with st.sidebar.container():
 sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # ===================== Pestañas del Histórico =====================
-tab_retail, tab_granel = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)"])
+tab_granel, tab_retail = st.tabs(["Granel (Fruta)", "📊 Retail (SKU)"])
 
 with tab_retail:
     # -------- Mostrar resultados Retail --------
-    st.subheader("Márgenes actuales (unitarios)")
+    st.subheader("Resumen por SKU: Márgenes actuales")
     base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
     "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
     "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados"]
@@ -627,8 +624,46 @@ with tab_retail:
         if "hist.costos_resumen" in st.session_state:
             to_excel_download(st.session_state["hist.costos_resumen"], "costos_resumen_temporada.xlsx")
 
+    # -------- KPIs y Resumen --------
+    st.subheader("📊 Resumen Ejecutivo")
+
+    # Calcular KPIs básicos
+    total_skus = len(df_filtrado)
+    skus_rentables = len(df_filtrado[df_filtrado["EBITDA (USD/kg)"] > 0])
+    ebitda_promedio = df_filtrado["EBITDA (USD/kg)"].mean()
+    margen_promedio = df_filtrado["EBITDA Pct"].mean()
+    ebitda_total = st.session_state["hist.ebitda_total"]
+    ebitda_actual = df_filtrado["EBITDA (USD)"].sum()
+    ebitda_simple_total = st.session_state["hist.ebitda_simple_total"]
+    ebitda_simple_actual = df_filtrado["EBITDA Simple (USD)"].sum()
+
+    # Mostrar KPIs en columnas
+    # col1, col2 = st.columns([1,1])
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    with col1:
+        st.metric("Total SKUs", total_skus, help="SKUs con costos reales (excluyendo subproductos)")
+        # Información sobre subproductos excluidos en los KPIs
+        if len(subproductos) > 0:
+            st.caption(f"⚠️ {len(skus_excluidos)} skus excluidos (costos o ventas = 0)")
+
+    with col2:
+        if total_skus > 0:
+            st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
+        else:
+            st.metric("SKUs Rentables", skus_rentables, "0.0%")
+
+    # with col3:
+    #     st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
+    # with col4:
+    #     st.metric("EBITDA Activo", format_currency_european(ebitda_actual, 0), help="EBITDA de SKUs visibles (no contiene subproductos)")
+    # with col5:
+    #     st.metric("EBITDA Simple Total", format_currency_european(ebitda_simple_total, 0), help="EBITDA simple total de la compañia (no contiene subproductos)")
+    # with col6:
+    #     st.metric("EBITDA Simple Actual", format_currency_european(ebitda_simple_actual, 0), help="EBITDA simple de SKUs visibles (no contiene subproductos)")
+
+
 with tab_granel:
-    st.subheader("🌾 Análisis de Costos de Granel por Fruta")
+    st.subheader("🏭 Análisis de Costos de Granel por Fruta")
     
     # Verificar que los datos de granel estén disponibles
     granel_ponderado = st.session_state.get("hist.granel_ponderado")
@@ -654,15 +689,16 @@ with tab_granel:
         granel_display = granel_ponderado.copy()
         
         # Formatear columnas numéricas
-        numeric_cols = [col for col in granel_display.columns if col not in ["Fruta_id", "Fruta"]]
+        numeric_cols = [col for col in granel_display.columns if col not in ["Fruta_id", "Fruta", "Name", "Nombre"]]
         for col in numeric_cols:
             granel_display[col] = pd.to_numeric(granel_display[col], errors='coerce')
         
-        order_cols = ["Fruta_id", "Fruta", "Precio Efectivo", "Proceso Granel (USD/kg)", "MO Directa", "MO Indirecta",
+        order_cols = ["Fruta_id", "Name", "Precio Efectivo", "Proceso Granel (USD/kg)", "MO Directa", "MO Indirecta",
         "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
         "Costos Directos", "Costos Indirectos", "Servicios Generales"]
         granel_display = granel_display[order_cols]
         granel_display = granel_display.set_index("Fruta_id").sort_index()
+        granel_display = granel_display.sort_values(by="Proceso Granel (USD/kg)")
         #Formato
         fmt_num = {col: "{:.3f}" for col in numeric_cols}
         fmt_pct = {"Rendimiento": "{:.1%}"} if "Rendimiento" in granel_display.columns else {}
@@ -686,7 +722,7 @@ with tab_granel:
             granel_display.format(fmt),
             use_container_width=True,
             column_config={
-                "Fruta": st.column_config.TextColumn(
+                "Name": st.column_config.TextColumn(
                     "Fruta",
                     disabled=True,
                     pinned="left"
@@ -742,7 +778,7 @@ with tab_granel:
             import plotly.express as px
             
             # Preparar datos para el gráfico
-            cost_types = [col for col in granel_ponderado.columns if col not in ["Fruta_id", "Fruta"]]
+            cost_types = [col for col in granel_ponderado.columns if col not in ["Fruta_id", "Fruta", "Name", "Nombre"]]
             
             if cost_types:
                 # Calcular promedios por tipo de costo
@@ -805,42 +841,6 @@ with tab_granel:
                 use_container_width=True
             )
 
-# -------- KPIs y Resumen --------
-st.subheader("📊 Resumen Ejecutivo")
-
-# Calcular KPIs básicos
-total_skus = len(df_filtrado)
-skus_rentables = len(df_filtrado[df_filtrado["EBITDA (USD/kg)"] > 0])
-ebitda_promedio = df_filtrado["EBITDA (USD/kg)"].mean()
-margen_promedio = df_filtrado["EBITDA Pct"].mean()
-ebitda_total = st.session_state["hist.ebitda_total"]
-ebitda_actual = df_filtrado["EBITDA (USD)"].sum()
-ebitda_simple_total = st.session_state["hist.ebitda_simple_total"]
-ebitda_simple_actual = df_filtrado["EBITDA Simple (USD)"].sum()
-
-# Mostrar KPIs en columnas
-# col1, col2 = st.columns([1,1])
-col1, col2, col3, col4, col5, col6 = st.columns(6)
-with col1:
-    st.metric("Total SKUs", total_skus, help="SKUs con costos reales (excluyendo subproductos)")
-    # Información sobre subproductos excluidos en los KPIs
-    if len(subproductos) > 0:
-        st.caption(f"⚠️ {len(skus_excluidos)} skus excluidos (costos o ventas = 0)")
-
-with col2:
-    if total_skus > 0:
-        st.metric("SKUs Rentables", skus_rentables, f"{skus_rentables/total_skus*100:.1f}%")
-    else:
-        st.metric("SKUs Rentables", skus_rentables, "0.0%")
-
-# with col3:
-#     st.metric("EBITDA Compañia", format_currency_european(ebitda_total, 0), help="EBITDA total de la compañia (no contiene subproductos)")
-# with col4:
-#     st.metric("EBITDA Activo", format_currency_european(ebitda_actual, 0), help="EBITDA de SKUs visibles (no contiene subproductos)")
-# with col5:
-#     st.metric("EBITDA Simple Total", format_currency_european(ebitda_simple_total, 0), help="EBITDA simple total de la compañia (no contiene subproductos)")
-# with col6:
-#     st.metric("EBITDA Simple Actual", format_currency_european(ebitda_simple_actual, 0), help="EBITDA simple de SKUs visibles (no contiene subproductos)")
 
 # # Resumen por marca si existe
 # if "Marca" in df_filtrado.columns:

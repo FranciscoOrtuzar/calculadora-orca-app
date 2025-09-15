@@ -619,7 +619,7 @@ else:
     st.sidebar.info("Sin overrides aplicados")
 
 # ===================== Pestañas del Simulador =====================
-tab_sku, tab_granel, tab_precio_frutas, tab_receta = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)", "🍓 Precio Fruta", "📖 Receta"])
+tab_granel, tab_sku, tab_precio_frutas, tab_receta = st.tabs(["🏭 Granel (Fruta)", "📊 Retail (SKU)", "🍓 Precio Fruta", "📖 Receta"])
 
 with tab_sku:
     tab_plan, tab_optimos, tab_comparacion = st.tabs(["🔍 Plan 2026", "🏆 Óptimos", "⚖️ Comparación"])
@@ -1552,7 +1552,7 @@ with tab_sku:
         7. **Exporta el escenario** para compartir o analizar
         """)
     with tab_optimos:
-        st.header("🏆 Óptimos")
+        st.header("🏆 Óptimos (no editable)")
         # Obtener datos optimos si están disponibles en la sesión
         if "hist.df_optimo" in st.session_state and st.session_state["hist.df_optimo"] is not None:
             # Usar hist.optimos que ya incluye los ajustes universales aplicados
@@ -1968,16 +1968,16 @@ with tab_granel:
                 st.rerun()
 
         # --------- Tabla editable (sobre el SIM filtrado) ---------
-        st.subheader("✏️ Editar Costos de Granel (solo escenario)")
+        st.subheader("✏️ Editar Costos de Granel (editable)")
         editable_view = granel_filtrado.copy()
 
         # Casting numérico seguro para estilos/ediciones
-        numeric_cols = [c for c in editable_view.columns if c not in ["Fruta_id", "Fruta"]]
+        numeric_cols = [c for c in editable_view.columns if c not in ["Fruta_id", "Name"]]
         for c in numeric_cols:
             editable_view[c] = pd.to_numeric(editable_view[c], errors="coerce")
 
         # Orden preferido (mostrar si existen)
-        order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo",
+        order_cols = ["Fruta_id", "Name", "Precio", "Rendimiento", "Precio Efectivo",
                       "MO Directa", "MO Indirecta", "MO Total",
                       "Materiales Directos", "Materiales Indirectos", "Materiales Total",
                       "Laboratorio", "Mantencion y Maquinaria",
@@ -1986,6 +1986,7 @@ with tab_granel:
         # Añadir columnas que no estaban en el orden
         editable_view = editable_view[available_cols]
         editable_view = editable_view.set_index("Fruta_id").sort_index()
+        editable_view = editable_view.sort_values(by="Proceso Granel (USD/kg)")
         total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
         editable_columns = editable_view.style
         if total_columns:
@@ -2000,7 +2001,7 @@ with tab_granel:
                 )
         config = {}
         for c in editable_columns.columns:
-            if c not in ["Fruta_id", "Fruta", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
+            if c not in ["Fruta_id", "Name", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
                 config[c] = st.column_config.NumberColumn(
                     c,
                     format="%.3f"
@@ -2013,6 +2014,12 @@ with tab_granel:
                     pinned="left",
                     format="%.3f"
                 )
+                elif c == "Name":
+                    config[c] = st.column_config.TextColumn(
+                        "Fruta",
+                        disabled=True,
+                        pinned="left",
+                    )
                 else:
                     config[c] = st.column_config.TextColumn(
                         c,
@@ -2058,7 +2065,6 @@ with tab_granel:
                 "border-top": "2px solid #1f77b4",
             },
         )
-        
         # Mostrar tabla con subtotales
         edited_df = st.dataframe(
             editable_columns,
@@ -2086,31 +2092,11 @@ with tab_granel:
         #         total_proceso = editable_view["Proceso Granel (USD/kg)"].sum()
         #         st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
 
-        # Botón explícito para guardar lo editado (evita escribir al vuelo)
-        if st.button("💾 Guardar cambios del editor"):
-            sim_snapshot_push()
-            # Fusiona de vuelta SOLO columnas editables al SIM global (no solo las filas filtradas)
-            sim_global = st.session_state["sim.granel_df"]
-            # Asegura pk
-            if "Fruta_id" not in edited_df.columns or "Fruta_id" not in sim_global.columns:
-                st.error("No se encontró la columna 'Fruta_id' para guardar cambios.")
-            else:
-                try:
-                    st.session_state["sim.granel_df"] = _merge_back_sim(sim_global, edited_df, pk="Fruta_id")
-                    # Opcional: sincronizar retail tras editar manualmente
-                    ok, err = _sync_retail_using_hist_copy(st.session_state.get("sim.granel_overrides_row", {}))
-                    if ok:
-                        st.success("✅ Cambios guardados y retail sincronizado")
-                    else:
-                        st.info("✅ Cambios guardados en granel (retail no sincronizado)")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error guardando cambios: {e}")
-
         # --------- KPIs ---------
         st.subheader("📈 KPIs de Granel (escenario)")
+        editable_view_con_proceso = editable_view[editable_view["Proceso Granel (USD/kg)"] < 0]
         try:
-            kpis_granel = calculate_granel_kpis(editable_view)
+            kpis_granel = calculate_granel_kpis(editable_view_con_proceso)
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.metric("Total Frutas", kpis_granel.get("Total Frutas", 0))
@@ -2123,28 +2109,34 @@ with tab_granel:
         except Exception as e:
             st.error(f"❌ Error calculando KPIs: {e}")
 
-        # --------- Top/Bottom ---------
-        st.subheader("🏆 Top 10 y Bottom 10 Frutas por Costo")
-        try:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Top 10")
-                top_frutas, _ = get_top_bottom_granel(editable_view, 10)
-                if not top_frutas.empty:
-                    show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in top_frutas.columns]
-                    st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
-                else:
-                    st.info("No hay datos")
-            with c2:
-                st.subheader("Bottom 10")
-                _, bottom_frutas = get_top_bottom_granel(editable_view, 10)
-                if not bottom_frutas.empty:
-                    show_cols = [c for c in ["Fruta_id", "Fruta", "Precio Efectivo", "Costos Directos"] if c in bottom_frutas.columns]
-                    st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Fruta_id","Fruta"]}), use_container_width=True)
-                else:
-                    st.info("No hay datos")
-        except Exception as e:
-            st.error(f"❌ Error obteniendo top/bottom: {e}")
+        # # --------- Top/Bottom ---------
+        # st.subheader("🏆 Top 10 y Bottom 10 Frutas por Costo")
+        # try:
+        #     c1, c2 = st.columns(2)
+        #     config = {}
+        #     config["Name"] = st.column_config.TextColumn(
+        #         "Fruta",
+        #         disabled=True,
+        #         pinned="left",
+        #     )
+        #     with c1:
+        #         st.subheader("Top 5")
+        #         top_frutas, _ = get_top_bottom_granel(editable_view_con_proceso, 5)
+        #         if not top_frutas.empty:
+        #             show_cols = [c for c in ["Name", "Proceso Granel (USD/kg)", "Costos Directos"] if c in top_frutas.columns]
+        #             st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), use_container_width=True, column_config=config, hide_index=True)
+        #         else:
+        #             st.info("No hay datos")
+        #     with c2:
+        #         st.subheader("Bottom 5")
+        #         _, bottom_frutas = get_top_bottom_granel(editable_view_con_proceso, 5)
+        #         if not bottom_frutas.empty:
+        #             show_cols = [c for c in ["Name", "Proceso Granel (USD/kg)", "Costos Directos"] if c in bottom_frutas.columns]
+        #             st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), use_container_width=True, column_config=config, hide_index=True)
+        #         else:
+        #             st.info("No hay datos")
+        # except Exception as e:
+        #     st.error(f"❌ Error obteniendo top/bottom: {e}")
 
         # --------- Gráfico ---------
         st.subheader("📈 Gráfico de Costos")
@@ -2158,7 +2150,7 @@ with tab_granel:
         with c2:
             st.write("")
         try:
-            chart = create_granel_cost_chart(editable_view, int(top_n_granel))
+            chart = create_granel_cost_chart(editable_view_con_proceso, int(top_n_granel))
             if chart:
                 st.altair_chart(chart, use_container_width=True)
             else:
@@ -2210,7 +2202,7 @@ with tab_granel:
     # TAB: ÓPTIMOS
     # ======================================================
     with tab_granel_optimos:
-        st.header("🏆 Granel Óptimos")
+        st.header("🏆 Granel Óptimos (no editable)")
         granel_optimo = st.session_state.get("hist.granel_optimo")
         if granel_optimo is None or granel_optimo.empty:
             st.info("ℹ️ **Datos óptimos de granel no disponibles**. Se generan al cargar datos base.")
@@ -2218,11 +2210,11 @@ with tab_granel:
             st.subheader("📊 Datos Óptimos de Granel")
             opt_view = granel_optimo.copy()
             # Casting numérico
-            num_cols = [c for c in opt_view.columns if c not in ["Fruta_id", "Fruta"]]
+            num_cols = [c for c in opt_view.columns if c not in ["Fruta_id", "Fruta", "Name"]]
             for c in num_cols:
                 opt_view[c] = pd.to_numeric(opt_view[c], errors="coerce")
 
-            order_cols = ["Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo",
+            order_cols = ["Fruta_id", "Name", "Precio", "Rendimiento", "Precio Efectivo",
                           "MO Directa", "MO Indirecta", "MO Total",
                           "Materiales Directos", "Materiales Indirectos", "Materiales Total",
                           "Laboratorio", "Mantencion y Maquinaria",
@@ -2230,6 +2222,7 @@ with tab_granel:
             avail_cols = [c for c in order_cols if c in opt_view.columns]
             opt_view = opt_view[available_cols]
             opt_view = opt_view.set_index("Fruta_id").sort_index()
+            opt_view = opt_view.sort_values(by="Proceso Granel (USD/kg)")
             total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
             opt_view_styled = opt_view.style
             if total_columns:
@@ -2244,7 +2237,7 @@ with tab_granel:
                     )
             config = {}
             for c in opt_view_styled.columns:
-                if c not in ["Fruta_id", "Fruta", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
+                if c not in ["Fruta_id", "Name", "Proceso Granel (USD/kg)", "Precio Efectivo"]:
                     config[c] = st.column_config.NumberColumn(
                         c,
                         format="%.3f"
@@ -2257,14 +2250,14 @@ with tab_granel:
                         pinned="left",
                         format="%.3f"
                     )
-                    else:
+                    elif c == "Name":
                         config[c] = st.column_config.TextColumn(
-                            c,
+                            "Fruta",
                             disabled=True,
                             pinned="left",
                         )
             # Aplicar subtotales según la configuración
-            if "Fruta" in opt_view.columns:
+            if "Name" in opt_view.columns:
                 # Crear fila de subtotales
                 subtotal_row = create_subtotal_row(opt_view)
                 subtotal_df = pd.DataFrame([subtotal_row])

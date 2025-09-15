@@ -788,9 +788,9 @@ def get_top_bottom_granel(df: pd.DataFrame, n: int = 5) -> Tuple[pd.DataFrame, p
     Returns:
         Tupla con (top_frutas, bottom_frutas)
     """
-    if "Precio Efectivo" in df.columns:
+    if "Proceso Granel (USD/kg)" in df.columns:
         # Ordenar por Precio Efectivo (mayor a menor)
-        df_sorted = df.sort_values("Precio Efectivo", ascending=False)
+        df_sorted = df.sort_values("Proceso Granel (USD/kg)", ascending=False)
         top_frutas = df_sorted.head(n)
         bottom_frutas = df_sorted.tail(n)
     else:
@@ -821,10 +821,10 @@ def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.
             return None
         
         # Seleccionar las top N frutas por Precio Efectivo
-        if "Precio Efectivo" in df.columns:
-            df_chart = df.nlargest(top_n, "Precio Efectivo")
-            y_col = "Precio Efectivo"
-            title = f"Top {top_n} Frutas por Precio Efectivo (USD/kg)"
+        if "Proceso Granel (USD/kg)" in df.columns:
+            df_chart = df.nlargest(top_n, "Proceso Granel (USD/kg)")
+            y_col = "Proceso Granel (USD/kg)"
+            title = f"Top {top_n} Frutas por Proceso Granel (USD/kg)"
         elif "Costos Directos" in df.columns:
             df_chart = df.nlargest(top_n, "Costos Directos")
             y_col = "Costos Directos"
@@ -836,10 +836,10 @@ def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.
         chart = alt.Chart(df_chart).mark_bar().add_selection(
             alt.selection_interval()
         ).encode(
-            x=alt.X("Fruta:N", sort="-y", title="Fruta"),
+            x=alt.X("Name:N", sort="-y", title="Fruta"),
             y=alt.Y(f"{y_col}:Q", title="Costo (USD/kg)"),
             color=alt.Color(f"{y_col}:Q", scale=alt.Scale(scheme="blues")),
-            tooltip=["Fruta", "Fruta", f"{y_col}:Q"]
+            tooltip=["Name", f"{y_col}:Q"]
         ).properties(
             title=title,
             width=600,
