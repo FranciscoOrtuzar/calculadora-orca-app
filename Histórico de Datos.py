@@ -349,6 +349,7 @@ with st.sidebar.container():
     dynamic_filters.check_state()
     dynamic_filters.display_filters(location='sidebar')
     df_filtrado = dynamic_filters.filter_df()
+    st.session_state["hist.df_filtered"] = df_filtrado
 
 with st.sidebar.container():
     st.button("Resetear Filtros", on_click=dynamic_filters.reset_filters)
