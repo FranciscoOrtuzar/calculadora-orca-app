@@ -697,6 +697,12 @@ def columns_config(editable: bool = True) -> dict:
                 width="medium",
                 pinned="left"
             )
+        elif col == "Especie":
+            editable_columns[col] = st.column_config.ListColumn(
+                col,
+                disabled=True,
+                help=f"{col} (no editable)",
+            )
         else:
             editable_columns[col] = st.column_config.TextColumn(
                 col,
@@ -1157,6 +1163,69 @@ def build_granel(uploaded_bytes: bytes, sheet_granel=["FACT_GRANEL", "FACT_GRANE
     granel_ponderado = build_fact_granel_ponderado(sheets[sheet_granel[1]])
     return granel, granel_ponderado
 
+def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Devuelve un DataFrame de UNA FILA con el subtotal ponderado por KgEmbarcados.
+    - Para columnas numéricas (unitarias) hace promedio ponderado por KgEmbarcados.
+    - 'KgEmbarcados' se suma.
+    - 'EBITDA Pct' se calcula como (Σ(EBITDA/kg * Kg) / Σ(PrecioVenta/kg * Kg)) * 100,
+      si ambas columnas existen; de lo contrario, promedio ponderado simple.
+    - En 'SKU' pone 'Subtotal' y deja vacíos en las demás no numéricas.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+
+    # pesos
+    w = pd.to_numeric(work.get("KgEmbarcados"), errors="coerce").fillna(0.0)
+    W = float(w.sum())
+
+    subtotal = {}
+
+    # Etiquetas / no numéricas
+    label_cols = {"SKU": "Subtotal", "SKU-Cliente": "", "Marca": "", "Cliente": "",
+                  "Especie": "", "Condicion": "", "Descripcion": ""}
+    for c, val in label_cols.items():
+        if c in work.columns:
+            subtotal[c] = val
+
+    # KgEmbarcados -> suma
+    if "KgEmbarcados" in work.columns:
+        subtotal["KgEmbarcados"] = W
+
+    # EBITDA Pct especial (si hay columnas base)
+    if "EBITDA Pct" in work.columns:
+        eb = pd.to_numeric(work.get("EBITDA (USD/kg)"), errors="coerce")
+        pv = pd.to_numeric(work.get("PrecioVenta (USD/kg)"), errors="coerce")
+        if eb is not None and pv is not None and W > 0:
+            eb_sum = (eb * w).sum(skipna=True)
+            pv_sum = (pv * w).sum(skipna=True)
+            subtotal["EBITDA Pct"] = float((eb_sum / pv_sum) * 100) if pv_sum and not np.isnan(pv_sum) else 0.0
+        else:
+            # fallback: promedio ponderado de la columna existente
+            pct = pd.to_numeric(work["EBITDA Pct"], errors="coerce")
+            subtotal["EBITDA Pct"] = float((pct * w).sum(skipna=True) / W) if W > 0 else 0.0
+
+    # Resto de columnas numéricas -> promedio ponderado
+    for c in work.columns:
+        if c in subtotal:  # ya calculadas arriba
+            continue
+        if c in label_cols:  # no numéricas
+            continue
+        s = pd.to_numeric(work[c], errors="coerce")
+        if s.notna().any():
+            if c == "KgEmbarcados":
+                # ya calculado
+                continue
+            # promedio ponderado por Kg
+            subtotal[c] = float((s * w).sum(skipna=True) / W) if W > 0 else 0.0
+        else:
+            subtotal[c] = ""
+
+    # Devolver como UNA fila
+    return pd.DataFrame([subtotal])
+
 # ===================== Carga de datos de fruta =====================
 def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1194,8 +1263,75 @@ def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:
     
     # Resetear índice
     df = df.reset_index(drop=True)
-    
     return df
+
+
+def load_especies(
+    df_receta: pd.DataFrame,
+    df_detalle: pd.DataFrame,
+    info_df: pd.DataFrame,
+    *,
+    as_list: bool = True,   # True -> guarda listas; False -> "A, B, C"
+    sep: str = ", "
+) -> pd.DataFrame:
+    det = df_detalle.copy()
+
+    # --- Normaliza llaves a string (evita 1020 vs 1020.0) ---
+    det["SKU"] = det["SKU"].astype(str)
+    df_receta = df_receta.copy()
+    info_df   = info_df.copy()
+    df_receta["SKU"] = df_receta["SKU"].astype(str)
+    df_receta["Fruta_id"] = df_receta["Fruta_id"].astype(str)
+    info_df["Fruta_id"]   = info_df["Fruta_id"].astype(str)
+
+    # --- Fruta_id -> Nombre ---
+    lu = (info_df.dropna(subset=["Fruta_id", "Name"])
+                  .drop_duplicates("Fruta_id")
+                  .set_index("Fruta_id")["Name"])
+
+    # --- SKU -> lista de nombres únicos/ordenados ---
+    rec = df_receta.loc[:, ["SKU", "Fruta_id"]].dropna().copy()
+    rec["Name"] = rec["Fruta_id"].map(lu)
+    rec = rec.dropna(subset=["Name"])
+
+    names_by_sku = rec.groupby("SKU")["Name"].apply(
+        lambda s: sorted({str(x).strip() for x in s if str(x).strip()})
+    )  # Series: SKU -> List[str]
+
+    # Serie con listas (o NaN) alineada al índice de det
+    mapped = det["SKU"].map(names_by_sku)
+    # Asegura que los valores de mapped sean listas (por si vienen como str)
+    mapped = mapped.apply(lambda v: v if isinstance(v, list) or pd.isna(v) else [v])
+
+    # --- Fallback: usa Especie existente convertida a lista ---
+    def _to_list(v):
+        if isinstance(v, list):
+            return v
+        if pd.isna(v):
+            return []
+        # Si viene como texto tipo "['A','B']" intentar parsear
+        s = str(v).strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                val = ast.literal_eval(s)
+                if isinstance(val, list):
+                    return [str(x) for x in val]
+            except Exception:
+                pass
+        return [s]
+
+    current = det["Especie"] if "Especie" in det.columns else pd.Series(index=det.index, dtype=object)
+    current_list = current.apply(_to_list)
+
+    # Construye la nueva columna: donde hay receta usa mapped, si no, usa current_list
+    new_especie = current_list.copy()
+    mask = mapped.notna()
+    new_especie.loc[mask] = mapped.loc[mask]
+
+    # Guarda como listas o como string "A, B, C"
+    det["Especie"] = new_especie if as_list else new_especie.apply(lambda lst: sep.join(lst))
+
+    return det
 
 
 def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
@@ -1885,31 +2021,6 @@ def get_aggrid_custom_css() -> dict:
         }
     }
 
-def inject_streamlit_dataframe_css(header_height: int = 64):
-    """Inyecta CSS para st.dataframe: header más alto con textos en dos líneas.
-
-    - header_height: altura en px para permitir dos líneas legibles.
-    """
-    css = f"""
-    <style>
-    [data-testid="stDataFrame"] thead tr th,
-    [data-testid="stDataFrame"] [role="columnheader"] {{
-        height: {header_height}px !important;
-        white-space: normal !important;
-        line-height: 1.2 !important;
-        vertical-align: middle !important;
-    }}
-    [data-testid="stDataFrame"] [role="columnheader"] p {{
-        white-space: normal !important;
-        margin: 0 !important;
-    }}
-    </style>
-    """
-    try:
-        st.markdown(css, unsafe_allow_html=True)
-    except Exception:
-        pass
-
 def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
     df_prepared = prepare_dataframe_for_aggrid(df).copy()
     gb = GridOptionsBuilder.from_dataframe(df_prepared)
@@ -1992,86 +2103,6 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
 
         kwargs["tooltipField"] = col
         gb.configure_column(col, **kwargs)
-
-    # --------- POLÍTICA RESPONSIVA DE PINNED IZQUIERDA ---------
-    PINNED_ORIG = json.dumps(pinned_left_cols)        # orden original
-    PROTECTED   = json.dumps(protected_cols)          # nunca se despinan
-    # Eliminado js_policy global para evitar dobles definiciones y ejecuciones tempranas
-    # Inyectar helpers y política directamente en los handlers
-    js_on_ready_and_resize = JsCode(f"""
-      function(params){{
-        // Helpers locales
-        function __gridWidth(params){{
-          try {{ const gui = params.api.getGui(); if(gui && gui.clientWidth) return gui.clientWidth; }} catch(e){{}}
-          const vp = params.api.gridBodyCtrl?.eBodyViewport; return (vp && vp.clientWidth) ? vp.clientWidth : (params.clientWidth||0);
-        }}
-        function __clampLeft(params, minW, maxW){{
-          if(!params || !params.columnApi || !params.columnApi.getAllDisplayedColumns) return;
-          (params.columnApi.getAllDisplayedColumns()||[]).forEach(c=>{{
-            if(c.getPinned()==='left'){{
-              const w=c.getActualWidth(); const nw=Math.max(minW, Math.min(maxW, w));
-              if(nw!==w) params.columnApi.setColumnWidth(c, nw, false);
-            }}
-          }});
-        }}
-        function __widthOf(params, id){{
-          if(!params || !params.columnApi || !params.columnApi.getColumn) return 0;
-          const c = params.columnApi.getColumn(id);
-          if(!c || typeof c.getActualWidth !== 'function') return 0;
-          const w = c.getActualWidth();
-          const MIN=40, MAX=95; return Math.max(MIN, Math.min(MAX, w));
-        }}
-        function __autoSizePinnedOnce(params, pinnedIds){{
-          if(!params.api.__pinPolicy) params.api.__pinPolicy = {{ doneAutoSize:false }};
-          if(params.api.__pinPolicy.doneAutoSize) return;
-          try {{ if(pinnedIds && pinnedIds.length) params.columnApi.autoSizeColumns(pinnedIds, false); }} catch(e){{ }}
-          params.api.__pinPolicy.doneAutoSize = true;
-        }}
-
-        function __applyPinnedPolicy(params){{
-          if(!params || !params.api || !params.columnApi || !params.columnApi.getAllDisplayedColumns) return;
-          // Throttle
-          if(!params.api.__pinPolicy) params.api.__pinPolicy = {{ doneAutoSize:false, lastRunAt:0 }};
-          const now = Date.now();
-          if(now - (params.api.__pinPolicy.lastRunAt||0) < 50) return;
-          params.api.__pinPolicy.lastRunAt = now;
-          const orig = {PINNED_ORIG};
-          const protectedIds = {PROTECTED};
-          const prot = new Set(protectedIds);
-          const gw = __gridWidth(params);
-          if(!gw) return;
-          const ratio = (gw >= 1024) ? 0.50 : 0.40;
-          const target = Math.floor(gw * ratio);
-          __autoSizePinnedOnce(params, orig);
-          __clampLeft(params, 40, 95);
-          // Selección en lote: construir set final de columnas pinned
-          let used = 0; const finalLeft = [];
-          // protegidas primero
-          orig.forEach(id=>{{ if(prot.has(id)){{ const w = __widthOf(params, id); if(used + w <= target || used === 0){{ finalLeft.push(id); used += w; }} }} }});
-          // luego no protegidas
-          orig.forEach(id=>{{ if(!prot.has(id)){{ const w = __widthOf(params, id); if(used + w <= target){{ finalLeft.push(id); used += w; }} }} }});
-          const state = []; const setLeft = new Set(finalLeft);
-          // aplicar para todas las originales
-          orig.forEach(id=>{{ state.push({{colId:id, pinned: setLeft.has(id) ? 'left' : null}}); }});
-          // despinnear adicionales no incluidas en 'orig'
-          (params.columnApi.getAllDisplayedColumns()||[])
-            .filter(c=>c.getPinned()==='left' && orig.indexOf(c.getColId())<0)
-            .forEach(c=>{{ state.push({{colId:c.getColId(), pinned:null}}); }});
-          try {{ params.columnApi.applyColumnState({{ state: state, applyOrder: false }}); }} catch(e){{ }}
-        }}
-
-        // Ejecutar asíncrono para asegurar APIs listas
-        setTimeout(function(){{ __applyPinnedPolicy(params); }}, 0);
-      }}
-    """)
-
-    gb.configure_grid_options(
-        onGridReady=js_on_ready_and_resize,
-        onFirstDataRendered=js_on_ready_and_resize,
-        onGridSizeChanged=js_on_ready_and_resize,
-        onDisplayedColumnsChanged=js_on_ready_and_resize,
-        onColumnResized=js_on_ready_and_resize
-    )
     # ---------------------------------------------------------------
 
     gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=1000)
@@ -2079,123 +2110,6 @@ def create_aggrid_config(df: pd.DataFrame, enable_selection: bool = False):
 
     gb.configure_selection(selection_mode="single" if enable_selection else "none", use_checkbox=False)
     return df_prepared, gb.build()
-
-def create_aggrid_with_subtotals(df: pd.DataFrame, enable_selection: bool = False, show_subtotals_at_top: bool = False) -> tuple:
-    """
-    Crea configuración de AgGrid con subtotales nativos integrados usando filas pinned.
-    
-    Args:
-        df: DataFrame para mostrar
-        enable_selection: Si habilitar selección de filas
-        show_subtotals_at_top: Si mostrar subtotales al inicio
-        
-    Returns:
-        Tuple con (df_prepared, grid_options, subtotal_data)
-    """
-    # Preparar DataFrame
-    df_prepared = prepare_dataframe_for_aggrid(df).copy()
-    
-    # Crear subtotales
-    subtotal_row = create_aggrid_subtotal_row(df_prepared)
-    
-    # Crear configuración base
-    df_prepared, grid_options = create_aggrid_config(df_prepared, enable_selection)
-    
-    # Configurar subtotales usando filas pinned con estilo especial
-    if show_subtotals_at_top:
-        grid_options["pinnedTopRowData"] = [subtotal_row]
-        if "pinnedBottomRowData" in grid_options:
-            del grid_options["pinnedBottomRowData"]
-    else:
-        grid_options["pinnedBottomRowData"] = [subtotal_row]
-        if "pinnedTopRowData" in grid_options:
-            del grid_options["pinnedTopRowData"]
-    
-    # Configurar estilo especial para fila de subtotales
-    grid_options["getRowStyle"] = JsCode("""
-        function(params) {
-            if (params.node && params.node.rowPinned) {
-                return {
-                    'background-color': '#e8f4fd',
-                    'font-weight': 'bold',
-                    'border-top': '2px solid #1f77b4',
-                    'font-size': '13px'
-                };
-            }
-            return null;
-        }
-    """)
-    
-    # Configurar altura de fila para subtotales
-    grid_options["getRowHeight"] = JsCode("""
-        function(params) {
-            if (params.node && params.node.rowPinned) {
-                return 40; // Fila de subtotales más alta
-            }
-            return 32; // Altura normal
-        }
-    """)
-    
-    return df_prepared, grid_options, subtotal_row
-
-def create_aggrid_subtotal_row(df: pd.DataFrame) -> dict:
-    """
-    Crea una fila de subtotales nativa de AgGrid con formato especial.
-    
-    Args:
-        df: DataFrame para calcular subtotales
-        
-    Returns:
-        Diccionario con los subtotales calculados para AgGrid
-    """
-    subtotal_row = {}
-    
-    # Columnas numéricas para sumar
-    numeric_cols = [
-        "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total", 
-        "Materiales Directos", "Materiales Indirectos", "Materiales Total", 
-        "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales",
-        "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-        "Almacenaje MMPP", "Comex", "Guarda PT", "Gastos Totales (USD/kg)",
-        "Costos Totales (USD/kg)", "PrecioVenta (USD/kg)", "EBITDA (USD/kg)",
-        "KgEmbarcados", "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)"
-    ]
-    
-    # Calcular subtotales para columnas numéricas existentes
-    for col in numeric_cols:
-        if col in df.columns:
-            # Convertir a numérico antes de sumar
-            numeric_series = pd.to_numeric(df[col], errors="coerce")
-            kg_emb = pd.to_numeric(df["KgEmbarcados"], errors="coerce")
-            subtotal_row[col] = (numeric_series * kg_emb).sum(skipna=True)/kg_emb.sum(skipna=True)
-    
-    # Columnas no numéricas - mostrar mensaje genérico o vacío
-    non_numeric_cols = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", 
-                       "Especie", "Condicion", "EBITDA Pct"]
-    
-    for col in non_numeric_cols:
-        if col in df.columns:
-            if col == "EBITDA Pct":
-                # Calcular EBITDA Pct como promedio ponderado
-                if "EBITDA (USD/kg)" in df.columns and "PrecioVenta (USD/kg)" in df.columns:
-                    # Convertir a numérico antes de hacer operaciones
-                    ebitda_series = pd.to_numeric(df["EBITDA (USD/kg)"], errors="coerce")
-                    precio_series = pd.to_numeric(df["PrecioVenta (USD/kg)"], errors="coerce")
-                    total_ebitda = ebitda_series.sum(skipna=True)
-                    total_precio = precio_series.sum(skipna=True)
-                    if total_precio != 0 and not pd.isna(total_ebitda) and not pd.isna(total_precio):
-                        subtotal_row[col] = (total_ebitda / total_precio) * 100
-                    else:
-                        subtotal_row[col] = 0
-                else:
-                    subtotal_row[col] = ""
-            else:
-                subtotal_row[col] = ""
-    
-    # Agregar identificador de subtotal
-    subtotal_row["SKU"] = "SUBTOTAL"
-    
-    return subtotal_row
 
 def prepare_dataframe_for_aggrid(df: pd.DataFrame) -> pd.DataFrame:
     """

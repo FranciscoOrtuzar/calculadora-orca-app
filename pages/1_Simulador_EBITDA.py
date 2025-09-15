@@ -13,6 +13,8 @@ from pathlib import Path
 import io
 import streamlit.components.v1 as components
 import json
+from src.state import sync_filters_to_shared, sync_filters_from_shared
+from src.dynamic_filters import DynamicFiltersWithList
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
@@ -388,21 +390,6 @@ st.set_page_config(
 st.title("Simulador de EBITDA por SKU (USD/kg)")
 st.markdown("Simula escenarios de variación en costos y analiza impacto en rentabilidad por SKU.")
 
-# ===================== Indicador de Filtros Compartidos =====================
-def show_filter_status():
-    """Muestra el estado de los filtros compartidos"""
-    if "hist.filters" in st.session_state and st.session_state["hist.filters"]:
-        hist_filters = st.session_state["hist.filters"]
-        active_count = sum(len(v) for v in hist_filters.values() if v)
-        if active_count > 0:
-            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el histórico")
-            return True
-    return False
-
-# Mostrar estado de filtros si están activos
-if show_filter_status():
-    st.markdown("---")
-
 # ===================== Carga de datos =====================
 def load_base_data():
     """Carga los datos base desde archivo local o sesión."""
@@ -520,137 +507,31 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                 key="download_skus_excluidos_sim_1"
             )
 
-# ===================== Sidebar - Filtros Dinámicos =====================
+# Filtros Dinamicos de la libreria streamlit-dynamic-filters
 st.sidebar.header("🔍 Filtros Dinámicos")
+with st.sidebar.container():
+    if "hist.filters" in st.session_state:
+        st.session_state["hist.filters"] = sync_filters_from_shared(page="hist")
+        active_filters = st.session_state["hist.filters"]
+        active_count = sum(len(v) for v in active_filters.values() if v)
+        if active_count > 0:
+            if active_count == 1:
+                st.sidebar.info(f"🔍 **{active_count} filtro activo**")
+            else:
+                st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+            for logical, values in active_filters.items():
+                if values:
+                    st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
+    df_base_hist = st.session_state["hist.df"].copy()
+    dynamic_filters = DynamicFiltersWithList(df=df_base_hist, filters=['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU'], filters_name='hist.filters')
+    dynamic_filters.check_state()
+    dynamic_filters.display_filters(location='sidebar')
+    df_filtered = dynamic_filters.filter_df()
 
-# Sistema de filtros dinámico (igual que en datos históricos)
-FIELD_ALIASES = {
-    "Marca": ["Marca", "Brand"],
-    "Cliente": ["Cliente", "Customer"],
-    "Especie": ["Especie", "Species"],
-    "Condicion": ["Condicion", "Condición", "Condition"],
-    "SKU": ["SKU"]
-}
+with st.sidebar.container():
+    st.button("Resetear Filtros", on_click=dynamic_filters.reset_filters)
 
-# Resolver alias -> columna real presente en df_base
-def resolve_columns(df, aliases_map):
-    resolved = {}
-    cols_lower = {c.lower(): c for c in df.columns}
-    for logical, options in aliases_map.items():
-        found = None
-        for opt in options:
-            c = cols_lower.get(opt.lower())
-            if c is not None:
-                found = c
-                break
-        if found:
-            resolved[logical] = found
-    return resolved
-
-RESOLVED = resolve_columns(df_base, FIELD_ALIASES)
-
-# Lista final de filtros (solo los que existen en la data)
-FILTER_FIELDS = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED]
-
-def _norm_series(s: pd.Series):
-    return s.fillna("(Vacío)").astype(str).str.strip()
-
-def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
-    out = df.copy()
-    for logical, sel in selections.items():
-        if logical == skip_key or not sel:
-            continue
-        real_col = RESOLVED[logical]
-        # Mapea el placeholder "(Vacío)" a vacío real
-        valid = [x if x != "(Vacío)" else "" for x in sel]
-        out = out[out[real_col].fillna("").astype(str).str.strip().isin(valid)]
-    return out
-
-def _current_selections():
-    selections = {}
-    for logical in FILTER_FIELDS:
-        selections[logical] = st.session_state.get(f"ms_sim_{logical}", [])
-    return selections
-
-# ===================== Sistema de Filtros Compartidos =====================
-def sync_filters_from_shared():
-    """Sincroniza filtros desde el estado compartido (solo cuando se solicita)"""
-    from src.state import sync_filters_from_shared
-    shared_filters = sync_filters_from_shared("sim")
-    for logical in FILTER_FIELDS:
-        if logical in shared_filters and shared_filters[logical]:
-            st.session_state[f"ms_sim_{logical}"] = shared_filters[logical]
-
-def sync_filters_to_shared():
-    """Sincroniza filtros actuales al estado compartido"""
-    from src.state import sync_filters_to_shared
-    current_filters = _current_selections()
-    sync_filters_to_shared("sim", current_filters)
-
-def clear_all_filters():
-    """Limpia todos los filtros"""
-    from src.state import clear_shared_filters
-    for logical in FILTER_FIELDS:
-        st.session_state[f"ms_sim_{logical}"] = []
-    clear_shared_filters()
-
-# Detectar si es la primera carga de la página o cambio de página
-current_page = "sim"
-if "sim.page_loaded" not in st.session_state or st.session_state.get("shared.current_page") != current_page:
-    st.session_state["sim.page_loaded"] = True
-    st.session_state["shared.current_page"] = current_page
-    # Primera carga o cambio de página: sincronizar automáticamente desde el estado compartido
-    sync_filters_from_shared()
-
-# Mostrar filtros activos
-active_filters = _current_selections()
-active_count = sum(len(v) for v in active_filters.values() if v)
-if active_count > 0:
-    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-    for logical, values in active_filters.items():
-        if values:
-            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-
-# Guardar filtros en sim.filters
-st.session_state["sim.filters"] = _current_selections()
-
-# Crear filtros en filas (uno abajo del otro)
-if FILTER_FIELDS:
-    # Obtener filtros actuales del session_state
-    SELECTIONS = _current_selections()
-    
-    # Función de callback para actualizar estado compartido
-    def update_shared_filters():
-        """Callback que actualiza el estado compartido cuando cambian los filtros"""
-        current_filters = _current_selections()
-        sync_filters_to_shared()
-    
-    for logical in FILTER_FIELDS:
-        real_col = RESOLVED[logical]
-        df_except = _apply_filters(df_base, SELECTIONS, skip_key=logical)
-        opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
-        
-        # Crear el multiselect con key y on_change (sin default para evitar pisar valores)
-        st.sidebar.multiselect(
-            logical, 
-            options=opts, 
-            key=f"ms_sim_{logical}",
-            on_change=update_shared_filters
-        )
-else:
-    st.sidebar.info("No hay campos disponibles para filtrar")
-
-# Releer selecciones ya actualizadas por los widgets y aplicar
-SELECTIONS = _current_selections()
-
-# IMPORTANTE: Aplicar ajustes universales ANTES de filtrar
-# Usar sim.df si existe y tiene ajustes, sino usar df_base
-if "sim.df" in st.session_state and st.session_state["sim.df"] is not None and st.session_state.get("sim.overrides_row"):
-    # Aplicar filtros a sim.df que ya incluye ajustes universales
-    df_filtered = _apply_filters(st.session_state["sim.df"], SELECTIONS).copy()
-else:
-    # Aplicar filtros a df_base (sin ajustes universales)
-    df_filtered = _apply_filters(df_base, SELECTIONS).copy()
+sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # Orden por SKU-Cliente si existe y sin índice
 sku_cliente_col = "SKU-Cliente"

@@ -13,11 +13,13 @@ import math
 import pandas as pd
 from pandas import IndexSlice as idx
 
+from src.dynamic_filters import DynamicFiltersWithList
+
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel, get_aggrid_custom_css, create_aggrid_config, create_aggrid_with_subtotals
-from src.state import ensure_session_state, session_state_table
+from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel, get_aggrid_custom_css, create_aggrid_config, build_subtotal_row, recalculate_totals, load_especies
+from src.state import ensure_session_state, session_state_table, sync_filters_to_shared, sync_filters_from_shared
 from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
 import pygwalker as pyg
 import pandas as pd
@@ -96,21 +98,6 @@ ensure_session_state()
 
 # Mostrar página Home
 st.title(ST_TITLE)
-
-# ===================== Indicador de Filtros Compartidos =====================
-def show_filter_status_hist():
-    """Muestra el estado de los filtros compartidos"""
-    if "sim.filters" in st.session_state and st.session_state["sim.filters"]:
-        sim_filters = st.session_state["sim.filters"]
-        active_count = sum(len(v) for v in sim_filters.values() if v)
-        if active_count > 0:
-            st.info(f"🔄 **Filtros sincronizados**: {active_count} filtros activos desde el simulador")
-            return True
-    return False
-
-# Mostrar estado de filtros si están activos
-if show_filter_status_hist():
-    st.markdown("---")
 
 # ===================== Carga de datos (con persistencia) =====================
 with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
@@ -231,37 +218,33 @@ if st.session_state["hist.df"] is None:
                 st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
                 st.session_state["hist.df"] = detalle
                 st.session_state["hist.df_optimo"] = detalle_optimo
-                # st.dataframe(ebitda_mensual, use_container_width=True, hide_index=True)
-                # st.dataframe(costos_mensuales, use_container_width=True, hide_index=True)
-                # st.dataframe(volumen_mensual, use_container_width=True, hide_index=True)
-                # st.dataframe(precios_mensuales, use_container_width=True, hide_index=True)
-                # st.dataframe(df_granel, use_container_width=True, hide_index=True)
-                # st.stop()
                 
-                # Cargar datos de fruta si están disponibles
-                try:
-                    with st.spinner("Cargando datos de fruta..."):
-                        # Leer el archivo Excel completo
-                        from src.data_io import read_workbook
-                        sheets = read_workbook(st.session_state["hist.file_bytes"])
-                        
-                        # Cargar RECETA_SKU si existe
-                        if "RECETA_SKU" in sheets:
-                            receta_df = load_receta_sku(sheets["RECETA_SKU"])
-                            st.session_state["fruta.receta_df"] = receta_df
-                        else:
-                            st.info("ℹ️ Hoja RECETA_SKU no encontrada")
-                        
-                        # Cargar INFO_FRUTA si existe
-                        if "INFO_FRUTA" in sheets:
-                            info_df = load_info_fruta(sheets["INFO_FRUTA"])
-                            st.session_state["fruta.info_df"] = info_df
-                        else:
-                            st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
+                # # Cargar datos de fruta si están disponibles
+                # try:
+                with st.spinner("Cargando datos de fruta..."):
+                    # Leer el archivo Excel completo
+                    from src.data_io import read_workbook
+                    sheets = read_workbook(st.session_state["hist.file_bytes"])
+                    
+                    # Cargar INFO_FRUTA si existe
+                    if "INFO_FRUTA" in sheets:
+                        info_df = load_info_fruta(sheets["INFO_FRUTA"])
+                        st.session_state["fruta.info_df"] = info_df
+                    else:
+                        st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
+                    
+                    # Cargar RECETA_SKU si existe
+                    if "RECETA_SKU" in sheets:
+                        receta_df = load_receta_sku(sheets["RECETA_SKU"])
+                        detalle = load_especies(receta_df, detalle, info_df, as_list=True)
+                        st.session_state["hist.df"] = detalle
+                        st.session_state["fruta.receta_df"] = receta_df
+                    else:
+                        st.info("ℹ️ Hoja RECETA_SKU no encontrada")
                             
-                except Exception as e:
-                    st.warning(f"⚠️ Error cargando datos de fruta: {e}")
-                    st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
+                # except Exception as e:
+                #     st.warning(f"⚠️ Error cargando datos de fruta: {e}")
+                #     st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
                     
         # except Exception as e:
         #     st.error(f"Error procesando el archivo: {e}")
@@ -279,195 +262,40 @@ if 'detalle' not in locals() or detalle is None:
     st.info("💡 Por favor, sube tu archivo Excel primero")
     st.stop()
 
-# ===================== Sidebar - Filtros Dinámicos (igual que Simulador) =====================
-st.sidebar.header("🔍 Filtros Dinámicos")
-
-# Definir df_base_hist antes de usarlo
-df_base_hist = st.session_state["hist.df"].copy()
-
-# Sistema de filtros dinámico (igual que en simulador)
-FIELD_ALIASES = {
-    "Marca": ["Marca", "Brand"],
-    "Cliente": ["Cliente", "Customer"],
-    "Especie": ["Especie", "Species"],
-    "Condicion": ["Condicion", "Condición", "Condition"],
-    "SKU": ["SKU"]
-}
-
-# Resolver alias -> columna real presente en df_base_hist
-def resolve_columns(df, aliases_map):
-    resolved = {}
-    cols_lower = {c.lower(): c for c in df.columns}
-    for logical, options in aliases_map.items():
-        found = None
-        for opt in options:
-            c = cols_lower.get(opt.lower())
-            if c is not None:
-                found = c
-                break
-        if found:
-            resolved[logical] = found
-    return resolved
-
-RESOLVED = resolve_columns(df_base_hist, FIELD_ALIASES)
-
-# Lista final de filtros (solo los que existen en la data)
-FILTER_FIELDS = [k for k in ["Marca","Cliente","Especie","Condicion","SKU"] if k in RESOLVED]
-
-def _norm_series(s: pd.Series):
-    return s.fillna("(Vacío)").astype(str).str.strip()
-
-def _apply_filters(df: pd.DataFrame, selections: dict, skip_key=None):
-    out = df.copy()
-    for logical, sel in selections.items():
-        if logical == skip_key or not sel:
-            continue
-        real_col = RESOLVED[logical]
-        if logical == "Especie":
-            # Coincidencia por pertenencia: si la celda es lista -> que contenga cualquiera seleccionada
-            targets = set([x for x in sel if x != "(Vacío)"])
-            def matches_species(val):
-                if pd.isna(val):
-                    return "(Vacío)" in sel
-                if isinstance(val, list):
-                    return any(v in targets for v in val)
-                s = str(val)
-                if s.strip() == "" and "(Vacío)" in sel:
-                    return True
-                parts = [p.strip() for p in s.split(",") if p.strip()]
-                return any(p in targets for p in parts)
-            out = out[out[real_col].apply(matches_species)]
-        else:
-            # Mapea el placeholder "(Vacío)" a vacío real
-            valid = [x if x != "(Vacío)" else "" for x in sel]
-            # Normalizar la columna para comparación
-            normalized_col = _norm_series(out[real_col])
-            out = out[normalized_col.isin(sel)]
-    return out
-
-def _current_selections():
-    selections = {}
-    for logical in FILTER_FIELDS:
-        selections[logical] = st.session_state.get(f"ms_hist_{logical}", [])
-    return selections
-
-# Mostrar filtros activos
-active_filters = _current_selections()
-active_count = sum(len(v) for v in active_filters.values() if v)
-if active_count > 0:
-    st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-    for logical, values in active_filters.items():
-        if values:
-            st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
-
-# Guardar filtros en hist.filters
-st.session_state["hist.filters"] = _current_selections()
-
-# Crear filtros en filas (uno abajo del otro)
-if FILTER_FIELDS:
-    # Obtener filtros actuales del session_state
-    SELECTIONS = _current_selections()
-    
-    for logical in FILTER_FIELDS:
-        real_col = RESOLVED[logical]
-        df_except = _apply_filters(df_base_hist, SELECTIONS, skip_key=logical)
-        if logical == "Especie":
-            # Aplana especies (listas o cadenas separadas por coma)
-            species = set()
-            col = df_except[real_col].dropna()
-            for v in col:
-                if isinstance(v, list):
-                    species.update([str(x).strip() for x in v if str(x).strip()])
-                else:
-                    parts = [p.strip() for p in str(v).split(",") if p.strip()]
-                    species.update(parts)
-            opts = sorted(list(species))
-            # Incluir placeholder "(Vacío)" si hay nulos o vacíos
-            if df_except[real_col].isna().any() or (df_except[real_col].astype(str).str.strip() == "").any():
-                opts = ["(Vacío)"] + opts
-        else:
-            opts = sorted(_norm_series(df_except[real_col]).unique().tolist())
-        
-        # Crear el multiselect (igual que en simulador)
-        st.sidebar.multiselect(
-            logical, 
-            options=opts, 
-            key=f"ms_hist_{logical}"
-        )
-else:
-    st.sidebar.info("No hay campos disponibles para filtrar")
-
-# Releer selecciones ya actualizadas por los widgets y aplicar
-SELECTIONS = _current_selections()
-
-# Búsqueda de texto libre (Descripción, SKU-Cliente, SKU)
-st.sidebar.divider()
-q = st.sidebar.text_input("Buscar texto (Descripción / SKU)", value=st.session_state.get("hist.search", ""))
-st.session_state["hist.search"] = q
-
-# Botón reset
-if st.sidebar.button("Limpiar filtros", type="secondary"):
-    for logical in FILTER_FIELDS:
-        st.session_state[f"ms_hist_{logical}"] = []
-    st.session_state["hist.search"] = ""
-    st.rerun()
-
-# Aplicar filtros a df_base_hist
-df_filtrado = _apply_filters(df_base_hist, SELECTIONS).copy()
-if q.strip():
-    ql = q.strip().lower()
-    mask = pd.Series(True, index=df_filtrado.index)
-    if "Descripcion" in df_filtrado.columns:
-        mask &= df_filtrado["Descripcion"].astype(str).str.lower().str.contains(ql, na=False)
-    if "SKU-Cliente" in df_filtrado.columns:
-        mask |= df_filtrado["SKU-Cliente"].astype(str).str.contains(ql, na=False)
-    if "SKU" in df_filtrado.columns:
-        mask |= df_filtrado["SKU"].astype(str).str.contains(ql, na=False)
-    df_filtrado = df_filtrado[mask]
-
-# Orden por SKU-Cliente si existe y sin índice
-sku_cliente_col = "SKU-Cliente"
-if sku_cliente_col in df_filtrado.columns:
-    df_filtrado = df_filtrado.sort_values([sku_cliente_col]).reset_index(drop=True)
-else:
-    df_filtrado = df_filtrado.reset_index(drop=True)
-
-# Guardar resultado filtrado en hist.df_filtered
-st.session_state["hist.df_filtered"] = df_filtrado.copy()
-# Los filtros se sincronizan automáticamente via on_change de los widgets
-
-# -------- Filtrar subproductos (SKUs con costos totales = 0) --------
-# Inicializar variable subproductos
-subproductos = pd.DataFrame()
-sin_ventas = pd.DataFrame()
-
-# Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
-if "Costos Totales (USD/kg)" in df_filtrado.columns:
-    original_count = len(df_filtrado)
-    subproductos = df_filtrado[(df_filtrado["Costos Totales (USD/kg)"] == 0) | (df_filtrado["Costos Totales (USD/kg)"] is None)].copy()
-    sin_ventas = df_filtrado[df_filtrado["Comex"] == 0].copy()
+# Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
+if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
+    original_count = len(detalle)
+    # if st.session_state["sim.df_filtered"] is not None:
+    #     df_base = st.session_state["sim.df_filtered"]
+    # Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
+    subproductos = detalle[detalle["Costos Totales (USD/kg)"] == 0].copy()
+    sin_ventas = detalle[detalle["Comex"] == 0].copy()
     skus_excluidos = pd.concat([subproductos, sin_ventas])
     skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
-    df_filtrado = df_filtrado[~df_filtrado["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
-    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas o no en plan 2026
+    df_base = detalle[~detalle["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
+    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas
     skus_excluidos["Subproducto"] = skus_excluidos["SKU-Cliente"].isin(subproductos["SKU-Cliente"])
     skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
+    # Ordenar por SKU-Cliente
     skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
     skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
-    df_filtrado["EBITDA Pct"] = df_filtrado["EBITDA Pct"] / 100
-    
-    filtered_count = len(df_filtrado)
+    filtered_count = len(df_base)
     skus_excluidos_count = len(skus_excluidos)
     
-    if original_count > filtered_count:    
+    if original_count > filtered_count:        
+        # IMPORTANTE: Recalcular totales en los datos cargados para asegurar que EBITDA Pct esté correcto
+        if "EBITDA Pct" in df_base.columns:
+            df_base = recalculate_totals(df_base)
         # Mostrar información sobre subproductos excluidos
         with st.expander(f"📋 **SKUs excluidos** ({skus_excluidos_count} SKUs)", expanded=False):
             st.write("**¿Por qué se excluyen estos SKUs?**")
-            st.write("Son SKUs sin ventas, o con costos totales = 0, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
+            st.write("Son SKUs sin ventas, con costos totales = 0, que no pueden generar EBITDA real y distorsionan el análisis financiero.")
             
             # Estadísticas de subproductos
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
+            
             with col1:
+                st.metric("**Sin ventas:**", len(sin_ventas))
                 if "Marca" in skus_excluidos.columns:
                     marca_counts = skus_excluidos["Marca"].value_counts()
                     st.write("**Por Marca:**")
@@ -475,37 +303,57 @@ if "Costos Totales (USD/kg)" in df_filtrado.columns:
                         st.write(f"- {marca}: {count}")
             
             with col2:
+                st.metric("**Con costos totales = 0:**", len(subproductos))
                 if "Cliente" in skus_excluidos.columns:
                     cliente_counts = skus_excluidos["Cliente"].value_counts()
                     st.write("**Por Cliente:**")
                     for cliente, count in cliente_counts.head(3).items():
                         st.write(f"- {cliente}: {count}")
             
-            with col3:
-                if "Especie" in skus_excluidos.columns:
-                    especie_counts = skus_excluidos["Especie"].value_counts()
-                    st.write("**Por Especie:**")
-                    for especie, count in especie_counts.head(3).items():
-                        st.write(f"- {especie}: {count}")
-            
             # Tabla completa de subproductos
-            st.write("**Lista completa de subproductos y SKUs sin ventas excluidos:**")
+            st.write("**Lista completa de subproductos excluidos:**")
             st.dataframe(
                 skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas"]],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
             
-            # # Botón de exportación
-            # excel_subproductos = skus_excluidos.to_excel(excel_writer="subproductos_sin_ventas_excluidos_completo.xlsx", index=False)
-            # st.download_button(
-            #     label="📥 Descargar Lista Completa de Subproductos y SKUs sin ventas (Excel)",
-            #     data=excel_subproductos,
-            #     file_name="subproductos_sin_ventas_excluidos_completo.xlsx",
-            #     mime="text/excel",
-            #     use_container_width=True,
-            #     key="download_subproductos_sin_ventas_home"
-            # )
+            # Botón de exportación
+            csv_skus_excluidos = skus_excluidos.to_csv(index=False)
+            st.download_button(
+                label="📥 Descargar Lista Completa de SKUs excluidos (CSV)",
+                data=csv_skus_excluidos,
+                file_name="subproductos_excluidos_completo.csv",
+                mime="text/csv",
+                width='stretch',
+                key="download_skus_excluidos_sim_1"
+            )
+
+# Filtros Dinamicos de la libreria streamlit-dynamic-filters
+st.sidebar.header("🔍 Filtros Dinámicos")
+with st.sidebar.container():
+    if "hist.filters" in st.session_state:
+        st.session_state["hist.filters"] = sync_filters_from_shared(page="hist")
+        active_filters = st.session_state["hist.filters"]
+        active_count = sum(len(v) for v in active_filters.values() if v)
+        if active_count > 0:
+            if active_count == 1:
+                st.sidebar.info(f"🔍 **{active_count} filtro activo**")
+            else:
+                st.sidebar.info(f"🔍 **{active_count} filtros activos**")
+            for logical, values in active_filters.items():
+                if values:
+                    st.sidebar.write(f"**{logical}**: {', '.join(values[:3])}{'...' if len(values) > 3 else ''}")
+    df_base_hist = st.session_state["hist.df"].copy()
+    dynamic_filters = DynamicFiltersWithList(df=df_base_hist, filters=['Marca', 'Cliente', "Especie", 'Condicion', 'SKU'], filters_name='hist.filters')
+    dynamic_filters.check_state()
+    dynamic_filters.display_filters(location='sidebar')
+    df_filtrado = dynamic_filters.filter_df()
+
+with st.sidebar.container():
+    st.button("Resetear Filtros", on_click=dynamic_filters.reset_filters)
+
+sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # ===================== Pestañas del Histórico =====================
 tab_retail, tab_granel = st.tabs(["📊 Retail (SKU)", "🌾 Granel (Fruta)"])
@@ -561,10 +409,8 @@ with tab_retail:
 
     # Streamlit nativo: DataFrame + subtotal separado (arriba o abajo)
     view_base_noidx = view_base.reset_index()
+    subtotal_df = build_subtotal_row(view_base_noidx)
 
-    from src.data_io import create_aggrid_subtotal_row
-    subtotal_dict = create_aggrid_subtotal_row(view_base_noidx)
-    subtotal_df = pd.DataFrame([subtotal_dict])
     # Mantener el mismo orden de columnas de la vista
     subtotal_df = subtotal_df.reindex(columns=[c for c in view_base_noidx.columns if c in subtotal_df.columns], fill_value="")
     # Dejar sólo métricas: limpiar columnas no numéricas para mayor claridad visual
@@ -577,9 +423,6 @@ with tab_retail:
             subtotal_df[col] = ""
 
     col_config = columns_config(editable=False)
-
-    from src.data_io import inject_streamlit_dataframe_css
-    inject_streamlit_dataframe_css(header_height=64)
 
     # Construir versión sólo con métricas (oculta dimensiones)
     try:
