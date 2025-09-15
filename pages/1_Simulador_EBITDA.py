@@ -1034,23 +1034,23 @@ with tab_sku:
                     st.caption("Subtotal (ponderado por KgEmbarcados)")
                     st.dataframe(sty_sub, column_config=editable_columns, width='stretch', hide_index=True)
                 
-                # Mostrar métricas de subtotales
-                col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+                # # Mostrar métricas de subtotales
+                # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
                 
-                with col_metrics1:
-                    if "EBITDA (USD/kg)" in df_edit.columns:
-                        total_ebitda = df_edit["EBITDA (USD/kg)"].sum()
-                        st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
+                # with col_metrics1:
+                #     if "EBITDA (USD/kg)" in df_edit.columns:
+                #         total_ebitda = df_edit["EBITDA (USD/kg)"].sum()
+                #         st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
                 
-                with col_metrics2:
-                    if "Costos Totales (USD/kg)" in df_edit.columns:
-                        total_costos = df_edit["Costos Totales (USD/kg)"].sum()
-                        st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
+                # with col_metrics2:
+                #     if "Costos Totales (USD/kg)" in df_edit.columns:
+                #         total_costos = df_edit["Costos Totales (USD/kg)"].sum()
+                #         st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
                 
-                with col_metrics3:
-                    if "KgEmbarcados" in df_edit.columns:
-                        total_kg = df_edit["KgEmbarcados"].sum()
-                        st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
+                # with col_metrics3:
+                #     if "KgEmbarcados" in df_edit.columns:
+                #         total_kg = df_edit["KgEmbarcados"].sum()
+                #         st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
                 
                 # Detectar cambios y recalcular totales AUTOMÁTICAMENTE
                 # if not edited_df.equals(df_edit_original):
@@ -1637,23 +1637,23 @@ with tab_sku:
                 hide_index=True
             )
             
-            # Mostrar métricas de subtotales
-            col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+            # # Mostrar métricas de subtotales
+            # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
             
-            with col_metrics1:
-                if "EBITDA (USD/kg)" in df_optimos.columns:
-                    total_ebitda = df_optimos["EBITDA (USD/kg)"].sum()
-                    st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
+            # with col_metrics1:
+            #     if "EBITDA (USD/kg)" in df_optimos.columns:
+            #         total_ebitda = df_optimos["EBITDA (USD/kg)"].sum()
+            #         st.metric("EBITDA Total (USD/kg)", f"{total_ebitda:,.2f}")
             
-            with col_metrics2:
-                if "Costos Totales (USD/kg)" in df_optimos.columns:
-                    total_costos = df_optimos["Costos Totales (USD/kg)"].sum()
-                    st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
+            # with col_metrics2:
+            #     if "Costos Totales (USD/kg)" in df_optimos.columns:
+            #         total_costos = df_optimos["Costos Totales (USD/kg)"].sum()
+            #         st.metric("Costos Totales (USD/kg)", f"{total_costos:,.2f}")
             
-            with col_metrics3:
-                if "KgEmbarcados" in df_optimos.columns:
-                    total_kg = df_optimos["KgEmbarcados"].sum()
-                    st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
+            # with col_metrics3:
+            #     if "KgEmbarcados" in df_optimos.columns:
+            #         total_kg = df_optimos["KgEmbarcados"].sum()
+            #         st.metric("Kg Embarcados Total", f"{total_kg:,.0f}")
 
 # ====== GRANEL ======
 with tab_granel:
@@ -2028,23 +2028,23 @@ with tab_granel:
             key="data_editor_granel"
         )
         
-        # Mostrar métricas de subtotales
-        col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+        # # Mostrar métricas de subtotales
+        # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
         
-        with col_metrics1:
-            if "Costos Directos" in editable_view.columns:
-                total_directos = editable_view["Costos Directos"].sum()
-                st.metric("Costos Directos Total", f"{total_directos:,.2f}")
+        # with col_metrics1:
+        #     if "Costos Directos" in editable_view.columns:
+        #         total_directos = editable_view["Costos Directos"].sum()
+        #         st.metric("Costos Directos Total", f"{total_directos:,.2f}")
         
-        with col_metrics2:
-            if "Costos Indirectos" in editable_view.columns:
-                total_indirectos = editable_view["Costos Indirectos"].sum()
-                st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
+        # with col_metrics2:
+        #     if "Costos Indirectos" in editable_view.columns:
+        #         total_indirectos = editable_view["Costos Indirectos"].sum()
+        #         st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
         
-        with col_metrics3:
-            if "Proceso Granel (USD/kg)" in editable_view.columns:
-                total_proceso = editable_view["Proceso Granel (USD/kg)"].sum()
-                st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
+        # with col_metrics3:
+        #     if "Proceso Granel (USD/kg)" in editable_view.columns:
+        #         total_proceso = editable_view["Proceso Granel (USD/kg)"].sum()
+        #         st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
 
         # Botón explícito para guardar lo editado (evita escribir al vuelo)
         if st.button("💾 Guardar cambios del editor"):
@@ -2259,23 +2259,23 @@ with tab_granel:
                     key="data_editor_granel"
                 )
                 
-                # Mostrar métricas de subtotales
-                col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+                # # Mostrar métricas de subtotales
+                # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
                 
-                with col_metrics1:
-                    if "Costos Directos" in opt_view.columns:
-                        total_directos = opt_view["Costos Directos"].sum()
-                        st.metric("Costos Directos Total", f"{total_directos:,.2f}")
+                # with col_metrics1:
+                #     if "Costos Directos" in opt_view.columns:
+                #         total_directos = opt_view["Costos Directos"].sum()
+                #         st.metric("Costos Directos Total", f"{total_directos:,.2f}")
                 
-                with col_metrics2:
-                    if "Costos Indirectos" in opt_view.columns:
-                        total_indirectos = opt_view["Costos Indirectos"].sum()
-                        st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
+                # with col_metrics2:
+                #     if "Costos Indirectos" in opt_view.columns:
+                #         total_indirectos = opt_view["Costos Indirectos"].sum()
+                #         st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
                 
-                with col_metrics3:
-                    if "Proceso Granel (USD/kg)" in opt_view.columns:
-                        total_proceso = opt_view["Proceso Granel (USD/kg)"].sum()
-                        st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
+                # with col_metrics3:
+                #     if "Proceso Granel (USD/kg)" in opt_view.columns:
+                #         total_proceso = opt_view["Proceso Granel (USD/kg)"].sum()
+                #         st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
             
             else:
                 # Mostrar tabla normal
@@ -2319,15 +2319,17 @@ with tab_granel:
             st.stop()
         
         # Obtener datos filtrados
-        sim_data = st.session_state["sim.df_filtered"].copy()
+        opt_data = st.session_state["hist.df_optimo"].copy()
+        opt_data = opt_data[opt_data["SKU"].isin(st.session_state["sim.df_filtered"]["SKU"])]
         hist_data = st.session_state["hist.df_filtered"].copy()
+        hist_data = hist_data[hist_data["SKU"].isin(st.session_state["sim.df_filtered"]["SKU"])]
         
         # Asegurar que SKU sea string en ambos datasets para el merge
-        sim_data["SKU"] = sim_data["SKU"].astype(str)
+        opt_data["SKU"] = opt_data["SKU"].astype(str)
         hist_data["SKU"] = hist_data["SKU"].astype(str)
         
         # Merge de datos simulador e histórico por SKU
-        comparison_data = sim_data.merge(
+        comparison_data = opt_data.merge(
             hist_data[["SKU", "PrecioVenta (USD/kg)", "Costos Totales (USD/kg)", "EBITDA (USD/kg)", "EBITDA Pct"]], 
             on="SKU", 
             how="inner", 
@@ -2339,31 +2341,31 @@ with tab_granel:
             st.info("💡 Verifica que los filtros permitan ver SKUs comunes")
             st.stop()
         
-        # Mostrar métricas de resumen
-        col1, col2, col3, col4 = st.columns(4)
+        # # Mostrar métricas de resumen
+        # col1, col2, col3, col4 = st.columns(4)
         
-        with col1:
-            st.metric("SKUs Comparados", len(comparison_data))
+        # with col1:
+        #     st.metric("SKUs Comparados", len(comparison_data))
         
-        with col2:
-            total_sim = comparison_data["EBITDA (USD/kg)_sim"].sum()
-            total_hist = comparison_data["EBITDA (USD/kg)_hist"].sum()
-            diff = total_sim - total_hist
-            st.metric("EBITDA Total Sim", f"${total_sim:,.2f}", f"{diff:+,.2f} vs Hist")
+        # with col2:
+        #     total_sim = comparison_data["EBITDA (USD/kg)_sim"].sum()
+        #     total_hist = comparison_data["EBITDA (USD/kg)_hist"].sum()
+        #     diff = total_sim - total_hist
+        #     st.metric("EBITDA Total Sim", f"${total_sim:,.2f}", f"{diff:+,.2f} vs Hist")
         
-        with col3:
-            avg_sim = comparison_data["EBITDA Pct_sim"].mean()
-            avg_hist = comparison_data["EBITDA Pct_hist"].mean()
-            diff_pct = avg_sim - avg_hist
-            st.metric("EBITDA % Promedio Sim", f"{avg_sim:.1f}%", f"{diff_pct:+.1f}pp vs Hist")
+        # with col3:
+        #     avg_sim = comparison_data["EBITDA Pct_sim"].mean()
+        #     avg_hist = comparison_data["EBITDA Pct_hist"].mean()
+        #     diff_pct = avg_sim - avg_hist
+        #     st.metric("EBITDA % Promedio Sim", f"{avg_sim:.1f}%", f"{diff_pct:+.1f}pp vs Hist")
         
-        with col4:
-            price_sim = comparison_data["PrecioVenta (USD/kg)_sim"].mean()
-            price_hist = comparison_data["PrecioVenta (USD/kg)_hist"].mean()
-            diff_price = price_sim - price_hist
-            st.metric("Precio Promedio Sim", f"${price_sim:.2f}", f"{diff_price:+.2f} vs Hist")
+        # with col4:
+        #     price_sim = comparison_data["PrecioVenta (USD/kg)_sim"].mean()
+        #     price_hist = comparison_data["PrecioVenta (USD/kg)_hist"].mean()
+        #     diff_price = price_sim - price_hist
+        #     st.metric("Precio Promedio Sim", f"${price_sim:.2f}", f"{diff_price:+.2f} vs Hist")
         
-        st.markdown("---")
+        # st.markdown("---")
         
         # Preparar datos para la tabla de comparación
         comparison_display = comparison_data[[
@@ -2377,21 +2379,21 @@ with tab_granel:
         # Renombrar columnas para mejor visualización
         comparison_display.columns = [
             "SKU", "Descripción", "Marca", "Cliente", "Especie", "Condición",
-            "Precio Sim", "Precio Hist", 
-            "Costo Sim", "Costo Hist",
-            "EBITDA Sim", "EBITDA Hist", 
-            "EBITDA % Sim", "EBITDA % Hist"
+            "Precio 2026", "Precio Hist", 
+            "Costo Óptimo", "Costo Hist",
+            "EBITDA Óptimo", "EBITDA Hist", 
+            "EBITDA % Óptimo", "EBITDA % Hist"
         ]
         
         # Calcular diferencias
-        comparison_display["Δ Precio"] = comparison_display["Precio Sim"] - comparison_display["Precio Hist"]
-        comparison_display["Δ Costo"] = comparison_display["Costo Sim"] - comparison_display["Costo Hist"]
-        comparison_display["Δ EBITDA"] = comparison_display["EBITDA Sim"] - comparison_display["EBITDA Hist"]
-        comparison_display["Δ EBITDA %"] = comparison_display["EBITDA % Sim"] - comparison_display["EBITDA % Hist"]
+        comparison_display["Δ Precio"] = comparison_display["Precio 2026"] - comparison_display["Precio Hist"]
+        comparison_display["Δ Costo"] = comparison_display["Costo Óptimo"] - comparison_display["Costo Hist"]
+        comparison_display["Δ EBITDA"] = comparison_display["EBITDA Óptimo"] - comparison_display["EBITDA Hist"]
+        comparison_display["Δ EBITDA %"] = comparison_display["EBITDA % Óptimo"] - comparison_display["EBITDA % Hist"]
         
         # Aplicar formato a las columnas numéricas
-        numeric_cols = ["Precio Sim", "Precio Hist", "Costo Sim", "Costo Hist", 
-                    "EBITDA Sim", "EBITDA Hist", "EBITDA % Sim", "EBITDA % Hist",
+        numeric_cols = ["Precio 2026", "Precio Hist", "Costo Óptimo", "Costo Hist", 
+                    "EBITDA Óptimo", "EBITDA Hist", "EBITDA % Óptimo", "EBITDA % Hist",
                     "Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
         
         for col in numeric_cols:
