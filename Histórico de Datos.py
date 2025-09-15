@@ -497,31 +497,31 @@ with tab_retail:
         # Mostrar botón de descarga
         create_excel_download_button(view_base_noidx)
     
-    # Mostrar métricas de subtotales
-    col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
+    # # Mostrar métricas de subtotales
+    # col_metrics1, col_metrics2, col_metrics3, col_metrics4 = st.columns(4)
 
-    with col_metrics1:
-        if "EBITDA (USD/kg)" in view_base_noidx.columns and "KgEmbarcados" in view_base_noidx.columns:
-            # Convertir a numérico antes de hacer operaciones
-            ebitda_kg = pd.to_numeric(view_base_noidx["EBITDA (USD/kg)"], errors='coerce')
-            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
-            total_ebitda_activo = (ebitda_kg * kg_emb).sum()
-            st.metric("EBITDA Total Filtrados (USD)", f"{total_ebitda_activo:,.2f}")
+    # with col_metrics1:
+    #     if "EBITDA (USD/kg)" in view_base_noidx.columns and "KgEmbarcados" in view_base_noidx.columns:
+    #         # Convertir a numérico antes de hacer operaciones
+    #         ebitda_kg = pd.to_numeric(view_base_noidx["EBITDA (USD/kg)"], errors='coerce')
+    #         kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
+    #         total_ebitda_activo = (ebitda_kg * kg_emb).sum()
+    #         st.metric("EBITDA Total Filtrados (USD)", f"{total_ebitda_activo:,.2f}")
 
-    with col_metrics2:
-        total_ebitda = st.session_state["hist.ebitda_simple_total"]
-        st.metric("EBITDA Total (USD)", f"{total_ebitda:,.2f}")
+    # with col_metrics2:
+    #     total_ebitda = st.session_state["hist.ebitda_simple_total"]
+    #     st.metric("EBITDA Total (USD)", f"{total_ebitda:,.2f}")
     
-    with col_metrics3:
-        if "KgEmbarcados" in view_base_noidx.columns:
-            # Convertir a numérico antes de sumar
-            kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
-            total_kg = kg_emb.sum()
-            st.metric("Kg Embarcados Filtrados", f"{total_kg:,.0f}")
+    # with col_metrics3:
+    #     if "KgEmbarcados" in view_base_noidx.columns:
+    #         # Convertir a numérico antes de sumar
+    #         kg_emb = pd.to_numeric(view_base_noidx["KgEmbarcados"], errors='coerce')
+    #         total_kg = kg_emb.sum()
+    #         st.metric("Kg Embarcados Filtrados", f"{total_kg:,.0f}")
             
-    with col_metrics4:
-        total_rows = len(view_base_noidx)
-        st.metric("SKUs Filtrados", f"{total_rows:,}")
+    # with col_metrics4:
+    #     total_rows = len(view_base_noidx)
+    #     st.metric("SKUs Filtrados", f"{total_rows:,}")
 
 
     # --- Toggle: ver detalle de costos respetando los filtros vigentes ---
@@ -705,34 +705,34 @@ with tab_granel:
             hide_index=True
         )
         
-        # KPIs de granel
-        st.subheader("📈 KPIs de Granel")
+        # # KPIs de granel
+        # st.subheader("📈 KPIs de Granel")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # col1, col2, col3, col4 = st.columns(4)
         
-        with col1:
-            st.metric("Total Frutas", len(granel_ponderado))
+        # with col1:
+        #     st.metric("Total Frutas", len(granel_ponderado))
         
-        with col2:
-            if "MO Total" in granel_ponderado.columns:
-                mo_promedio = granel_ponderado["MO Total"].mean()
-                st.metric("MO Promedio", f"${mo_promedio:.3f}/kg")
-            else:
-                st.metric("MO Promedio", "N/A")
+        # with col2:
+        #     if "MO Total" in granel_ponderado.columns:
+        #         mo_promedio = granel_ponderado["MO Total"].mean()
+        #         st.metric("MO Promedio", f"${mo_promedio:.3f}/kg")
+        #     else:
+        #         st.metric("MO Promedio", "N/A")
         
-        with col3:
-            if "Materiales Total" in granel_ponderado.columns:
-                mat_promedio = granel_ponderado["Materiales Total"].mean()
-                st.metric("Materiales Promedio", f"${mat_promedio:.3f}/kg")
-            else:
-                st.metric("Materiales Promedio", "N/A")
+        # with col3:
+        #     if "Materiales Total" in granel_ponderado.columns:
+        #         mat_promedio = granel_ponderado["Materiales Total"].mean()
+        #         st.metric("Materiales Promedio", f"${mat_promedio:.3f}/kg")
+        #     else:
+        #         st.metric("Materiales Promedio", "N/A")
         
-        with col4:
-            if "Laboratorio" in granel_ponderado.columns:
-                lab_promedio = granel_ponderado["Laboratorio"].mean()
-                st.metric("Laboratorio Promedio", f"${lab_promedio:.3f}/kg")
-            else:
-                st.metric("Laboratorio Promedio", "N/A")
+        # with col4:
+        #     if "Laboratorio" in granel_ponderado.columns:
+        #         lab_promedio = granel_ponderado["Laboratorio"].mean()
+        #         st.metric("Laboratorio Promedio", f"${lab_promedio:.3f}/kg")
+        #     else:
+        #         st.metric("Laboratorio Promedio", "N/A")
         
         # Análisis por tipo de costo
         st.subheader("📊 Análisis por Tipo de Costo")
