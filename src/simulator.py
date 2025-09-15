@@ -511,13 +511,14 @@ def create_margin_distribution_chart(
     return chart
 
 # ===================== Export =====================
-def export_escenario(df: pd.DataFrame, filename_prefix: str = "escenario") -> Path:
+def export_escenario(df: pd.DataFrame, filename_prefix: str = "escenario", format_type: str = "csv") -> Path:
     """
-    Exporta el escenario a CSV.
+    Exporta el escenario a CSV o Excel.
     
     Args:
         df: DataFrame a exportar
         filename_prefix: Prefijo del nombre del archivo
+        format_type: Formato de exportación ('csv' o 'excel')
         
     Returns:
         Path al archivo exportado
@@ -528,11 +529,15 @@ def export_escenario(df: pd.DataFrame, filename_prefix: str = "escenario") -> Pa
     
     # Generar nombre de archivo con timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    filename = f"{filename_prefix}_{timestamp}.csv"
+    extension = "xlsx" if format_type == "excel" else "csv"
+    filename = f"{filename_prefix}_{timestamp}.{extension}"
     filepath = outputs_dir / filename
     
-    # Exportar a CSV
-    df.to_csv(filepath, index=False, encoding='utf-8')
+    # Exportar según el formato
+    if format_type == "excel":
+        df.to_excel(filepath, index=False, engine='openpyxl')
+    else:
+        df.to_csv(filepath, index=False, encoding='utf-8')
     
     return filepath
 
@@ -783,9 +788,9 @@ def get_top_bottom_granel(df: pd.DataFrame, n: int = 5) -> Tuple[pd.DataFrame, p
     Returns:
         Tupla con (top_frutas, bottom_frutas)
     """
-    if "Precio Efectivo" in df.columns:
+    if "Proceso Granel (USD/kg)" in df.columns:
         # Ordenar por Precio Efectivo (mayor a menor)
-        df_sorted = df.sort_values("Precio Efectivo", ascending=False)
+        df_sorted = df.sort_values("Proceso Granel (USD/kg)", ascending=False)
         top_frutas = df_sorted.head(n)
         bottom_frutas = df_sorted.tail(n)
     else:
@@ -816,10 +821,10 @@ def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.
             return None
         
         # Seleccionar las top N frutas por Precio Efectivo
-        if "Precio Efectivo" in df.columns:
-            df_chart = df.nlargest(top_n, "Precio Efectivo")
-            y_col = "Precio Efectivo"
-            title = f"Top {top_n} Frutas por Precio Efectivo (USD/kg)"
+        if "Proceso Granel (USD/kg)" in df.columns:
+            df_chart = df.nlargest(top_n, "Proceso Granel (USD/kg)")
+            y_col = "Proceso Granel (USD/kg)"
+            title = f"Top {top_n} Frutas por Proceso Granel (USD/kg)"
         elif "Costos Directos" in df.columns:
             df_chart = df.nlargest(top_n, "Costos Directos")
             y_col = "Costos Directos"
@@ -831,10 +836,10 @@ def create_granel_cost_chart(df: pd.DataFrame, top_n: int = 20) -> Optional[alt.
         chart = alt.Chart(df_chart).mark_bar().add_selection(
             alt.selection_interval()
         ).encode(
-            x=alt.X("Fruta:N", sort="-y", title="Fruta"),
+            x=alt.X("Name:N", sort="-y", title="Fruta"),
             y=alt.Y(f"{y_col}:Q", title="Costo (USD/kg)"),
             color=alt.Color(f"{y_col}:Q", scale=alt.Scale(scheme="blues")),
-            tooltip=["Fruta", "Fruta", f"{y_col}:Q"]
+            tooltip=["Name", f"{y_col}:Q"]
         ).properties(
             title=title,
             width=600,
@@ -903,25 +908,75 @@ def sync_granel_changes_to_retail(granel_df: pd.DataFrame, receta_df: pd.DataFra
         traceback.print_exc()
         return retail_df
 
-def export_granel_escenario(df: pd.DataFrame, filename_prefix: str = "escenario_granel") -> Path:
+def export_granel_escenario(df: pd.DataFrame, filename_prefix: str = "escenario_granel", format_type: str = "csv") -> Path:
     """
-    Exporta un escenario de granel a CSV.
+    Exporta un escenario de granel a CSV o Excel.
     
     Args:
         df: DataFrame de granel
         filename_prefix: Prefijo del archivo
+        format_type: Formato de exportación ('csv' o 'excel')
         
     Returns:
         Path del archivo exportado
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{filename_prefix}_{timestamp}.csv"
+    extension = "xlsx" if format_type == "excel" else "csv"
+    filename = f"{filename_prefix}_{timestamp}.{extension}"
     
     # Crear directorio outputs si no existe
     output_dir = Path("outputs")
     output_dir.mkdir(exist_ok=True)
     
     filepath = output_dir / filename
-    df.to_csv(filepath, index=False)
+    
+    # Exportar según el formato
+    if format_type == "excel":
+        df.to_excel(filepath, index=False, engine='openpyxl')
+    else:
+        df.to_csv(filepath, index=False)
     
     return filepath
+
+def get_data_for_download(df: pd.DataFrame, format_type: str = "csv") -> bytes:
+    """
+    Genera datos en memoria para descarga directa.
+    
+    Args:
+        df: DataFrame a exportar
+        format_type: Formato de exportación ('csv' o 'excel')
+        
+    Returns:
+        Datos en bytes para descarga
+    """
+    if format_type == "excel":
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Datos')
+        return output.getvalue()
+    else:
+        return df.to_csv(index=False).encode('utf-8')
+
+def get_mime_type(format_type: str) -> str:
+    """
+    Obtiene el tipo MIME según el formato.
+    
+    Args:
+        format_type: Formato de exportación ('csv' o 'excel')
+        
+    Returns:
+        Tipo MIME correspondiente
+    """
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if format_type == "excel" else "text/csv"
+
+def get_file_extension(format_type: str) -> str:
+    """
+    Obtiene la extensión del archivo según el formato.
+    
+    Args:
+        format_type: Formato de exportación ('csv' o 'excel')
+        
+    Returns:
+        Extensión del archivo
+    """
+    return "xlsx" if format_type == "excel" else "csv"
