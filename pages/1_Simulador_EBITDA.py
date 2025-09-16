@@ -15,7 +15,7 @@ import streamlit.components.v1 as components
 import json
 from src.state import sync_filters_to_shared, sync_filters_from_shared
 from src.dynamic_filters import DynamicFiltersWithList
-from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode, JsCode
+from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode, JsCode, ColumnsAutoSizeMode, ExcelExportMode
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
@@ -2070,7 +2070,7 @@ with tab_granel:
         edited_df = st.dataframe(
             editable_columns,
             column_config=config,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key="data_editor_granel"
         )
@@ -2302,7 +2302,7 @@ with tab_granel:
                 opt_df = st.dataframe(
                     opt_view_styled,
                     column_config=config,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     key="data_editor_granel"
                 )
@@ -2330,7 +2330,7 @@ with tab_granel:
                 opt_df = st.dataframe(
                     opt_view_styled,
                     column_config=config,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     key="data_editor_granel"
                 )
@@ -2496,7 +2496,7 @@ with tab_granel:
         st.dataframe(
             styled_comparison,
             column_config=config,
-            use_container_width=True,
+            width="stretch",
             height=400,
             hide_index=True
         )
@@ -2914,7 +2914,7 @@ with tab_precio_frutas:
             "Costo Efectivo Base (USD/kg)": "{:.3f}",
             "Costo Efectivo Ajustado (USD/kg)": "{:.3f}",
         }),
-        use_container_width=True, hide_index=True
+        width="stretch", hide_index=True
     )
 
     # 5) Expander: Insights rápidos de frutas (sin contribución)
@@ -3287,13 +3287,16 @@ with tab_receta:
     gb = GridOptionsBuilder.from_dataframe(display_df)
 
     # columnas
-    gb.configure_column("SKU", width=90, pinned="left", filter=False)
+    gb.configure_column("SKU", width=90, pinned="left", filter=False, suppressSizeToFit=True)
     if "Descripcion" in display_df.columns:
-        gb.configure_column("Descripcion", width=240, header_name="Descripción", filter=False)
+        gb.configure_column("Descripcion", minWidth=300,
+        maxWidth=500, header_name="Descripción", filter=False)
     if "Marca" in display_df.columns:
-        gb.configure_column("Marca", width=120, filter=False)
+        gb.configure_column("Marca", minWidth=200,
+         maxWidth=400, filter=False)
     if "Cliente" in display_df.columns:
-        gb.configure_column("Cliente", width=140, filter=False)
+        gb.configure_column("Cliente", minWidth=200,
+         maxWidth=400, filter=False)
     if "Frutas_Usadas" in display_df.columns:
         FRUTAS_CELL_STYLE = JsCode("""
         function(params){
@@ -3308,6 +3311,7 @@ with tab_receta:
             pinned="right",
             suppressMovable=True,
             cellStyle=FRUTAS_CELL_STYLE,
+            suppressSizeToFit=True
         ) 
     if "MMPP (Fruta) (USD/kg)" in display_df.columns:
         FORMATTER_3_DEC = JsCode("""
@@ -3319,10 +3323,12 @@ with tab_receta:
         """)
         gb.configure_column(
             "MMPP (Fruta) (USD/kg)",
-            width=140,
+            minWidth=150,
+            maxWidth=250,
             header_name="MMPP Fruta",
             type=["numericColumn", "numberColumnFilter"],
             valueFormatter=FORMATTER_3_DEC,
+            suppressSizeToFit=True
         )
 
     # selección (IMPORTANTE)
@@ -3419,6 +3425,7 @@ with tab_receta:
     // p.api.sizeColumnsToFit();  // <- comenta esto si quieres que haya truncamiento
     }
     """)
+    
 
     gb.configure_grid_options(
         onFirstDataRendered=on_ready,
@@ -3437,6 +3444,8 @@ with tab_receta:
         data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
         fit_columns_on_grid_load=True,
+        columns_auto_size_mode=ColumnsAutoSizeMode.FIT_ALL_COLUMNS_TO_VIEW,
+        excel_export_mode=ExcelExportMode.MANUAL,
         height=600,
         width='100%',
         allow_unsafe_jscode=True,
@@ -3472,7 +3481,7 @@ with tab_receta:
         if sku_to_view:
             ver_receta_dialog(sku_to_view, st.session_state["fruta.receta_df"], st.session_state["fruta.plan_2026"])
 
-    st.caption("💡 Haz clic en **🍓 Ver** para abrir el modal con los detalles de la receta.")
+    st.caption("💡 Haz clic en **Ver Receta** para abrir el modal con los detalles de la receta.")
 
     # ===================== Estadísticas por Fruta =====================
     st.subheader("📈 Estadísticas por Fruta (Mixes)")
