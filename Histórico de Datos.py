@@ -353,7 +353,7 @@ with st.sidebar.container():
 sync_filters_to_shared(page="hist", filters=st.session_state["hist.filters"])
 
 # ===================== Pestañas del Histórico =====================
-tab_granel, tab_retail = st.tabs(["Granel (Fruta)", "📊 Retail (SKU)"])
+tab_granel, tab_retail = st.tabs(["🏭 Granel (Fruta)", "📊 Retail (SKU)"])
 
 with tab_retail:
     # -------- Mostrar resultados Retail --------

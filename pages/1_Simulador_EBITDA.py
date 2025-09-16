@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 import json
 from src.state import sync_filters_to_shared, sync_filters_from_shared
 from src.dynamic_filters import DynamicFiltersWithList
+from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode, JsCode
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
@@ -513,14 +514,14 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
                 mime_type_skus_excluidos = get_mime_type(format_skus_excluidos)
                 extension_skus_excluidos = get_file_extension(format_skus_excluidos)
                 
-                st.download_button(
+            st.download_button(
                     label=f"📥 Descargar Lista Completa de SKUs excluidos ({format_skus_excluidos.upper()})",
                     data=data_skus_excluidos,
                     file_name=f"subproductos_excluidos_completo.{extension_skus_excluidos}",
                     mime=mime_type_skus_excluidos,
-                    width='stretch',
-                    key="download_skus_excluidos_sim_1"
-                )
+                width='stretch',
+                key="download_skus_excluidos_sim_1"
+            )
 
 # Filtros Dinamicos de la libreria streamlit-dynamic-filters
 st.sidebar.header("🔍 Filtros Dinámicos")
@@ -1276,14 +1277,14 @@ with tab_sku:
                         mime_type_subproductos = get_mime_type(format_subproductos)
                         extension_subproductos = get_file_extension(format_subproductos)
                         
-                        st.download_button(
+                    st.download_button(
                             label=f"📥 Descargar Lista Completa de Subproductos ({format_subproductos.upper()})",
                             data=data_subproductos,
                             file_name=f"subproductos_excluidos_completo.{extension_subproductos}",
                             mime=mime_type_subproductos,
-                            width='stretch',
-                            key="download_subproductos_sim_2"
-                        )
+                        width='stretch',
+                        key="download_subproductos_sim_2"
+                    )
 
         st.header("📊 KPIs")
 
@@ -2019,7 +2020,7 @@ with tab_granel:
                         "Fruta",
                         disabled=True,
                         pinned="left",
-                    )
+                )
                 else:
                     config[c] = st.column_config.TextColumn(
                         c,
@@ -2538,13 +2539,13 @@ with tab_granel:
             mime_type = get_mime_type(export_format_comparison)
             extension = get_file_extension(export_format_comparison)
             
-            st.download_button(
+        st.download_button(
                 label=f"📥 Descargar Comparación ({export_format_comparison.upper()})",
                 data=data,
                 file_name=f"comparacion_sim_vs_hist_{len(comparison_data)}_skus.{extension}",
                 mime=mime_type,
                 key="download_comparison"
-            )
+        )
 
     
 with tab_precio_frutas:
@@ -3272,79 +3273,207 @@ with tab_receta:
     if "sim.df" in st.session_state and st.session_state["sim.df"] is not None:
         st.session_state["sim.df"]["SKU"] = st.session_state["sim.df"]["SKU"].astype(int)
     
-    # --- Estado de paginación ---
-    if "adn.page" not in st.session_state:
-        st.session_state["adn.page"] = 1
-    # Controles de página
-    colp1, colp7, colp2, colp3, colp4, colp5, colp6 = st.columns([2,3,1,1,1,1,1])
-    with colp1:
-        page_size = st.selectbox(placeholder="Filas por página", label="Filas por página", options=[10, 20, 50], index=0, key="adn_page_size", label_visibility="visible", )
-        total_rows = len(skus_summary)
-        total_pages = max(1, math.ceil(total_rows / page_size))
-        st.caption(f"{total_rows} filas • {total_pages} páginas")
-    
-    with colp2:
-        if st.button("⏮️", disabled=st.session_state["adn.page"] <= 1):
-            st.session_state["adn.page"] = 1
-            st.rerun()
-    with colp3:
-        if st.button("◀️", disabled=st.session_state["adn.page"] <= 1):
-            st.session_state["adn.page"] -= 1
-            st.rerun()
-    with colp4:
-        st.number_input("Página", min_value=1, max_value=total_pages, step=1,
-                        value=st.session_state["adn.page"], key="adn_page_num",
-                        label_visibility="collapsed")
-        # sincroniza si el user escribe un número
-        if st.session_state["adn.page"] != st.session_state["adn_page_num"]:
-            st.session_state["adn.page"] = st.session_state["adn_page_num"]
-            st.rerun()
-    with colp5:
-        if st.button("▶️", disabled=st.session_state["adn.page"] >= total_pages):
-            st.session_state["adn.page"] += 1
-            st.rerun()
-    with colp6:
-        if st.button("⏭️", disabled=st.session_state["adn.page"] >= total_pages):
-            st.session_state["adn.page"] = total_pages
-            st.rerun()
-    
-    # Slice de la página actual
-    start = (st.session_state["adn.page"] - 1) * page_size
-    end = start + page_size
-    page_df = skus_summary.iloc[start:end].copy()    
-    # Encabezados
-    head = st.container()
-    with head:
-        hc = st.columns([1, 3, 2, 2, 2, 2])
-        hc[0].markdown("**SKU**")
-        hc[1].markdown("**Descripción**")
-        hc[2].markdown("**Marca**")
-        hc[3].markdown("**Cliente**")
-        hc[4].markdown("**Frutas**")
-        hc[5].markdown("**Acción**")
-    
-    # Filas con botón por fila
-    for _, row in page_df.iterrows():
-        sku_cliente = str(row["SKU-Cliente"])
-        sku = str(row["SKU"])
-        desc = row.get("Descripcion", "")
-        marca = row.get("Marca", "")
-        cliente = row.get("Cliente", "")
-        frutas_usadas = str(row.get("Frutas_Usadas", 0))
-    
-        cols = st.columns([1, 3, 2, 2, 2, 2])
-        cols[0].write(sku)
-        cols[1].write(desc)
-        cols[2].write(marca)
-        cols[3].write(cliente)
-        cols[4].write(f"**{frutas_usadas}**", help="Número de frutas diferentes usadas en el SKU")
-    
-        btn_key = f"ver_receta_{sku_cliente}_{start}"
-        if cols[5].button("Ver receta", key=btn_key, width='stretch'):
-            ver_receta_dialog(sku, st.session_state["fruta.receta_df"], st.session_state["fruta.plan_2026"])
-    # Línea de ayuda
-    st.caption("Tip: usa los controles de página para navegar y el botón **Ver receta** para abrir el modal.")
-    
+    # --- AgGrid con botones de acción por fila ---
+    st.caption(f"📊 Mostrando {len(skus_summary)} SKUs únicos con recetas")
+
+    display_df = skus_summary.drop_duplicates(subset=["SKU"]).copy()
+    display_df = display_df.drop(
+        ["SKU-Cliente", "EBITDA (USD/kg)", "Porcentaje_Total"], 
+        axis=1, 
+        errors="ignore"
+    )
+    display_df["Ver Receta"] = "Ver Receta"
+
+    gb = GridOptionsBuilder.from_dataframe(display_df)
+
+    # columnas
+    gb.configure_column("SKU", width=90, pinned="left", filter=False)
+    if "Descripcion" in display_df.columns:
+        gb.configure_column("Descripcion", width=240, header_name="Descripción", filter=False)
+    if "Marca" in display_df.columns:
+        gb.configure_column("Marca", width=120, filter=False)
+    if "Cliente" in display_df.columns:
+        gb.configure_column("Cliente", width=140, filter=False)
+    if "Frutas_Usadas" in display_df.columns:
+        FRUTAS_CELL_STYLE = JsCode("""
+        function(params){
+            return {fontSize: '18px', fontWeight: '600'};
+        }
+        """)
+        gb.configure_column(
+            "Frutas_Usadas",
+            width=100,
+            header_name="Frutas",
+            format="{:.0f}",
+            pinned="right",
+            suppressMovable=True,
+            cellStyle=FRUTAS_CELL_STYLE,
+        ) 
+    if "MMPP (Fruta) (USD/kg)" in display_df.columns:
+        FORMATTER_3_DEC = JsCode("""
+        function(params) {
+            if (params.value === null || params.value === undefined || isNaN(params.value)) { return ''; }
+            const num = Number(params.value);
+            return num.toLocaleString('es-CL', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+        }
+        """)
+        gb.configure_column(
+            "MMPP (Fruta) (USD/kg)",
+            width=140,
+            header_name="MMPP Fruta",
+            type=["numericColumn", "numberColumnFilter"],
+            valueFormatter=FORMATTER_3_DEC,
+        )
+
+    # selección (IMPORTANTE)
+    gb.configure_selection(selection_mode="single", use_checkbox=False, suppressRowClickSelection=True)
+
+    # botón que selecciona la fila y cubre todo el espacio
+    BTN_RENDERER = JsCode("""
+    class BtnRenderer {
+    init(params){
+        this.params = params;
+        const b = document.createElement('button');
+        b.textContent = 'Ver Receta';
+        b.className = 'vf-btn-receta';
+        b.style.cursor = 'pointer';
+        b.style.padding = '6px 10px';
+        b.style.border = '1px solid #d1d5db';
+        b.style.borderRadius = '6px';
+        b.style.background = '#e5e7eb';
+        b.style.color = '#111827';
+        b.style.fontSize = '12px';
+        b.style.boxSizing = 'border-box';
+        b.style.width = '100%';
+        b.style.maxWidth = '100%';
+        b.style.height = '28px';
+        b.style.minHeight = '28px';
+        b.style.margin = '0';
+        b.style.overflow = 'hidden';
+        b.style.textOverflow = 'ellipsis';
+        b.style.whiteSpace = 'nowrap';
+        b.style.display = 'flex';
+        b.style.alignItems = 'center';
+        b.style.justifyContent = 'center';
+        b.onclick = () => {
+            // Solo seleccionar cuando se hace click en el botón
+            params.api.deselectAll();
+            params.node.setSelected(true);
+        };
+        this.eGui = b;
+    }
+    getGui(){ return this.eGui; }
+    destroy(){ this.eGui = null; }
+    }
+    """)
+
+    gb.configure_column(
+         "Ver Receta",
+         header_name="Ver Receta",
+         width=120,
+         minWidth=110,
+         maxWidth=140,
+         filter=False,
+         sortable=False,
+         editable=False,
+         cellRenderer=BTN_RENDERER,
+         pinned="right",
+         suppressMovable=True,
+    )
+    ## 1) CSS para forzar elipsis (overflow) y así tener casos con tooltip
+    ELIPSIS_CSS = """
+    <style>
+    .ag-theme-balham .ag-cell.elipsis {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    }
+    </style>
+    """
+    st.markdown(ELIPSIS_CSS, unsafe_allow_html=True)
+
+    # 2) Getter simple (nada de DOM)
+    TOOLTIP_VALUE = JsCode("""
+    function(params){
+    if (params.value === null || params.value === undefined) return '';
+    if (Array.isArray(params.value)) return params.value.join(', ');
+    return String(params.value);
+    }
+    """)
+
+
+    # 3) Columna por defecto con tooltip
+    gb.configure_default_column(
+        resizable=True, sortable=True, filter=True,
+        tooltipValueGetter=TOOLTIP_VALUE,
+        cellClass="elipsis"   # activa la clase que hace overflow/ellipsis
+    )
+
+    # 4) No expandas siempre a todo el ancho: crea overflow real
+    #    (si de verdad necesitas sizeColumnsToFit, aplícalo sólo una vez o
+    #     marca columnas con 'suppressSizeToFit:true' para que queden estrechas)
+    on_ready = JsCode("""
+    function(p){
+    // Si tu versión soporta 'tooltipShowMode', puedes dejarlo en gridOptions;
+    // si no, no pasa nada, esto solo ajusta un pelín.
+    // p.api.sizeColumnsToFit();  // <- comenta esto si quieres que haya truncamiento
+    }
+    """)
+
+    gb.configure_grid_options(
+        onFirstDataRendered=on_ready,
+        tooltipShowDelay=100,
+        tooltipHideDelay=8000,
+        # Si tu versión lo soporta, déjalo. Si no, elimínalo sin problema.
+        tooltipShowMode="whenTruncated",
+        # enableCellTextSelection=True,
+        # ensureDomOrder=True
+        )
+
+    gridOptions = gb.build()
+    grid_response = AgGrid(
+        display_df,
+        gridOptions=gridOptions,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        fit_columns_on_grid_load=True,
+        height=600,
+        width='100%',
+        allow_unsafe_jscode=True,
+        theme="balham",
+        custom_css={
+            ".ag-header-cell-label": {"justify-content": "center"},
+            ".ag-cell": {"display": "flex", "align-items": "center", "justify-content": "center", "overflow": "hidden"},
+            ".ag-row": {"min-height": "40px"},
+            ".ag-cell-value": {"display": "flex", "align-items": "center", "justify-content": "center"},
+            ".ag-header-cell[col-id='Frutas_Usadas'] .ag-header-cell-label": {"font-size": "14px", "font-weight": "600"},
+            ".vf-btn-receta": {"box-sizing": "border-box", "width": "100%", "max-width": "100%"},
+            ".ag-pinned-right-cols-container .ag-cell": {"overflow": "hidden"}
+    }
+    )
+
+    # Corregir pin de columna agregado manualmente si existiera
+    try:
+        gb.configure_column("Frutas", pinned=None)  # no existe campo "Frutas"; evita efectos colaterales
+    except Exception:
+        pass
+
+    # leer selección de forma robusta
+    sel_raw = grid_response.get("selected_rows", None)
+    if isinstance(sel_raw, list):
+        sel_records = sel_raw
+    elif isinstance(sel_raw, pd.DataFrame):
+        sel_records = sel_raw.to_dict("records")
+    else:
+        sel_records = []
+
+    if sel_records:
+        sku_to_view = str(sel_records[0].get("SKU", "")).strip()
+        if sku_to_view:
+            ver_receta_dialog(sku_to_view, st.session_state["fruta.receta_df"], st.session_state["fruta.plan_2026"])
+
+    st.caption("💡 Haz clic en **🍓 Ver** para abrir el modal con los detalles de la receta.")
+
     # ===================== Estadísticas por Fruta =====================
     st.subheader("📈 Estadísticas por Fruta (Mixes)")
     
