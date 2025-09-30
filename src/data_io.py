@@ -945,7 +945,18 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
     )
 
     # 7) Orden final
-    detalle["SKU"] = detalle["SKU"].astype(int)
+    # Intentar convertir SKU a int solo si es posible
+    if "SKU" in detalle.columns:
+        try:
+            # Si SKU es numérico, convertir a int
+            detalle["SKU"] = pd.to_numeric(detalle["SKU"], errors='coerce').fillna(0).astype(int)
+        except:
+            # Si no se puede convertir, extraer números de strings como 'SKU001'
+            try:
+                detalle["SKU"] = detalle["SKU"].str.extract(r'(\d+)').astype(int)
+            except:
+                # Si todo falla, mantener como está
+                pass
     # Ordenar por SKU-Cliente que es el identificador único real
     if "SKU-Cliente" in detalle.columns:
         detalle = detalle.sort_values("SKU-Cliente", ascending=True).reset_index(drop=True)
@@ -1181,7 +1192,10 @@ def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
 
     # pesos
-    w = pd.to_numeric(work.get("KgEmbarcados"), errors="coerce").fillna(0.0)
+    if "KgEmbarcados" in work.columns:
+        w = pd.to_numeric(work["KgEmbarcados"], errors="coerce").fillna(0.0)
+    else:
+        w = pd.Series([0.0] * len(work))
     W = float(w.sum())
 
     subtotal = {}
@@ -1589,7 +1603,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
             else:
                 # Calcular Proceso Granel desde columnas de costos
                 cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos", 
-                            "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
+                            "Laboratorio", "Mantencion", "Servicios Generales", "Utilities"]
                 available_cost_cols = [col for col in cost_columns if col in granel_df.columns]
                 
                 if available_cost_cols:
