@@ -19,6 +19,7 @@ from src.dynamic_filters import DynamicFiltersWithList
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel, get_aggrid_custom_css, create_aggrid_config, build_subtotal_row, recalculate_totals, load_especies
+from src.cost_engine import build_cost_engine_pipeline
 from src.state import ensure_session_state, session_state_table, sync_filters_to_shared, sync_filters_from_shared
 from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
 import pygwalker as pyg
@@ -27,8 +28,6 @@ import numpy as np
 import locale
 
 # ===================== Utilidades =====================
-
-
 
 def create_pygwalker_chart(df: pd.DataFrame, title: str = "Análisis de Datos"):
     """
@@ -125,6 +124,7 @@ with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
                         "fruta.receta_df",
                         "fruta.info_df",
                         "export.last_saved_path",
+                        "hist.use_cost_engine",
                     ],
                     "dict": [
                         "hist.filters",
@@ -171,87 +171,74 @@ with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
                 st.session_state["hist.uploaded_file"] = up
                 st.session_state["hist.file_bytes"] = up.read()
                 st.rerun()
-    # with col2:
-        # st.subheader("2) Parámetros de precio vigente")
-        # modo = st.radio("Último precio por SKU", ["global","to_date"], horizontal=True, key="modo_home")
-        # ref_ym = None
-        # if modo == "to_date":
-        #     # Selecciona una fecha (Año-Mes) para construir YYYYMM
-        #     ref_date = st.date_input("Hasta fecha (se usa AñoMes)", value=date(2025,6,1), key="ref_date_home")
-        #     ref_ym = ref_date.year*100 + ref_date.month
     
     st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
 
 # Procesar datos solo si no están en caché o si se recargó
 if st.session_state["hist.df"] is None:
     if "hist.file_bytes" in st.session_state and st.session_state["hist.file_bytes"] is not None:
+        # ===================== USAR COST ENGINE =====================
         # try:
-            with st.spinner("Procesando archivo..."):
-                df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
-                detalle = build_detalle(st.session_state["hist.file_bytes"], df_granel=df_granel_ponderado)
+            with st.spinner("🚀 Procesando archivo con Cost Engine (promedio móvil)..."):
+                # Usar el pipeline del cost_engine
+                pipeline_results = build_cost_engine_pipeline(
+                    st.session_state["hist.file_bytes"]
+                )
                 
-                detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], optimo=True, df_granel=df_granel_ponderado)
-                ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
-                
-                # Generar datos óptimos de granel si están disponibles
-                try:
-                    df_granel_optimo, df_granel_ponderado_optimo = build_granel(st.session_state["hist.file_bytes"], optimo=True)
-                    st.session_state["hist.granel_optimo"] = df_granel_ponderado_optimo
-                    st.success(f"✅ Datos óptimos de granel cargados: {len(df_granel_ponderado_optimo)} frutas")
-                except Exception as e:
-                    st.info(f"ℹ️ Datos óptimos de granel no disponibles: {e}")
-                    st.session_state["hist.granel_optimo"] = None
-                st.session_state["hist.granel_ponderado"] = df_granel_ponderado
-                st.session_state["hist.granel"] = df_granel
-                st.session_state["hist.ebitda_mensual"] = ebitda_mensual
-                ebitda_mensual = ebitda_mensual.dropna(subset=["SKU-Cliente"])
-                ebitda_mensual = ebitda_mensual[ebitda_mensual["SKU-Cliente"] != "nan"]
-                st.session_state["hist.ebitda_total"] = ebitda_mensual["EBITDA (USD)"].sum()
-                volumenes = ebitda_mensual.groupby(["SKU-Cliente"])["KgEmbarcados"].sum().reset_index()
-                ebitdas = ebitda_mensual.groupby(["SKU-Cliente"])["EBITDA (USD)"].sum().reset_index()
-                detalle = detalle.merge(volumenes, how="left", on="SKU-Cliente")
-                detalle = detalle.merge(ebitdas, how="left", on="SKU-Cliente")
-                detalle["EBITDA Simple (USD)"] = detalle["KgEmbarcados"] * detalle["EBITDA (USD/kg)"]
-                st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
+                # Extraer resultados
+                detalle = pipeline_results['detalle']
+                detalle_optimo = pipeline_results['detalle_optimo']
+                df_granel_ponderado = pipeline_results['df_granel_ponderado']
+                df_granel_optimo = pipeline_results['df_granel_optimo']
+                receta_df = pipeline_results['receta_df']
+                info_df = pipeline_results['info_df']
+                rolling_months = pipeline_results['rolling_months']
+                months_count = pipeline_results['months_count']
+    
+                # Guardar en session_state
                 st.session_state["hist.df"] = detalle
-                st.session_state["hist.df_optimo"] = detalle_optimo
+                st.session_state["hist.granel_ponderado"] = df_granel_ponderado
+                st.session_state["fruta.receta_df"] = receta_df
+                st.session_state["fruta.info_df"] = info_df
+                st.session_state["hist.rolling_months"] = rolling_months
+                st.session_state["hist.months_count"] = months_count
                 
-                # # Cargar datos de fruta si están disponibles
-                # try:
-                with st.spinner("Cargando datos de fruta..."):
-                    # Leer el archivo Excel completo
-                    from src.data_io import read_workbook
-                    sheets = read_workbook(st.session_state["hist.file_bytes"])
-                    
-                    # Cargar INFO_FRUTA si existe
-                    if "INFO_FRUTA" in sheets:
-                        info_df = load_info_fruta(sheets["INFO_FRUTA"])
-                        st.session_state["fruta.info_df"] = info_df
-                    else:
-                        st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
-                    
-                    # Cargar RECETA_SKU si existe
-                    if "RECETA_SKU" in sheets:
-                        receta_df = load_receta_sku(sheets["RECETA_SKU"])
-                        detalle = load_especies(receta_df, detalle, info_df, as_list=True)
-                        st.session_state["hist.df"] = detalle
-                        st.session_state["fruta.receta_df"] = receta_df
-                    else:
-                        st.info("ℹ️ Hoja RECETA_SKU no encontrada")
-                            
-                # except Exception as e:
-                #     st.warning(f"⚠️ Error cargando datos de fruta: {e}")
-                #     st.info("💡 Los datos de fruta no son obligatorios para el simulador básico")
-                    
+                # Calcular métricas adicionales para compatibilidad
+                if "EBITDA (USD/kg)" in detalle.columns and "KgEmbarcados" in detalle.columns:
+                    detalle["EBITDA (USD)"] = detalle["EBITDA (USD/kg)"] * detalle["KgEmbarcados"]
+                    detalle["EBITDA Simple (USD)"] = detalle["EBITDA (USD)"]
+                    st.session_state["hist.ebitda_total"] = detalle["EBITDA (USD)"].sum()
+                    st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
+                
+                # Crear ebitda_mensual simulado para compatibilidad
+                ebitda_mensual = detalle[["SKU-Cliente", "EBITDA (USD)", "KgEmbarcados"]].copy() if "SKU-Cliente" in detalle.columns else pd.DataFrame()
+                st.session_state["hist.ebitda_mensual"] = ebitda_mensual
+                
+                # Datos óptimos (por ahora usar los mismos)
+                st.session_state["hist.df_optimo"] = detalle_optimo
+                st.session_state["hist.granel_optimo"] = df_granel_optimo
+                
+                # Mensaje de éxito
+                st.success("✅ Datos procesados con Cost Engine usando promedio móvil mes a mes")
+                st.info(f"📊 {len(detalle)} SKUs procesados | {len(df_granel_ponderado)} frutas de granel | {months_count} meses")
+                st.caption(f"📅 Período: {rolling_months[0]} a {rolling_months[-1]}" if rolling_months else "Sin datos de periodo")
+                
         # except Exception as e:
-        #     st.error(f"Error procesando el archivo: {e}")
+        #     st.error(f"❌ Error procesando con Cost Engine: {str(e)}")
         #     st.stop()
+    
     else:
         st.info("Sube tu archivo para comenzar.")
         st.stop()
 else:
     detalle = st.session_state["hist.df"]
     
+    # Mostrar información del Cost Engine
+    months_count = st.session_state.get("hist.months_count", 0)
+    rolling_months = st.session_state.get("hist.rolling_months", [])
+    st.info(f"🚀 **Datos cargados con Cost Engine** | Promedio móvil de {months_count} meses")
+    if rolling_months:
+        st.caption(f"📅 Período: {rolling_months[0]} a {rolling_months[-1]}")
 
 # Verificar que detalle esté definido antes de continuar
 if 'detalle' not in locals() or detalle is None:
@@ -259,23 +246,101 @@ if 'detalle' not in locals() or detalle is None:
     st.info("💡 Por favor, sube tu archivo Excel primero")
     st.stop()
 
+#exportar excel detalle
+def create_excel_download_button(df: pd.DataFrame,
+    filename: str = "datos_historicos_filtrados.xlsx",
+    label: str = "📥 Descargar Excel (Datos Filtrados)",
+    key: str = "download_historico_excel"):
+    """Crea un botón de descarga Excel para los datos filtrados"""
+    from io import BytesIO
+    
+    # Crear buffer en memoria
+    buf = BytesIO()
+    
+    # Escribir Excel con formato
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Hoja principal con datos mostrados
+        df.to_excel(writer, index=False, sheet_name="Datos")
+    
+    # Crear botón de descarga
+    st.download_button(
+        label=label,
+        data=buf.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key
+    )
+        
+# Mostrar botón de descarga
+create_excel_download_button(detalle, "detalle.xlsx", "📥 Descargar Excel", "download_historico_completo_excel")
+
+
 # Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
 if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
     original_count = len(detalle)
 
-    # Separar SKUs con costos totales = 0 (subproductos) de los que tienen costos reales
-    subproductos = detalle[detalle["Costos Totales (USD/kg)"] == 0].copy()
-    # sin_ventas = detalle[detalle["KgEmbarcados"] == 0].copy()
-    sin_ventas = detalle[detalle["Comex"] == 0].copy()
-    skus_excluidos = pd.concat([subproductos, sin_ventas])
-    skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU-Cliente"], keep="first")
-    df_base = detalle[~detalle["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
-    # Quiero agregar columnas a SKU_Excluidos con el booleano de si es subproducto, sin ventas
-    skus_excluidos["Subproducto"] = skus_excluidos["SKU-Cliente"].isin(subproductos["SKU-Cliente"])
-    skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
-    # Ordenar por SKU-Cliente
-    skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
-    skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
+    # Separar SKUs con costos totales = 0, NaN, o infinitos (subproductos)
+    costos_invalidos = (
+        (detalle["Costos Totales (USD/kg)"] == 0) |
+        (detalle["Costos Totales (USD/kg)"].isnull()) |
+        (detalle["Costos Totales (USD/kg)"] == float('inf')) |
+        (detalle["Costos Totales (USD/kg)"] == float('-inf'))
+    )
+    subproductos = detalle[costos_invalidos].copy()
+    
+    # Determinar SKUs sin ventas: costos inválidos O KgEmbarcados = 0 O Comex = 0
+    if "KgEmbarcados" in detalle.columns and "Comex" in detalle.columns:
+        sin_ventas = detalle[
+            costos_invalidos | 
+            ((detalle["KgEmbarcados"] == 0) | (detalle["KgEmbarcados"].isnull())) |
+            ((detalle["Comex"] == 0) | (detalle["Comex"].isnull()))
+        ].copy()
+    elif "KgEmbarcados" in detalle.columns:
+        sin_ventas = detalle[
+            costos_invalidos | 
+            ((detalle["KgEmbarcados"] == 0) | (detalle["KgEmbarcados"].isnull()))
+        ].copy()
+    elif "Comex" in detalle.columns:
+        sin_ventas = detalle[
+            costos_invalidos | 
+            ((detalle["Comex"] == 0) | (detalle["Comex"].isnull()))
+        ].copy()
+    else:
+        # Si no hay columnas para determinar ventas, usar DataFrame vacío
+        sin_ventas = detalle.iloc[0:0].copy()
+    
+    # Combinar subproductos y sin_ventas, eliminando duplicados
+    skus_excluidos = pd.concat([subproductos, sin_ventas]).drop_duplicates(subset=["SKU-Cliente"], keep="first")
+    
+    # Verificar que SKU-Cliente existe antes de usarla
+    if "SKU-Cliente" in skus_excluidos.columns:
+        df_base = detalle[~detalle["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
+    else:
+        # Si no hay SKU-Cliente, usar SKU como alternativa
+        if "SKU" in skus_excluidos.columns:
+            skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU"], keep="first")
+            df_base = detalle[~detalle["SKU"].isin(skus_excluidos["SKU"])].copy()
+        else:
+            # Fallback: no excluir nada
+            df_base = detalle.copy()
+            skus_excluidos = detalle.iloc[0:0].copy()
+    # Agregar columnas de clasificación si hay datos excluidos
+    if not skus_excluidos.empty:
+        # Determinar qué columna usar para la comparación
+        key_col = "SKU-Cliente" if "SKU-Cliente" in skus_excluidos.columns else "SKU"
+        
+        if key_col in subproductos.columns and key_col in sin_ventas.columns:
+            skus_excluidos["Subproducto"] = skus_excluidos[key_col].isin(subproductos[key_col])
+            skus_excluidos["Sin Ventas"] = skus_excluidos[key_col].isin(sin_ventas[key_col])
+        
+        # Ordenar por la columna clave
+        if key_col in skus_excluidos.columns:
+            try:
+                skus_excluidos[key_col] = skus_excluidos[key_col].astype(int)
+                skus_excluidos = skus_excluidos.set_index(key_col).sort_index()
+            except:
+                # Si no se puede convertir a int, mantener como está
+                pass
     filtered_count = len(df_base)
     skus_excluidos_count = len(skus_excluidos)
     
@@ -298,6 +363,8 @@ if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
                     st.write("**Por Marca:**")
                     for marca, count in marca_counts.head(3).items():
                         st.write(f"- {marca}: {count}")
+                else:
+                    st.write("**Por Marca:** No disponible")
             
             with col2:
                 st.metric("**Con costos totales = 0:**", len(subproductos))
@@ -306,14 +373,24 @@ if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
                     st.write("**Por Cliente:**")
                     for cliente, count in cliente_counts.head(3).items():
                         st.write(f"- {cliente}: {count}")
+                else:
+                    st.write("**Por Cliente:** No disponible")
             
             # Tabla completa de subproductos
             st.write("**Lista completa de subproductos excluidos:**")
-            st.dataframe(
-                skus_excluidos[["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas"]],
-                width='stretch',
-                hide_index=True
-            )
+            
+            # Mostrar solo las columnas que existen
+            desired_cols = ["SKU", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Subproducto", "Sin Ventas"]
+            available_cols = [col for col in desired_cols if col in skus_excluidos.columns]
+            
+            if available_cols:
+                st.dataframe(
+                    skus_excluidos[available_cols],
+                    width='stretch',
+                    hide_index=True
+                )
+            else:
+                st.info("No hay columnas dimensionales disponibles para mostrar")
             
             # Botón de exportación
             csv_skus_excluidos = skus_excluidos.to_csv(index=False)
@@ -341,7 +418,16 @@ with st.sidebar.container():
             for logical, values in active_filters.items():
                 if values:
                     st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
-    dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', "Especie", 'Condicion', 'SKU'], filters_name='hist.filters')
+    # Configurar filtros dinámicos solo con columnas que existen
+    available_filter_cols = ['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU']
+    existing_filter_cols = [col for col in available_filter_cols if col in df_base.columns]
+    
+    if existing_filter_cols:
+        dynamic_filters = DynamicFiltersWithList(df=df_base, filters=existing_filter_cols, filters_name='hist.filters')
+    else:
+        # Fallback: usar solo SKU si no hay otras columnas
+        fallback_cols = [col for col in ['SKU', 'SKU-Cliente'] if col in df_base.columns]
+        dynamic_filters = DynamicFiltersWithList(df=df_base, filters=fallback_cols[:1], filters_name='hist.filters')
     dynamic_filters.check_state()
     dynamic_filters.display_filters(location='sidebar')
     df_filtrado = dynamic_filters.filter_df()
@@ -358,15 +444,36 @@ tab_granel, tab_retail = st.tabs(["🏭 Granel (Fruta)", "📊 Retail (SKU)"])
 with tab_retail:
     # -------- Mostrar resultados Retail --------
     st.subheader("Resumen por SKU: Márgenes actuales")
-    base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion","MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
-    "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
-    "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados"]
-    skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
-    ebitda_mensual = st.session_state["hist.ebitda_mensual"]
-    # st.dataframe(ebitda_mensual)
-    view_base = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
-    view_base = view_base[base_cols].copy()
-    view_base.set_index("SKU-Cliente", inplace=True)
+    
+    # Definir columnas base una sola vez
+    base_cols = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion",
+                "MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
+                "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex",
+                "Guarda PT","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
+                "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","KgProducidos"]
+    
+    # Determinar columna clave para filtrado una sola vez
+    key_col = "SKU-Cliente" if "SKU-Cliente" in df_filtrado.columns else "SKU"
+    
+    # Obtener SKUs filtrados una sola vez
+    skus_filtrados = df_filtrado[key_col].unique().tolist()
+    
+    # Filtrar detalle usando la columna clave disponible
+    if key_col in detalle.columns:
+        try:
+            view_base = detalle[detalle[key_col].astype(int).isin(skus_filtrados)].copy()
+        except:
+            view_base = detalle[detalle[key_col].isin(skus_filtrados)].copy()
+    else:
+        view_base = detalle.copy()
+    
+    # Filtrar columnas base que existen
+    available_base_cols = [col for col in base_cols if col in view_base.columns]
+    view_base = view_base[available_base_cols].copy()
+    
+    # Establecer índice si la columna clave existe
+    if key_col in view_base.columns:
+        view_base.set_index(key_col, inplace=True)
     view_base = view_base.sort_index()
      
     show_subtotals_at_top = st.checkbox(
@@ -385,7 +492,7 @@ with tab_retail:
     # Aplicar negritas a las columnas de totales
     total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
     "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-    "KgEmbarcados"]
+    "KgEmbarcados", "KgProducidos"]
     existing_total_columns = [col for col in total_columns if col in view_base.columns]
 
     if existing_total_columns:
@@ -452,7 +559,7 @@ with tab_retail:
         sty = sty.format(fmt)
     tot_cols = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
                 "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                "KgEmbarcados"]
+                "KgEmbarcados", "KgProducidos"]
     ex_tot = [c for c in tot_cols if c in df_disp.columns]
     if ex_tot:
         sty = sty.set_properties(subset=ex_tot, **{"font-weight":"bold","background-color":"#f8f9fa"})
@@ -526,8 +633,16 @@ with tab_retail:
 
     if expand:
         # 1) Toma los SKUs actualmente visibles (ya filtrados arriba)
-        skus_filtrados = df_filtrado["SKU-Cliente"].astype(int).unique().tolist()
-        det = detalle[detalle["SKU-Cliente"].astype(int).isin(skus_filtrados)].copy()
+        key_col = "SKU-Cliente" if "SKU-Cliente" in df_filtrado.columns else "SKU"
+        
+        # Convertir a strings para que coincida con detalle[key_col]
+        skus_filtrados = df_filtrado[key_col].astype(str).unique().tolist()
+        
+        if key_col in detalle.columns:
+            # Usar filtrado directo con strings
+            det = detalle[detalle[key_col].isin(skus_filtrados)].copy()
+        else:
+            det = detalle.copy()
         # 3) Mueve atributos DIM a la izquierda
         dim_candidatas = ["SKU","SKU-Cliente","Descripcion","Marca","Cliente","Especie","Condicion"]
         dim_cols = [c for c in dim_candidatas if c in det.columns]
@@ -536,7 +651,7 @@ with tab_retail:
                         "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
                         "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT",
                         "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)",
-                        "EBITDA Pct","KgEmbarcados"]
+                        "EBITDA Pct","KgEmbarcados","KgProducidos"]
         # Si falta, recalcúlala si están los componentes
         if "Gastos Totales (USD/kg)" not in det.columns:
             comp = [
@@ -554,12 +669,15 @@ with tab_retail:
         det = det[dim_cols + last_cols]
 
         # 4) Orden y formato
-        det = det.sort_values(["SKU-Cliente"]).reset_index(drop=True)
+        if key_col in det.columns:
+            det = det.sort_values([key_col]).reset_index(drop=True)
+        
         view_base_det = det.copy()
         
-        # Asegurar que el índice SKU-Cliente sea único antes de aplicar estilos
-        view_base_det = view_base_det.drop_duplicates(subset=["SKU-Cliente"], keep="first")
-        view_base_det.set_index("SKU-Cliente", inplace=True)
+        # Asegurar que el índice sea único antes de aplicar estilos
+        if key_col in view_base_det.columns:
+            view_base_det = view_base_det.drop_duplicates(subset=[key_col], keep="first")
+            view_base_det.set_index(key_col, inplace=True)
         
         # Aplicar estilos de formato y negritas a columnas importantes
         view_base_det = view_base_det.style
@@ -676,7 +794,7 @@ with tab_granel:
     # Calcular Costo Efectivo
     granel_ponderado["Precio Efectivo"] = granel_ponderado["Precio"] / granel_ponderado["Rendimiento"]
     # Calcular Costos Directos y Costos Indirectos
-    granel_ponderado["Costos Directos"] = granel_ponderado["MO Directa"] + granel_ponderado["Materiales Directos"] + granel_ponderado["Laboratorio"] + granel_ponderado["Mantencion y Maquinaria"]
+    granel_ponderado["Costos Directos"] = granel_ponderado["MO Directa"] + granel_ponderado["Materiales Directos"] + granel_ponderado["Laboratorio"] + granel_ponderado["Mantención"]
     granel_ponderado["Costos Indirectos"] = granel_ponderado["MO Indirecta"] + granel_ponderado["Materiales Indirectos"]
     if granel_ponderado is None or granel_ponderado.empty:
         st.error("❌ **No hay datos de granel disponibles**")
@@ -694,8 +812,8 @@ with tab_granel:
             granel_display[col] = pd.to_numeric(granel_display[col], errors='coerce')
         
         order_cols = ["Fruta_id", "Name", "Precio Efectivo", "Proceso Granel (USD/kg)", "MO Directa", "MO Indirecta",
-        "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantencion y Maquinaria",
-        "Costos Directos", "Costos Indirectos", "Servicios Generales"]
+        "MO Total", "Materiales Directos", "Materiales Indirectos", "Materiales Total", "Laboratorio", "Mantención",
+        "Costos Directos", "Costos Indirectos", "Servicios Generales", "Utilities"]
         granel_display = granel_display[order_cols]
         granel_display = granel_display.set_index("Fruta_id").sort_index()
         granel_display = granel_display.sort_values(by="Proceso Granel (USD/kg)")
@@ -1004,13 +1122,31 @@ def render_grid_with_modal(df: pd.DataFrame):
     return resp
 
 # Con Streamlit nativo, no hay click-to-open por fila.
-# Como alternativa simple, ofrece un selector de SKU-Cliente para ver detalle.
+# Como alternativa simple, ofrece un selector para ver detalle.
 with st.expander("🔎 Ver detalle de un SKU", expanded=False):
-    opciones = view_base_noidx[["SKU-Cliente","Descripcion"]].astype(str)
-    opciones["label"] = opciones["SKU-Cliente"] + " — " + opciones["Descripcion"].str.slice(0, 60)
-    mapa = dict(zip(opciones["label"], opciones["SKU-Cliente"]))
-    elegido = st.selectbox("Elige un SKU-Cliente", ["(ninguno)"] + list(mapa.keys()))
-    if elegido != "(ninguno)":
-        sku_sel = mapa[elegido]
-        fila = view_base_noidx[view_base_noidx["SKU-Cliente"].astype(str) == str(sku_sel)].head(1)
-        st.dataframe(fila, use_container_width=True, hide_index=True)
+    # Determinar columnas disponibles para el selector
+    key_col = "SKU-Cliente" if "SKU-Cliente" in view_base_noidx.columns else "SKU"
+    desc_col = "Descripcion" if "Descripcion" in view_base_noidx.columns else key_col
+    
+    if key_col in view_base_noidx.columns:
+        try:
+            opciones = view_base_noidx[[key_col, desc_col]].astype(str)
+            if desc_col != key_col:
+                opciones["label"] = opciones[key_col] + " — " + opciones[desc_col].str.slice(0, 60)
+            else:
+                opciones["label"] = opciones[key_col]
+            
+            mapa = dict(zip(opciones["label"], opciones[key_col]))
+            elegido = st.selectbox(f"Elige un {key_col}", ["(ninguno)"] + list(mapa.keys()))
+            
+            if elegido != "(ninguno)":
+                sku_sel = mapa[elegido]
+                try:
+                    fila = view_base_noidx[view_base_noidx[key_col].astype(str) == str(sku_sel)].head(1)
+                except:
+                    fila = view_base_noidx[view_base_noidx[key_col] == sku_sel].head(1)
+                st.dataframe(fila, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Error mostrando selector: {str(e)}")
+    else:
+        st.info("No hay datos disponibles para mostrar detalles")

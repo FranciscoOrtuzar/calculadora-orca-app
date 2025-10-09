@@ -340,7 +340,7 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
     out = df[["Fruta_id", "Fruta"] + cost_cols].dropna(subset=["Fruta_id"]).reset_index(drop=True)
     # Agregar Name de info_fruta
-    info_fruta_subset = info_fruta[['Fruta_id', 'Name', 'Nombre']]
+    info_fruta_subset = info_fruta[['Fruta_id', 'Name']]
     out = out.merge(info_fruta_subset, on='Fruta_id', how='left')
     return out
 
@@ -945,7 +945,18 @@ def recalculate_totals(detalle: pd.DataFrame) -> pd.DataFrame:
     )
 
     # 7) Orden final
-    detalle["SKU"] = detalle["SKU"].astype(int)
+    # Intentar convertir SKU a int solo si es posible
+    if "SKU" in detalle.columns:
+        try:
+            # Si SKU es numérico, convertir a int
+            detalle["SKU"] = pd.to_numeric(detalle["SKU"], errors='coerce').fillna(0).astype(int)
+        except:
+            # Si no se puede convertir, extraer números de strings como 'SKU001'
+            try:
+                detalle["SKU"] = detalle["SKU"].str.extract(r'(\d+)').astype(int)
+            except:
+                # Si todo falla, mantener como está
+                pass
     # Ordenar por SKU-Cliente que es el identificador único real
     if "SKU-Cliente" in detalle.columns:
         detalle = detalle.sort_values("SKU-Cliente", ascending=True).reset_index(drop=True)
@@ -975,7 +986,7 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str = "global", ref
 
     # 1) Costos ponderados
     if optimo:
-        costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_OPT"])
+        costos_detalle = build_tbl_costos_pond(sheets["OPTIMOS_RETAIL"])
     else:
         costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
 
@@ -1181,7 +1192,10 @@ def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
 
     # pesos
-    w = pd.to_numeric(work.get("KgEmbarcados"), errors="coerce").fillna(0.0)
+    if "KgEmbarcados" in work.columns:
+        w = pd.to_numeric(work["KgEmbarcados"], errors="coerce").fillna(0.0)
+    else:
+        w = pd.Series([0.0] * len(work))
     W = float(w.sum())
 
     subtotal = {}
@@ -1589,7 +1603,7 @@ def compute_mmpp_unified(receta_df: pd.DataFrame, info_df: pd.DataFrame, granel_
             else:
                 # Calcular Proceso Granel desde columnas de costos
                 cost_columns = ["MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos", 
-                            "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales"]
+                            "Laboratorio", "Mantencion", "Servicios Generales", "Utilities"]
                 available_cost_cols = [col for col in cost_columns if col in granel_df.columns]
                 
                 if available_cost_cols:
@@ -1677,7 +1691,7 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
     - Recalcula costos de granel y totales
     
     Estructura esperada:
-    - FACT_2026: SKU, SKU-Cliente, Cliente, Descripción, Especie, Condicion, Marca, Kg, Precio
+    - RETAIL_2026: SKU, SKU-Cliente, Cliente, Descripción, Especie, Condicion, Marca, Kg, Precio
     - FRUTA_2026: Fruta_id, Variacion_Pct (variación porcentual del precio)
     
     Args:
@@ -1691,8 +1705,8 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         sheets = read_workbook(bytes_plan)
         
         # Verificar que las hojas necesarias existan
-        if "FACT_2026" not in sheets:
-            st.error("❌ No se encontró la hoja 'FACT_2026' en el archivo")
+        if "RETAIL_2026" not in sheets:
+            st.error("❌ No se encontró la hoja 'RETAIL_2026' en el archivo")
             return False
             
         if "FRUTA_2026" not in sheets:
@@ -1701,13 +1715,13 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         else:
             frutas_2026 = sheets["FRUTA_2026"]
         
-        kg_y_precios = sheets["FACT_2026"]
+        kg_y_precios = sheets["RETAIL_2026"]
         
-        # Verificar columnas requeridas en FACT_2026
+        # Verificar columnas requeridas en RETAIL_2026
         required_cols = ["SKU", "SKU-Cliente", "Cliente", "Descripción", "Especie", "Condicion", "Marca", "Kg", "Precio"]
         missing_cols = [col for col in required_cols if col not in kg_y_precios.columns]
         if missing_cols:
-            st.error(f"❌ Faltan columnas en FACT_2026: {missing_cols}")
+            st.error(f"❌ Faltan columnas en RETAIL_2026: {missing_cols}")
             return False
         
         # Obtener datos actuales

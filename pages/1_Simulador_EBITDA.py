@@ -437,7 +437,9 @@ if df_base is not None and "Costos Totales (USD/kg)" in df_base.columns:
     skus_excluidos["Sin Ventas"] = skus_excluidos["SKU-Cliente"].isin(sin_ventas["SKU-Cliente"])
     skus_excluidos["No en Plan 2026"] = skus_excluidos["SKU-Cliente"].isin(no_plan_2026["SKU-Cliente"])
     # Ordenar por SKU-Cliente
-    skus_excluidos["SKU-Cliente"] = skus_excluidos["SKU-Cliente"].astype(int)
+    skus_excluidos["SKU-Cliente"] = (
+        pd.to_numeric(skus_excluidos["SKU-Cliente"], errors="coerce")  # strings raros -> NaN
+        .astype("Int64"))                                              # enteros anulables
     skus_excluidos = skus_excluidos.set_index("SKU-Cliente").sort_index()
     filtered_count = len(df_base)
     skus_excluidos_count = len(skus_excluidos)
@@ -2218,10 +2220,23 @@ with tab_granel:
             order_cols = ["Fruta_id", "Name", "Precio", "Rendimiento", "Precio Efectivo",
                           "MO Directa", "MO Indirecta", "MO Total",
                           "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                          "Laboratorio", "Mantencion y Maquinaria",
+                          "Laboratorio", "Mantencion", "Utilities"
                           "Costos Directos", "Costos Indirectos", "Servicios Generales"]
             avail_cols = [c for c in order_cols if c in opt_view.columns]
-            opt_view = opt_view[available_cols]
+            opt_view = opt_view[avail_cols]
+            # ---- Agregar columnas faltantes al óptimo ----
+            opt_view["Costos Directos"] = (
+                opt_view["MO Directa"] + opt_view["Materiales Directos"] + opt_view["Laboratorio"]
+            )
+
+            opt_view["Costos Indirectos"] = (
+                opt_view["MO Indirecta"] + opt_view["Materiales Indirectos"] + opt_view["Servicios Generales"]
+            )
+
+            # Consistencia con el resto de la app: usa el mismo nombre que vienes usando
+            opt_view["Proceso Granel (USD/kg)"] = (
+                opt_view["Costos Directos"] + opt_view["Costos Indirectos"]
+            )
             opt_view = opt_view.set_index("Fruta_id").sort_index()
             opt_view = opt_view.sort_values(by="Proceso Granel (USD/kg)")
             total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
