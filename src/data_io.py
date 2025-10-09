@@ -340,7 +340,7 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
     out = df[["Fruta_id", "Fruta"] + cost_cols].dropna(subset=["Fruta_id"]).reset_index(drop=True)
     # Agregar Name de info_fruta
-    info_fruta_subset = info_fruta[['Fruta_id', 'Name', 'Nombre']]
+    info_fruta_subset = info_fruta[['Fruta_id', 'Name']]
     out = out.merge(info_fruta_subset, on='Fruta_id', how='left')
     return out
 
@@ -986,7 +986,7 @@ def build_detalle(uploaded_bytes: bytes, ultimo_precio_modo: str = "global", ref
 
     # 1) Costos ponderados
     if optimo:
-        costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_OPT"])
+        costos_detalle = build_tbl_costos_pond(sheets["OPTIMOS_RETAIL"])
     else:
         costos_detalle = build_tbl_costos_pond(sheets["FACT_COSTOS_POND"])
 
@@ -1691,7 +1691,7 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
     - Recalcula costos de granel y totales
     
     Estructura esperada:
-    - FACT_2026: SKU, SKU-Cliente, Cliente, Descripción, Especie, Condicion, Marca, Kg, Precio
+    - RETAIL_2026: SKU, SKU-Cliente, Cliente, Descripción, Especie, Condicion, Marca, Kg, Precio
     - FRUTA_2026: Fruta_id, Variacion_Pct (variación porcentual del precio)
     
     Args:
@@ -1705,8 +1705,8 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         sheets = read_workbook(bytes_plan)
         
         # Verificar que las hojas necesarias existan
-        if "FACT_2026" not in sheets:
-            st.error("❌ No se encontró la hoja 'FACT_2026' en el archivo")
+        if "RETAIL_2026" not in sheets:
+            st.error("❌ No se encontró la hoja 'RETAIL_2026' en el archivo")
             return False
             
         if "FRUTA_2026" not in sheets:
@@ -1715,13 +1715,13 @@ def cargar_plan_2026(bytes_plan: bytes) -> pd.DataFrame:
         else:
             frutas_2026 = sheets["FRUTA_2026"]
         
-        kg_y_precios = sheets["FACT_2026"]
+        kg_y_precios = sheets["RETAIL_2026"]
         
-        # Verificar columnas requeridas en FACT_2026
+        # Verificar columnas requeridas en RETAIL_2026
         required_cols = ["SKU", "SKU-Cliente", "Cliente", "Descripción", "Especie", "Condicion", "Marca", "Kg", "Precio"]
         missing_cols = [col for col in required_cols if col not in kg_y_precios.columns]
         if missing_cols:
-            st.error(f"❌ Faltan columnas en FACT_2026: {missing_cols}")
+            st.error(f"❌ Faltan columnas en RETAIL_2026: {missing_cols}")
             return False
         
         # Obtener datos actuales

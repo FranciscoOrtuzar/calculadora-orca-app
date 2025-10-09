@@ -29,8 +29,6 @@ import locale
 
 # ===================== Utilidades =====================
 
-
-
 def create_pygwalker_chart(df: pd.DataFrame, title: str = "Análisis de Datos"):
     """
     Crea un visualizador PyGWalker para análisis exploratorio de datos.
@@ -174,182 +172,108 @@ with st.expander("📁 **Carga de archivo maestro (.xlsx)**"):
                 st.session_state["hist.file_bytes"] = up.read()
                 st.rerun()
     
-    with col2:
-        st.subheader("2) Motor de Costos")
-        
-        # Opción para usar el nuevo cost_engine
-        use_cost_engine = st.checkbox(
-            "🚀 Usar nuevo Cost Engine",
-            value=st.session_state.get("hist.use_cost_engine", False),
-            help="Usa el nuevo motor de costos basado en configuración unificada",
-            key="use_cost_engine_checkbox"
-        )
-        
-        if use_cost_engine != st.session_state.get("hist.use_cost_engine", False):
-            st.session_state["hist.use_cost_engine"] = use_cost_engine
-            # Limpiar datos para forzar recarga
-            st.session_state["hist.df"] = None
-            st.rerun()
-        
-        # Información sobre el cost_engine
-        if use_cost_engine:
-            st.info("🚀 **Cost Engine habilitado**: Los costos se calculan usando promedio móvil de los últimos 12 meses (o todos los disponibles si hay menos de 12)")
-            st.caption("💡 Esto evita distorsiones temporales entre producción y venta")
-    
     st.caption("El archivo debe contener al menos: " + " | ".join([f"**{k}** ({v})" for k,v in REQ_SHEETS.items()]))
 
 # Procesar datos solo si no están en caché o si se recargó
 if st.session_state["hist.df"] is None:
     if "hist.file_bytes" in st.session_state and st.session_state["hist.file_bytes"] is not None:
-        use_cost_engine = st.session_state.get("hist.use_cost_engine", False)
-        
-        if use_cost_engine:
-            # ===================== USAR COST ENGINE =====================
-            # try:
-                with st.spinner("🚀 Procesando archivo con Cost Engine (promedio móvil 12 meses)..."):
-                    # Usar el pipeline del cost_engine con promedio móvil
-                    pipeline_results = build_cost_engine_pipeline(
-                        st.session_state["hist.file_bytes"]
-                    )
-                    
-                    # Extraer resultados
-                    detalle = pipeline_results['detalle']
-                    df_granel = pipeline_results['df_granel']
-                    df_granel_ponderado = pipeline_results['df_granel_ponderado']
-                    receta_df = pipeline_results['receta_df']
-                    
-                    # DEBUG: Verificar SKU 37421 inmediatamente después de construir detalle
-                    st.write("🔍 DEBUG SKU 37421 - DESPUÉS DE COST ENGINE:")
-                    sku_37421_cost_engine = detalle[detalle["SKU-Cliente"] == 37421]
-                    st.write(f"SKU 37421 en detalle (cost engine): {len(sku_37421_cost_engine)} registros")
-                    if len(sku_37421_cost_engine) > 0:
-                        st.write(f"Valores: Costos={sku_37421_cost_engine['Costos Totales (USD/kg)'].iloc[0]}, Comex={sku_37421_cost_engine['Comex'].iloc[0]}")
-                    st.write("---")
-                    info_df = pipeline_results['info_df']
-                    rolling_months = pipeline_results['rolling_months']
-                    months_count = pipeline_results['months_count']
-                    
-                    # Guardar en session_state
-                    st.session_state["hist.df"] = detalle
-                    st.session_state["hist.granel"] = df_granel
-                    st.session_state["hist.granel_ponderado"] = df_granel_ponderado
-                    st.session_state["fruta.receta_df"] = receta_df
-                    st.session_state["fruta.info_df"] = info_df
-                    st.session_state["hist.rolling_months"] = rolling_months
-                    st.session_state["hist.months_count"] = months_count
-                    
-                    # Calcular métricas adicionales para compatibilidad
-                    if "EBITDA (USD/kg)" in detalle.columns and "KgEmbarcados" in detalle.columns:
-                        detalle["EBITDA (USD)"] = detalle["EBITDA (USD/kg)"] * detalle["KgEmbarcados"]
-                        detalle["EBITDA Simple (USD)"] = detalle["EBITDA (USD)"]
-                        st.session_state["hist.ebitda_total"] = detalle["EBITDA (USD)"].sum()
-                        st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
-                    
-                    # Crear ebitda_mensual simulado para compatibilidad
-                    ebitda_mensual = detalle[["SKU-Cliente", "EBITDA (USD)", "KgEmbarcados"]].copy() if "SKU-Cliente" in detalle.columns else pd.DataFrame()
-                    st.session_state["hist.ebitda_mensual"] = ebitda_mensual
-                    
-                    # Datos óptimos (por ahora usar los mismos)
-                    st.session_state["hist.df_optimo"] = detalle.copy()
-                    st.session_state["hist.granel_optimo"] = df_granel_ponderado.copy()
-                    
-                    st.success(f"✅ Datos procesados con Cost Engine usando promedio móvil de {months_count} meses")
-                    st.info(f"📊 {len(detalle)} SKUs procesados | {len(df_granel_ponderado)} frutas de granel")
-                    st.caption(f"📅 Meses incluidos: {', '.join(rolling_months[-6:])}" + ("..." if len(rolling_months) > 6 else ""))
-                    
-            # except Exception as e:
-            #     st.error(f"❌ Error procesando con Cost Engine: {str(e)}")
-            #     st.info("💡 Intenta usar el método tradicional desmarcando la opción 'Usar nuevo Cost Engine'")
-            #     st.stop()
-        
-        else:
-            # ===================== MÉTODO TRADICIONAL =====================
-            try:
-                with st.spinner("Procesando archivo (método tradicional)..."):
-                    df_granel, df_granel_ponderado = build_granel(st.session_state["hist.file_bytes"])
-                    detalle = build_detalle(st.session_state["hist.file_bytes"], df_granel=df_granel_ponderado)
-                    
-                    # DEBUG: Verificar SKU 37421 inmediatamente después de construir detalle (método tradicional)
-                    st.write("🔍 DEBUG SKU 37421 - DESPUÉS DE MÉTODO TRADICIONAL:")
-                    sku_37421_tradicional = detalle[detalle["SKU-Cliente"] == 37421]
-                    st.write(f"SKU 37421 en detalle (tradicional): {len(sku_37421_tradicional)} registros")
-                    if len(sku_37421_tradicional) > 0:
-                        st.write(f"Valores: Costos={sku_37421_tradicional['Costos Totales (USD/kg)'].iloc[0]}, Comex={sku_37421_tradicional['Comex'].iloc[0]}")
-                    st.write("---")
-                    
-                    detalle_optimo = build_detalle(st.session_state["hist.file_bytes"], optimo=True, df_granel=df_granel_ponderado)
-                    ebitda_mensual, costos_mensuales, volumen_mensual, precios_mensuales = build_ebitda_mensual(st.session_state["hist.file_bytes"])
-                    
-                    # Generar datos óptimos de granel si están disponibles
-                    try:
-                        df_granel_optimo, df_granel_ponderado_optimo = build_granel(st.session_state["hist.file_bytes"], optimo=True)
-                        st.session_state["hist.granel_optimo"] = df_granel_ponderado_optimo
-                        st.success(f"✅ Datos óptimos de granel cargados: {len(df_granel_ponderado_optimo)} frutas")
-                    except Exception as e:
-                        st.info(f"ℹ️ Datos óptimos de granel no disponibles: {e}")
-                        st.session_state["hist.granel_optimo"] = None
-                    st.session_state["hist.granel_ponderado"] = df_granel_ponderado
-                    st.session_state["hist.granel"] = df_granel
-                    st.session_state["hist.ebitda_mensual"] = ebitda_mensual
-                    ebitda_mensual = ebitda_mensual.dropna(subset=["SKU-Cliente"])
-                    ebitda_mensual = ebitda_mensual[ebitda_mensual["SKU-Cliente"] != "nan"]
-                    st.session_state["hist.ebitda_total"] = ebitda_mensual["EBITDA (USD)"].sum()
-                    volumenes = ebitda_mensual.groupby(["SKU-Cliente"])["KgEmbarcados"].sum().reset_index()
-                    ebitdas = ebitda_mensual.groupby(["SKU-Cliente"])["EBITDA (USD)"].sum().reset_index()
-                    detalle = detalle.merge(volumenes, how="left", on="SKU-Cliente")
-                    detalle = detalle.merge(ebitdas, how="left", on="SKU-Cliente")
-                    detalle["EBITDA Simple (USD)"] = detalle["KgEmbarcados"] * detalle["EBITDA (USD/kg)"]
+        # ===================== USAR COST ENGINE =====================
+        # try:
+            with st.spinner("🚀 Procesando archivo con Cost Engine (promedio móvil)..."):
+                # Usar el pipeline del cost_engine
+                pipeline_results = build_cost_engine_pipeline(
+                    st.session_state["hist.file_bytes"]
+                )
+                
+                # Extraer resultados
+                detalle = pipeline_results['detalle']
+                detalle_optimo = pipeline_results['detalle_optimo']
+                df_granel_ponderado = pipeline_results['df_granel_ponderado']
+                df_granel_optimo = pipeline_results['df_granel_optimo']
+                receta_df = pipeline_results['receta_df']
+                info_df = pipeline_results['info_df']
+                rolling_months = pipeline_results['rolling_months']
+                months_count = pipeline_results['months_count']
+    
+                # Guardar en session_state
+                st.session_state["hist.df"] = detalle
+                st.session_state["hist.granel_ponderado"] = df_granel_ponderado
+                st.session_state["fruta.receta_df"] = receta_df
+                st.session_state["fruta.info_df"] = info_df
+                st.session_state["hist.rolling_months"] = rolling_months
+                st.session_state["hist.months_count"] = months_count
+                
+                # Calcular métricas adicionales para compatibilidad
+                if "EBITDA (USD/kg)" in detalle.columns and "KgEmbarcados" in detalle.columns:
+                    detalle["EBITDA (USD)"] = detalle["EBITDA (USD/kg)"] * detalle["KgEmbarcados"]
+                    detalle["EBITDA Simple (USD)"] = detalle["EBITDA (USD)"]
+                    st.session_state["hist.ebitda_total"] = detalle["EBITDA (USD)"].sum()
                     st.session_state["hist.ebitda_simple_total"] = detalle["EBITDA Simple (USD)"].sum()
-                    st.session_state["hist.df"] = detalle
-                    st.session_state["hist.df_optimo"] = detalle_optimo
-                    
-                    # Cargar datos de fruta si están disponibles
-                    with st.spinner("Cargando datos de fruta..."):
-                        # Leer el archivo Excel completo
-                        from src.data_io import read_workbook
-                        sheets = read_workbook(st.session_state["hist.file_bytes"])
-                        
-                        # Cargar INFO_FRUTA si existe
-                        if "INFO_FRUTA" in sheets:
-                            info_df = load_info_fruta(sheets["INFO_FRUTA"])
-                            st.session_state["fruta.info_df"] = info_df
-                        else:
-                            st.info("ℹ️ Hoja INFO_FRUTA no encontrada")
-                        
-                        # Cargar RECETA_SKU si existe
-                        if "RECETA_SKU" in sheets:
-                            receta_df = load_receta_sku(sheets["RECETA_SKU"])
-                            detalle = load_especies(receta_df, detalle, info_df, as_list=True)
-                            st.session_state["hist.df"] = detalle
-                            st.session_state["fruta.receta_df"] = receta_df
-                        else:
-                            st.info("ℹ️ Hoja RECETA_SKU no encontrada")
-                            
-            except Exception as e:
-                st.error(f"Error procesando el archivo: {e}")
-                st.stop()
+                
+                # Crear ebitda_mensual simulado para compatibilidad
+                ebitda_mensual = detalle[["SKU-Cliente", "EBITDA (USD)", "KgEmbarcados"]].copy() if "SKU-Cliente" in detalle.columns else pd.DataFrame()
+                st.session_state["hist.ebitda_mensual"] = ebitda_mensual
+                
+                # Datos óptimos (por ahora usar los mismos)
+                st.session_state["hist.df_optimo"] = detalle_optimo
+                st.session_state["hist.granel_optimo"] = df_granel_optimo
+                
+                # Mensaje de éxito
+                st.success("✅ Datos procesados con Cost Engine usando promedio móvil mes a mes")
+                st.info(f"📊 {len(detalle)} SKUs procesados | {len(df_granel_ponderado)} frutas de granel | {months_count} meses")
+                st.caption(f"📅 Período: {rolling_months[0]} a {rolling_months[-1]}" if rolling_months else "Sin datos de periodo")
+                
+        # except Exception as e:
+        #     st.error(f"❌ Error procesando con Cost Engine: {str(e)}")
+        #     st.stop()
+    
     else:
         st.info("Sube tu archivo para comenzar.")
         st.stop()
 else:
     detalle = st.session_state["hist.df"]
     
-    # Mostrar indicador del método usado
-    use_cost_engine = st.session_state.get("hist.use_cost_engine", False)
-    if use_cost_engine:
-        months_count = st.session_state.get("hist.months_count", 0)
-        rolling_months = st.session_state.get("hist.rolling_months", [])
-        st.info(f"🚀 **Datos cargados con Cost Engine** | Promedio móvil de {months_count} meses")
-        if rolling_months:
-            st.caption(f"📅 Período: {rolling_months[0]} a {rolling_months[-1]}")
-    else:
-        st.info("📊 **Datos cargados con método tradicional**")
+    # Mostrar información del Cost Engine
+    months_count = st.session_state.get("hist.months_count", 0)
+    rolling_months = st.session_state.get("hist.rolling_months", [])
+    st.info(f"🚀 **Datos cargados con Cost Engine** | Promedio móvil de {months_count} meses")
+    if rolling_months:
+        st.caption(f"📅 Período: {rolling_months[0]} a {rolling_months[-1]}")
 
 # Verificar que detalle esté definido antes de continuar
 if 'detalle' not in locals() or detalle is None:
     st.error("❌ No hay datos disponibles para procesar")
     st.info("💡 Por favor, sube tu archivo Excel primero")
     st.stop()
+
+#exportar excel detalle
+def create_excel_download_button(df: pd.DataFrame,
+    filename: str = "datos_historicos_filtrados.xlsx",
+    label: str = "📥 Descargar Excel (Datos Filtrados)",
+    key: str = "download_historico_excel"):
+    """Crea un botón de descarga Excel para los datos filtrados"""
+    from io import BytesIO
+    
+    # Crear buffer en memoria
+    buf = BytesIO()
+    
+    # Escribir Excel con formato
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Hoja principal con datos mostrados
+        df.to_excel(writer, index=False, sheet_name="Datos")
+    
+    # Crear botón de descarga
+    st.download_button(
+        label=label,
+        data=buf.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=key
+    )
+        
+# Mostrar botón de descarga
+create_excel_download_button(detalle, "detalle.xlsx", "📥 Descargar Excel", "download_historico_completo_excel")
+
 
 # Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
 if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
@@ -526,7 +450,7 @@ with tab_retail:
                 "MMPP (Fruta) (USD/kg)","Proceso Granel (USD/kg)","Retail Costos Directos (USD/kg)",
                 "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex",
                 "Guarda PT","Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)",
-                "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados"]
+                "EBITDA (USD/kg)","EBITDA Pct","KgEmbarcados","KgProducidos"]
     
     # Determinar columna clave para filtrado una sola vez
     key_col = "SKU-Cliente" if "SKU-Cliente" in df_filtrado.columns else "SKU"
@@ -568,7 +492,7 @@ with tab_retail:
     # Aplicar negritas a las columnas de totales
     total_columns = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
     "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-    "KgEmbarcados"]
+    "KgEmbarcados", "KgProducidos"]
     existing_total_columns = [col for col in total_columns if col in view_base.columns]
 
     if existing_total_columns:
@@ -635,7 +559,7 @@ with tab_retail:
         sty = sty.format(fmt)
     tot_cols = ["MMPP Total (USD/kg)", "MO Total", "Materiales Total", "Gastos Totales (USD/kg)",
                 "Costos Totales (USD/kg)", "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                "KgEmbarcados"]
+                "KgEmbarcados", "KgProducidos"]
     ex_tot = [c for c in tot_cols if c in df_disp.columns]
     if ex_tot:
         sty = sty.set_properties(subset=ex_tot, **{"font-weight":"bold","background-color":"#f8f9fa"})
@@ -727,7 +651,7 @@ with tab_retail:
                         "Laboratorio","Mantención","Utilities","Fletes Internos","Retail Costos Directos (USD/kg)",
                         "Retail Costos Indirectos (USD/kg)","Almacenaje MMPP","Servicios Generales","Comex","Guarda PT",
                         "Gastos Totales (USD/kg)","Costos Totales (USD/kg)","PrecioVenta (USD/kg)","EBITDA (USD/kg)",
-                        "EBITDA Pct","KgEmbarcados"]
+                        "EBITDA Pct","KgEmbarcados","KgProducidos"]
         # Si falta, recalcúlala si están los componentes
         if "Gastos Totales (USD/kg)" not in det.columns:
             comp = [
