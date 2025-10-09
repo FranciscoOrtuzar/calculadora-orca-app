@@ -1362,7 +1362,7 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
         DataFrame normalizado con columnas [Fruta_id, Precio, Rendimiento, Name, Almacenaje]
     """
     # Verificar columnas requeridas
-    required_cols = ["Fruta_id", "Precio", "Rendimiento", "Name", "Almacenaje"]
+    required_cols = ["Fruta_id", "Precio", "Rendimiento", "Name"]
     missing_cols = [col for col in required_cols if col not in df_excel.columns]
     if missing_cols:
         raise ValueError(f"Columnas faltantes en INFO_FRUTA: {missing_cols}")
@@ -1379,9 +1379,6 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
     # Convertir Rendimiento a float y validar
     df["Rendimiento"] = pd.to_numeric(df["Rendimiento"], errors="coerce")
 
-    # Convertir Almacenaje a float y validar
-    df["Almacenaje"] = pd.to_numeric(df["Almacenaje"], errors="coerce") 
-
     # Convertir Name a string y limpiar
     df["Name"] = df["Name"].astype(str).str.strip()
     
@@ -1392,7 +1389,6 @@ def load_info_fruta(df_excel: pd.DataFrame) -> pd.DataFrame:
     df = df[df["Precio"] >= 0]
     df = df[df["Rendimiento"] > 0]
     df = df[df["Rendimiento"] <= 1]
-    df = df[df["Almacenaje"] <= 0]
     
     # Reemplazar rendimientos 0/NaN por mínimo 0.01 y loggear warning
     zero_efficiency_mask = (df["Rendimiento"] <= 0) | df["Rendimiento"].isna()
