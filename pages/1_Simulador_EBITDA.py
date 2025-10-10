@@ -16,54 +16,11 @@ import json
 from src.state import sync_filters_to_shared, sync_filters_from_shared
 from src.dynamic_filters import DynamicFiltersWithList
 from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode, JsCode
+from src.data_io import create_subtotal_row
 
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-# ===================== Utilidades =====================
-def create_subtotal_row(df, position="bottom"):
-    """Crea una fila de subtotales con manejo de valores None"""
-    subtotal_row = {}
-    
-    # Llenar columnas de agrupación con "TOTAL" o mensaje genérico
-    for col in ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Fruta", "Name"]:
-        if col in df.columns:
-            if col in ["Marca", "Cliente", "Especie", "Condicion", "Fruta", "Name", "SKU", "Descripcion"]:
-                subtotal_row[col] = "TOTAL"
-            else:
-                subtotal_row[col] = ""  # Mensaje genérico en lugar de None
-    
-    # Calcular sumas para columnas numéricas
-    numeric_cols = ["EBITDA (USD/kg)", "Costos Totales (USD/kg)", "KgEmbarcados", 
-                    "MMPP (Fruta) (USD/kg)", "Proceso Granel (USD/kg)", "PrecioVenta (USD/kg)",
-                    "Precio (USD/kg)", "Costo (USD/kg)", "Óptimo", "Ponderado",
-                    "MMPP Total (USD/kg)", "MO Directa", "MO Indirecta", "MO Total",
-                    "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                    "Laboratorio", "Mantención", "Mantencion y Maquinaria" "Utilities", "Fletes Internos",
-                    "Retail Costos Directos (USD/kg)", "Retail Costos Indirectos (USD/kg)",
-                    "Servicios Generales", "Comex", "Guarda PT", "Almacenaje MMPP",
-                    "Gastos Totales (USD/kg)", "Costos Directos", "Costos Indirectos"]
-    
-    for col in numeric_cols:
-        try:
-            if col == "KgEmbarcados":
-                subtotal_row[col] = df["KgEmbarcados"].sum()
-            elif col in df.columns:
-                subtotal_row[col] = (df[col]*df["KgEmbarcados"]).sum()/df["KgEmbarcados"].sum()
-        except:
-            subtotal_row[col] = ""
-    
-    # Manejar columnas que pueden ser None (como EBITDA Pct)
-    for col in ["EBITDA Pct"]:
-        if col in df.columns:
-            # Para porcentajes, calcular el promedio o mostrar mensaje genérico
-            if df[col].notna().any():
-                subtotal_row[col] = df[col].mean()
-            else:
-                subtotal_row[col] = ""  # Mensaje genérico en lugar de None
-    
-    return subtotal_row
-    
 def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
     """
     Convierte un DataFrame a formato seguro para Arrow/Streamlit.
@@ -537,9 +494,6 @@ with st.sidebar.container():
                 st.sidebar.info(f"🔍 **{active_count} filtro activo**")
             else:
                 st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-            for logical, values in active_filters.items():
-                if values:
-                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
     dynamic_filters = DynamicFiltersWithList(df=df_base, filters=['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU'], filters_name='hist.filters')
     dynamic_filters.check_state()
     dynamic_filters.display_filters(location='sidebar')
@@ -1710,9 +1664,46 @@ with tab_granel:
             st.session_state["sim.granel_df"] = recalculate_granel_totals(st.session_state["sim.granel_df"])
 
     def _cost_editable_columns(df: pd.DataFrame) -> list:
-        """Columnas de costos editables manualmente (excluye IDs, títulos y totales)."""
-        lock = {"Fruta_id", "Fruta", "Precio", "Rendimiento", "Precio Efectivo", "Costos Directos", "Costos Indirectos"}
-        return [c for c in df.columns if c not in lock and not c.endswith("Total")]
+        """
+        Devuelve SOLO las columnas de costo editables en Granel.
+        - Usa una whitelist fija (si existen en el df).
+        - Excluye derivados/totales/metricas calculadas.
+        - Ordena por una secuencia razonable.
+        """
+        if df is None or df.empty:
+            return []
+
+        # Whitelist típica de granel (ajústala a tu modelo real)
+        whitelist_ordered = [
+            "MO Directa", "MO Indirecta", "Materiales Directos", "Materiales Indirectos",
+            "Laboratorio", "Mantencion", "Utilities", "Servicios Generales"
+        ]
+
+        # Columnas que NO se deben editar nunca
+        hard_blacklist = {
+            "Fruta_id", "Fruta", "Name",
+            "Precio", "Rendimiento", "Precio Efectivo",
+            "MO Total", "Materiales Total",
+            "Costos Directos", "Costos Indirectos",
+            "Proceso Granel (USD/kg)", "Gastos Totales (USD/kg)",
+            "KgProducidos", "KgEmbarcados",
+        }
+
+        # Candidatas = intersección whitelist ∩ columnas del df
+        candidates = [c for c in whitelist_ordered if c in df.columns]
+
+        # Limpieza final
+        seen, cleaned = set(), []
+        for c in candidates:
+            if c in hard_blacklist: 
+                continue
+            if c.endswith("Total"): 
+                continue
+            if c not in seen:
+                seen.add(c)
+                cleaned.append(c)
+
+        return cleaned
 
     def _merge_back_sim(sim_df: pd.DataFrame, edited_view: pd.DataFrame, pk="Fruta_id") -> pd.DataFrame:
         """Escribe de vuelta SOLO lo editado (columnas editables) en sim.granel_df, recalculando totales."""
@@ -1983,7 +1974,7 @@ with tab_granel:
         order_cols = ["Fruta_id", "Name", "Precio", "Rendimiento", "Precio Efectivo",
                       "MO Directa", "MO Indirecta", "MO Total",
                       "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                      "Laboratorio", "Mantencion y Maquinaria",
+                      "Laboratorio", "Mantencion y Maquinaria", "Utilities",
                       "Costos Directos", "Costos Indirectos", "Servicios Generales", "Proceso Granel (USD/kg)"]
         available_cols = [c for c in order_cols if c in editable_view.columns]
         # Añadir columnas que no estaban en el orden
@@ -2031,9 +2022,12 @@ with tab_granel:
                     )
 
         # Crear fila de subtotales
-        subtotal_row = create_subtotal_row(editable_view)
+        subtotal_row = create_subtotal_row(editable_view, weight_col="KgProducidos")
         subtotal_df = pd.DataFrame([subtotal_row])
         
+        # Eliminar las especies sin proceso
+        editable_view = editable_view[editable_view["Proceso Granel (USD/kg)"] < 0]
+
         # Concatenar subtotales al final (por defecto)
         editable_view_with_subtotals = pd.concat([editable_view, subtotal_df], ignore_index=True)
         subtotal_position = len(editable_view)  # Última fila
@@ -2077,29 +2071,10 @@ with tab_granel:
             key="data_editor_granel"
         )
         
-        # # Mostrar métricas de subtotales
-        # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
-        
-        # with col_metrics1:
-        #     if "Costos Directos" in editable_view.columns:
-        #         total_directos = editable_view["Costos Directos"].sum()
-        #         st.metric("Costos Directos Total", f"{total_directos:,.2f}")
-        
-        # with col_metrics2:
-        #     if "Costos Indirectos" in editable_view.columns:
-        #         total_indirectos = editable_view["Costos Indirectos"].sum()
-        #         st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
-        
-        # with col_metrics3:
-        #     if "Proceso Granel (USD/kg)" in editable_view.columns:
-        #         total_proceso = editable_view["Proceso Granel (USD/kg)"].sum()
-        #         st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
-
         # --------- KPIs ---------
         st.subheader("📈 KPIs de Granel (escenario)")
-        editable_view_con_proceso = editable_view[editable_view["Proceso Granel (USD/kg)"] < 0]
         try:
-            kpis_granel = calculate_granel_kpis(editable_view_con_proceso)
+            kpis_granel = calculate_granel_kpis(editable_view)
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.metric("Total Frutas", kpis_granel.get("Total Frutas", 0))
@@ -2108,7 +2083,7 @@ with tab_granel:
             with c3:
                 st.metric("Materiales Promedio", f"${kpis_granel.get('Materiales Promedio (USD/kg)', float('nan')):.3f}/kg" if "Materiales Promedio (USD/kg)" in kpis_granel else "N/A")
             with c4:
-                st.metric("Precio Efectivo Promedio", f"${kpis_granel.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpis_granel else "N/A")
+                st.metric("Proceso Granel Promedio", f"${kpis_granel.get('Proceso Granel Promedio (USD/kg)', float('nan')):.3f}/kg" if "Proceso Granel Promedio (USD/kg)" in kpis_granel else "N/A")
         except Exception as e:
             st.error(f"❌ Error calculando KPIs: {e}")
 
@@ -2179,27 +2154,27 @@ with tab_granel:
                 key="granel_format"
             )
         with ec3:
-            if st.button("📥 Exportar", type="primary", key="export_granel"):
-                try:
-                    # Generar datos para descarga
-                    data = get_data_for_download(st.session_state["sim.granel_df"], export_format_granel)
-                    mime_type = get_mime_type(export_format_granel)
-                    extension = get_file_extension(export_format_granel)
-                    
-                    # Generar nombre de archivo con timestamp
-                    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
-                    filename = f"{filename_prefix_granel}_{timestamp}.{extension}"
-                    
-                    st.download_button(
-                        label=f"⬇️ Descargar {export_format_granel.upper()}",
-                        data=data,
-                        file_name=filename,
-                        mime=mime_type,
-                        key="download_granel"
-                    )
-                    st.success(f"✅ Escenario de granel listo para descarga en formato {export_format_granel.upper()}")
-                except Exception as e:
-                    st.error(f"❌ Error exportando: {e}")
+            try:
+                # Generar datos para descarga
+                data = get_data_for_download(st.session_state["sim.granel_df"], export_format_granel)
+                mime_type = get_mime_type(export_format_granel)
+                extension = get_file_extension(export_format_granel)
+                
+                # Generar nombre de archivo con timestamp
+                timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+                filename = f"{filename_prefix_granel}_{timestamp}.{extension}"
+                
+                st.download_button(
+                    label=f"⬇️ Descargar",
+                    data=data,
+                    file_name=filename,
+                    mime=mime_type,
+                    key="download_granel",
+                    type='primary'
+                )
+                st.caption(f"✅ Escenario de granel listo para descarga en formato {export_format_granel.upper()}")
+            except Exception as e:
+                st.error(f"❌ Error exportando: {e}")
 
     # ======================================================
     # TAB: ÓPTIMOS
@@ -2218,25 +2193,12 @@ with tab_granel:
                 opt_view[c] = pd.to_numeric(opt_view[c], errors="coerce")
 
             order_cols = ["Fruta_id", "Name", "Precio", "Rendimiento", "Precio Efectivo",
-                          "MO Directa", "MO Indirecta", "MO Total",
+                          "Proceso Granel (USD/kg)","MO Directa", "MO Indirecta", "MO Total",
                           "Materiales Directos", "Materiales Indirectos", "Materiales Total",
-                          "Laboratorio", "Mantencion", "Utilities"
+                          "Laboratorio", "Mantencion", "Utilities",
                           "Costos Directos", "Costos Indirectos", "Servicios Generales"]
             avail_cols = [c for c in order_cols if c in opt_view.columns]
             opt_view = opt_view[avail_cols]
-            # ---- Agregar columnas faltantes al óptimo ----
-            opt_view["Costos Directos"] = (
-                opt_view["MO Directa"] + opt_view["Materiales Directos"] + opt_view["Laboratorio"]
-            )
-
-            opt_view["Costos Indirectos"] = (
-                opt_view["MO Indirecta"] + opt_view["Materiales Indirectos"] + opt_view["Servicios Generales"]
-            )
-
-            # Consistencia con el resto de la app: usa el mismo nombre que vienes usando
-            opt_view["Proceso Granel (USD/kg)"] = (
-                opt_view["Costos Directos"] + opt_view["Costos Indirectos"]
-            )
             opt_view = opt_view.set_index("Fruta_id").sort_index()
             opt_view = opt_view.sort_values(by="Proceso Granel (USD/kg)")
             total_columns = ["MO Total", "Materiales Total", "Costos Directos", "Costos Indirectos"]
@@ -2275,7 +2237,7 @@ with tab_granel:
             # Aplicar subtotales según la configuración
             if "Name" in opt_view.columns:
                 # Crear fila de subtotales
-                subtotal_row = create_subtotal_row(opt_view)
+                subtotal_row = create_subtotal_row(opt_view, weight_col="KgProducidos")
                 subtotal_df = pd.DataFrame([subtotal_row])
                 
                 # Concatenar subtotales al final (por defecto)
@@ -2322,23 +2284,6 @@ with tab_granel:
                     key="data_editor_granel"
                 )
                 
-                # # Mostrar métricas de subtotales
-                # col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
-                
-                # with col_metrics1:
-                #     if "Costos Directos" in opt_view.columns:
-                #         total_directos = opt_view["Costos Directos"].sum()
-                #         st.metric("Costos Directos Total", f"{total_directos:,.2f}")
-                
-                # with col_metrics2:
-                #     if "Costos Indirectos" in opt_view.columns:
-                #         total_indirectos = opt_view["Costos Indirectos"].sum()
-                #         st.metric("Costos Indirectos Total", f"{total_indirectos:,.2f}")
-                
-                # with col_metrics3:
-                #     if "Proceso Granel (USD/kg)" in opt_view.columns:
-                #         total_proceso = opt_view["Proceso Granel (USD/kg)"].sum()
-                #         st.metric("Proceso Granel Total", f"{total_proceso:,.2f}")
             
             else:
                 # Mostrar tabla normal
@@ -2362,9 +2307,50 @@ with tab_granel:
                 with k3:
                     st.metric("Materiales Promedio Óptimo", f"${kpi_opt.get('Materiales Promedio (USD/kg)', float('nan')):.3f}/kg" if "Materiales Promedio (USD/kg)" in kpi_opt else "N/A")
                 with k4:
-                    st.metric("Precio Efectivo Promedio Óptimo", f"${kpi_opt.get('Precio Efectivo Promedio (USD/kg)', float('nan')):.3f}/kg" if "Precio Efectivo Promedio (USD/kg)" in kpi_opt else "N/A")
+                    st.metric("Proceso Granel Promedio Óptimo", f"${kpi_opt.get('Proceso Granel Promedio (USD/kg)', float('nan')):.3f}/kg" if "Proceso Granel Promedio (USD/kg)" in kpi_opt else "N/A")
             except Exception as e:
                 st.error(f"❌ Error KPIs óptimos: {e}")
+            
+            # --------- Export ---------
+            st.subheader("💾 Exportar Granel Optimo")
+            ec1, ec2, ec3 = st.columns([2, 1, 1])
+            with ec1:
+                filename_prefix_granel = st.text_input(
+                    "Prefijo del archivo:",
+                    value="granel_optimo",
+                    help="Nombre base para el archivo"
+                )
+            with ec2:
+                export_format_granel = st.selectbox(
+                    "Formato:",
+                    options=["csv", "excel"],
+                    format_func=lambda x: "CSV" if x == "csv" else "Excel",
+                    help="Selecciona el formato de exportación",
+                    key="granel_format_opt"
+                )
+            with ec3:
+                try:
+                    # Generar datos para descarga
+                    data = get_data_for_download(st.session_state["hist.granel_optimo"], export_format_granel)
+                    mime_type = get_mime_type(export_format_granel)
+                    extension = get_file_extension(export_format_granel)
+                    
+                    # Generar nombre de archivo con timestamp
+                    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+                    filename = f"{filename_prefix_granel}_{timestamp}.{extension}"
+                    
+                    st.download_button(
+                        label=f"⬇️ Descargar",
+                        data=data,
+                        file_name=filename,
+                        mime=mime_type,
+                        key="download_granel_opt",
+                        type="primary"
+                    )
+                    st.caption(f"Granel Óptimo listo para descarga en formato {export_format_granel.upper()}")
+                except Exception as e:
+                    st.error(f"❌ Error exportando: {e}")
+
     # ===================== PESTAÑA DE COMPARACIÓN =====================
     with tab_comparacion:
         st.header("⚖️ Comparación Simulador vs Histórico")
@@ -3304,11 +3290,11 @@ with tab_receta:
     # columnas
     gb.configure_column("SKU", width=90, pinned="left", filter=False)
     if "Descripcion" in display_df.columns:
-        gb.configure_column("Descripcion", width=240, header_name="Descripción", filter=False)
+        gb.configure_column("Descripcion", header_name="Descripción", minWidth=260, flex=4)
     if "Marca" in display_df.columns:
-        gb.configure_column("Marca", width=120, filter=False)
+        gb.configure_column("Marca", minWidth=120, flex=1)
     if "Cliente" in display_df.columns:
-        gb.configure_column("Cliente", width=140, filter=False)
+        gb.configure_column("Cliente", minWidth=150, flex=2)
     if "Frutas_Usadas" in display_df.columns:
         FRUTAS_CELL_STYLE = JsCode("""
         function(params){
@@ -3317,7 +3303,7 @@ with tab_receta:
         """)
         gb.configure_column(
             "Frutas_Usadas",
-            width=100,
+            minwidth=90,
             header_name="Frutas",
             format="{:.0f}",
             pinned="right",
@@ -3382,18 +3368,18 @@ with tab_receta:
     }
     """)
 
+    # Botón a la derecha: pinned y con ancho mínimo, sin flex (que no se expanda)
     gb.configure_column(
-         "Ver Receta",
-         header_name="Ver Receta",
-         width=120,
-         minWidth=110,
-         maxWidth=140,
-         filter=False,
-         sortable=False,
-         editable=False,
-         cellRenderer=BTN_RENDERER,
-         pinned="right",
-         suppressMovable=True,
+        "Ver Receta",
+        header_name="Ver Receta",
+        minWidth=120,
+        maxWidth=160,
+        pinned="right",
+        suppressMovable=True,
+        sortable=False,
+        filter=False,
+        editable=False,
+        cellRenderer=BTN_RENDERER,
     )
     ## 1) CSS para forzar elipsis (overflow) y así tener casos con tooltip
     ELIPSIS_CSS = """
@@ -3429,20 +3415,18 @@ with tab_receta:
     #     marca columnas con 'suppressSizeToFit:true' para que queden estrechas)
     on_ready = JsCode("""
     function(p){
-    // Si tu versión soporta 'tooltipShowMode', puedes dejarlo en gridOptions;
-    // si no, no pasa nada, esto solo ajusta un pelín.
-    // p.api.sizeColumnsToFit();  // <- comenta esto si quieres que haya truncamiento
+    // con flex no es necesario, pero ayuda a primeras cargas raras
+    p.api.sizeColumnsToFit();
+    window.addEventListener('resize', () => p.api.sizeColumnsToFit());
     }
     """)
 
     gb.configure_grid_options(
         onFirstDataRendered=on_ready,
+        onGridSizeChanged=JsCode("function(p){ p.api.sizeColumnsToFit(); }"),
         tooltipShowDelay=100,
         tooltipHideDelay=8000,
-        # Si tu versión lo soporta, déjalo. Si no, elimínalo sin problema.
         tooltipShowMode="whenTruncated",
-        # enableCellTextSelection=True,
-        # ensureDomOrder=True
         )
 
     gridOptions = gb.build()
