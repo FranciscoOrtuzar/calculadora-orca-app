@@ -337,69 +337,31 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
     info_fruta_subset = info_fruta[['Fruta_id', 'Name']]
     out = out.merge(info_fruta_subset, on='Fruta_id', how='left')
     return out
+def build_fact_precios(df_p: pd.DataFrame) -> pd.DataFrame:
+    """
+    Procesa la tabla de precios y retorna precios limpios con FechaClave.
+    
+    Args:
+        df_p: DataFrame con precios
+        
+    Returns:
+        DataFrame procesado con precios limpios
+    """
+    needed = {"SKU","SKU-Cliente","Año","Mes","PrecioVentaUSD"}
+    if not needed.issubset(set(df_p.columns)):
+        raise ValueError(f"FACT_PRECIOS debe contener {needed}. Columnas: {df_p.columns.tolist()}")
 
-def build_fact_precios_cf(
-    df_p: pd.DataFrame,
-    start=(2024, 10),   # Oct-2024
-    end=(2025, 6)       # Jun-2025
-) -> pd.DataFrame:
-    """
-    Devuelve precios mensuales por SKU-Cliente con carry-forward en el rango [start, end].
-    Requiere columnas: ['SKU-Cliente','SKU','Año','Mes','PrecioVentaUSD'] (o 'PrecioVenta').
-    Salida: ['SKU-Cliente','SKU','Año','Mes','FechaClave','PrecioVentaUSD']
-    """
-    # Normaliza nombres
     p = df_p.copy()
-    p.columns = [str(c).strip() for c in p.columns]
-    if "PrecioVentaUSD" not in p.columns and "PrecioVenta" in p.columns:
-        p = p.rename(columns={"PrecioVenta": "PrecioVentaUSD"})
-
-    needed = {"SKU-Cliente","SKU","Año","Mes","PrecioVentaUSD"}
-    missing = needed - set(p.columns)
-    if missing:
-        raise ValueError(f"Faltan columnas en FACT_PRECIOS: {sorted(missing)}")
-
-    # Normaliza tipos
-    p["SKU-Cliente"] = p["SKU-Cliente"].astype(str).str.strip()
-    p["SKU"] = p["SKU"].astype(str).str.strip()
+    p.columns = [c.strip() for c in p.columns]
+    p = ensure_str(p, "SKU")
+    p = ensure_str(p, "SKU-Cliente")
     p["Año"] = p["Año"].apply(lambda x: int(str(x).strip()))
-    p["Mes"] = p["Mes"].apply(month_to_num).astype(int)
-    p["FechaClave"] = p["Año"]*100 + p["Mes"]
-
+    p["MesNum"] = p["Mes"].apply(month_to_num).astype("Int64")
     p["PrecioVentaUSD"] = p["PrecioVentaUSD"].apply(to_number_safe)
     p = p.dropna(subset=["PrecioVentaUSD"])
-
-    # Si hubiese duplicados por (SKU-Cliente, FechaClave), nos quedamos con el último
-    p = (p.sort_values(["SKU-Cliente","FechaClave"])
-           .drop_duplicates(["SKU-Cliente","FechaClave"], keep="last"))
-
-    # Universo de SKUs-Cliente presentes en precios
-    skus = p[["SKU-Cliente","SKU"]].drop_duplicates()
-
-    # Calendario mensual completo del periodo
-    cal = []
-    for y, m, fk in month_iter(start[0], start[1], end[0], end[1]):
-        tmp = skus.copy()
-        tmp["Año"] = y
-        tmp["Mes"] = m
-        tmp["FechaClave"] = fk
-        cal.append(tmp)
-    skeleton = pd.concat(cal, ignore_index=True)
-
-    # Mezcla precios observados al calendario
-    df = skeleton.merge(
-        p[["SKU-Cliente","FechaClave","PrecioVentaUSD"]],
-        on=["SKU-Cliente","FechaClave"],
-        how="left"
-    )
-
-    # Carry-forward por SKU-Cliente
-    df = carry_forward(df, key_cols=["SKU-Cliente"], sort_col="FechaClave", value_col="PrecioVentaUSD")
-
-    # Orden final
-    df = df.sort_values(["SKU-Cliente","FechaClave"]).reset_index(drop=True)
-    return df[["SKU-Cliente","SKU","Año","Mes","FechaClave","PrecioVentaUSD"]]
-
+    p["FechaClave"] = p["Año"]*100 + p["MesNum"].astype(int)
+    return p
+    
 def build_dim_sku(df_dim: pd.DataFrame) -> pd.DataFrame:
     """
     Procesa la dimensión SKU y retorna tabla limpia.
