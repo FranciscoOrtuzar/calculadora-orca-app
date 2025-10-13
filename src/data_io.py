@@ -309,13 +309,7 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
         elif lc in ["utilities", "utilidades"]:
             rename_map[c] = "Utilities"
         elif lc in ["mantencion", "mantención", "mantenimiento"]:
-            rename_map[c] = "Mantencion y Maquinaria"
-        elif lc in ["fletes"]:
-            rename_map[c] = "Fletes"
-        elif lc in ["comex"]:
-            rename_map[c] = "Comex"
-        elif lc in ["guarda_pt", "guarda producto terminado"]:
-            rename_map[c] = "Guarda Producto Terminado"
+            rename_map[c] = "Mantencion"
         elif lc in ["fruta", "nombre_fruta", "nombre fruta"]:
             rename_map[c] = "Fruta"
 
@@ -330,11 +324,11 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
         df[c] = df[c].apply(to_number_safe)
 
     df["Proceso Granel (USD/kg)"] = sum_existing(df, ["MO Directa", "MO Indirecta", "Materiales Directos",
-    "Materiales Indirectos", "Laboratorio", "Mantencion y Maquinaria", "Servicios Generales", "Utilities",
+    "Materiales Indirectos", "Laboratorio", "Mantencion", "Servicios Generales", "Utilities",
     "Fletes", "Comex", "Guarda Producto Terminado"])
 
     df["Costos Directos"] = sum_existing(df, ["MO Directa", "Materiales Directos",
-    "Laboratorio", "Mantencion y Maquinaria"])
+    "Laboratorio", "Mantencion"])
     df["Costos Indirectos"] = sum_existing(df, ["MO Indirecta", "Materiales Indirectos"])
     # Quedarse con fruta_id + Fruta + columnas de costos
     cost_cols = [c for c in df.columns if c not in ["Fruta_id", "Fruta"]]
@@ -343,167 +337,6 @@ def build_fact_granel_ponderado(df_granel: pd.DataFrame, info_fruta: pd.DataFram
     info_fruta_subset = info_fruta[['Fruta_id', 'Name']]
     out = out.merge(info_fruta_subset, on='Fruta_id', how='left')
     return out
-
-def build_fact_costos_mensuales(df_c: pd.DataFrame, start, end, fill_before_first=False) -> pd.DataFrame:
-    """
-    Normaliza costos en formato largo y aplica carry-forward mensual por (SKU, tipo_costo).
-
-    Espera columnas: ['SKU','Año','Mes','FechaClave','tipo_costo','valor_costo']
-    Devuelve:        ['SKU','Año','Mes','FechaClave','tipo_costo','valor_costo'] ordenado.
-    """
-    need = {"SKU","Año","Mes","tipo_costo","valor_costo"}
-    if not need.issubset(set(df_c.columns)):
-        raise ValueError(f"FACT_COSTOS_MENSUALES debe tener columnas {need}.")
-    c = df_c.copy()
-    c.columns = [str(x).strip() for x in c.columns]
-    c["SKU"] = c["SKU"].astype(str).str.strip()
-    c["Año"] = c["Año"].apply(lambda x: int(str(x).strip()))
-    c["Mes"] = c["Mes"].apply(lambda x: int(str(x).strip()))
-    c["FechaClave"] = c["Año"]*100 + c["Mes"]
-    c["tipo_costo"] = c["tipo_costo"].astype(str).str.strip()
-    c["valor_costo"] = c["valor_costo"].apply(to_number_safe)
-
-    # Consolidar duplicados
-    c = (c.groupby(["SKU","tipo_costo","FechaClave","Año","Mes"], as_index=False)["valor_costo"]
-           .sum(min_count=1))
-
-    # Calendario por (SKU, tipo_costo, mes)
-    skus  = c[["SKU"]].drop_duplicates()
-    tipos = c[["tipo_costo"]].drop_duplicates()
-
-    cal = []
-    for y, m, fk in month_iter(start[0], start[1], end[0], end[1]):
-        tmp = skus.merge(tipos, how="cross")        # ← cartesiano correcto
-        tmp["Año"] = y; tmp["Mes"] = m; tmp["FechaClave"] = fk
-        cal.append(tmp)
-    base = pd.concat(cal, ignore_index=True)
-
-    # Traer valores y CF por SKU+tipo_costo
-    base = (base.merge(
-                c[["SKU","tipo_costo","FechaClave","valor_costo"]],
-                on=["SKU","tipo_costo","FechaClave"], how="left")
-              .sort_values(["SKU","tipo_costo","FechaClave"]))
-    
-    base = carry_forward_ignore_zeros(base, ["SKU","tipo_costo"], "FechaClave", "valor_costo")
-    
-    # Llenar valores faltantes después del carry-forward
-    if fill_before_first:
-        # Carry backwards: tomar el primer valor disponible y propagarlo hacia atrás
-        base["valor_costo"] = base.groupby(["SKU","tipo_costo"], dropna=False)["valor_costo"].bfill().ffill()
-    else:
-        # Para valores que no tienen carry-forward, usar 0.0 en lugar de NaN
-        base["valor_costo"] = base["valor_costo"].fillna(0.0)
-
-    # Pivot a ancho
-    wide = (base.pivot_table(index=["SKU","Año","Mes","FechaClave"],
-                             columns="tipo_costo",
-                             values="valor_costo",
-                             aggfunc="last")
-                 .reset_index())
-    wide.columns.name = None
-
-    # Asegurar numéricos y signo costo negativo
-    for ccol in wide.columns:
-        if ccol in {"SKU","Año","Mes","FechaClave"}:
-            continue
-        wide[ccol] = pd.to_numeric(wide[ccol], errors="coerce")
-        # Solo aplicar signo negativo si el valor no es 0
-        wide[ccol] = np.where(wide[ccol] != 0, -abs(wide[ccol]), 0.0)
-
-    return wide
-
-def build_fact_granel(df_g: pd.DataFrame, start=(2024, 10), end=(2025, 6), fill_before_first=False) -> pd.DataFrame:
-    """
-    Normaliza costos de granel en formato largo y aplica carry-forward mensual por (SKU, tipo_costo).
-
-    Espera columnas: ['SKU','Año','Mes','FechaClave','tipo_costo','valor_costo']
-    Devuelve:        ['SKU','Año','Mes','FechaClave','tipo_costo','valor_costo'] ordenado.
-    """
-    need = {"SKU","Año","Mes","tipo_costo","valor_costo"}
-    if not need.issubset(set(df_g.columns)):
-        raise ValueError(f"FACT_GRANEL debe tener columnas {need}.")
-    g = df_g.copy()
-    g.columns = [str(x).strip() for x in g.columns]
-    g["SKU"] = g["SKU"].astype(str).str.strip()
-    g["Año"] = g["Año"].apply(lambda x: int(str(x).strip()))
-    g["Mes"] = g["Mes"].apply(lambda x: int(str(x).strip()))
-    g["FechaClave"] = g["Año"]*100 + g["Mes"]
-    g["tipo_costo"] = g["tipo_costo"].astype(str).str.strip()
-    g["valor_costo"] = g["valor_costo"].apply(to_number_safe)
-
-    # Consolidar duplicados
-    g = (g.groupby(["SKU","tipo_costo","FechaClave","Año","Mes"], as_index=False)["valor_costo"]
-           .sum(min_count=1))
-
-    # Calendario por (SKU, tipo_costo, mes)
-    skus  = g[["SKU"]].drop_duplicates()
-    tipos = g[["tipo_costo"]].drop_duplicates()
-
-    cal = []
-    for y, m, fk in month_iter(start[0], start[1], end[0], end[1]):
-        tmp = skus.merge(tipos, how="cross")        # ← cartesiano correcto
-        tmp["Año"] = y; tmp["Mes"] = m; tmp["FechaClave"] = fk
-        cal.append(tmp)
-    base = pd.concat(cal, ignore_index=True)
-
-    # Traer valores y CF por SKU+tipo_costo
-    base = (base.merge(
-                g[["SKU","tipo_costo","FechaClave","valor_costo"]],
-                on=["SKU","tipo_costo","FechaClave"], how="left")
-              .sort_values(["SKU","tipo_costo","FechaClave"]))
-    base = carry_forward_ignore_zeros(base, ["SKU","tipo_costo"], "FechaClave", "valor_costo")
-    
-    # Llenar valores faltantes después del carry-forward
-    if fill_before_first:
-        # Carry backwards: tomar el primer valor disponible y propagarlo hacia atrás
-        base["valor_costo"] = base.groupby(["SKU","tipo_costo"], dropna=False)["valor_costo"].bfill().ffill()
-    else:
-        # Para valores que no tienen carry-forward, usar 0.0 en lugar de NaN
-        base["valor_costo"] = base["valor_costo"].fillna(0.0)
-
-    # Pivot a ancho
-    wide = (base.pivot_table(index=["SKU","Año","Mes","FechaClave"],
-                             columns="tipo_costo",
-                             values="valor_costo",
-                             aggfunc="last")
-                 .reset_index())
-    wide.columns.name = None
-
-    # Asegurar numéricos y signo costo negativo
-    for ccol in wide.columns:
-        if ccol in {"SKU","Año","Mes","FechaClave"}:
-            continue
-        wide[ccol] = pd.to_numeric(wide[ccol], errors="coerce")
-        # Solo aplicar signo negativo si el valor no es 0
-        wide[ccol] = np.where(wide[ccol] != 0, -abs(wide[ccol]), 0.0)
-
-    return wide
-
-
-def build_fact_precios(df_p: pd.DataFrame) -> pd.DataFrame:
-    """
-    Procesa la tabla de precios y retorna precios limpios con FechaClave.
-    
-    Args:
-        df_p: DataFrame con precios
-        
-    Returns:
-        DataFrame procesado con precios limpios
-    """
-    needed = {"SKU","SKU-Cliente","Año","Mes","PrecioVentaUSD"}
-    if not needed.issubset(set(df_p.columns)):
-        raise ValueError(f"FACT_PRECIOS debe contener {needed}. Columnas: {df_p.columns.tolist()}")
-
-    p = df_p.copy()
-    p.columns = [c.strip() for c in p.columns]
-    p = ensure_str(p, "SKU")
-    p = ensure_str(p, "SKU-Cliente")
-    p["Año"] = p["Año"].apply(lambda x: int(str(x).strip()))
-    p["MesNum"] = p["Mes"].apply(month_to_num).astype("Int64")
-    p["PrecioVentaUSD"] = p["PrecioVentaUSD"].apply(to_number_safe)
-    p = p.dropna(subset=["PrecioVentaUSD"])
-    p["FechaClave"] = p["Año"]*100 + p["MesNum"].astype(int)
-    return p
 
 def build_fact_precios_cf(
     df_p: pd.DataFrame,
@@ -595,33 +428,6 @@ def build_dim_sku(df_dim: pd.DataFrame) -> pd.DataFrame:
     # Eliminar duplicados por SKU-Cliente
     dim = dim[expected].drop_duplicates(subset=["SKU-Cliente"], keep="first").reset_index(drop=True)
     return dim
-
-def build_fact_volumen(df_vol: pd.DataFrame) -> pd.DataFrame:
-    """
-    Procesa la tabla de volúmenes y retorna en formato limpio con FechaClave.
-
-    Espera columnas: ['SKU','SKU-Cliente','Año','Mes','KgEmbarcados']
-    """
-    needed = {"SKU","SKU-Cliente","Año","Mes","KgEmbarcados"}
-    if not needed.issubset(set(df_vol.columns)):
-        raise ValueError(f"FACT_VOL debe contener {needed}. Columnas: {df_vol.columns.tolist()}")
-
-    v = df_vol.copy()
-    v.columns = [c.strip() for c in v.columns]
-
-    v["SKU"] = v["SKU"].astype(str).str.strip()
-    v["SKU-Cliente"] = v["SKU-Cliente"].astype(str).str.strip()
-    v["Año"] = v["Año"].apply(lambda x: int(str(x).strip()))
-    v["Mes"] = v["Mes"].apply(lambda x: int(str(x).strip()))
-    v["KgEmbarcados"] = v["KgEmbarcados"].apply(to_number_safe)
-
-    # Calcula FechaClave (YYYYMM)
-    v["FechaClave"] = v["Año"]*100 + v["Mes"]
-
-    # Ordenar para consistencia
-    v = v.sort_values(["SKU-Cliente","FechaClave"]).reset_index(drop=True)
-
-    return v[["SKU","SKU-Cliente","Año","Mes","FechaClave","KgEmbarcados"]]
 
 def compute_latest_price(precios: pd.DataFrame, mode="global", ref_datekey=None) -> pd.DataFrame:
     """
@@ -1242,6 +1048,48 @@ def build_subtotal_row(df: pd.DataFrame) -> pd.DataFrame:
 
     # Devolver como UNA fila
     return pd.DataFrame([subtotal])
+
+def create_subtotal_row(df: pd.DataFrame, weight_col: str = "KgEmbarcados") -> dict:
+    """
+    Crea una fila de subtotales.
+    - Si weight_col existe, calcula promedio ponderado por esa columna.
+    - Si no hay weight_col, usa promedio simple para columnas numéricas.
+    """
+    import numpy as np
+    subtotal_row = {}
+
+    # columnas “texto” que quieres mostrar como TOTAL
+    text_cols = ["SKU", "SKU-Cliente", "Descripcion", "Marca", "Cliente", "Especie", "Condicion", "Fruta", "Name"]
+    for col in text_cols:
+        if col in df.columns:
+            subtotal_row[col] = "TOTAL"
+
+    # detectar ponderador válido
+    w = None
+    if weight_col and weight_col in df.columns:
+        w = pd.to_numeric(df[weight_col], errors="coerce").fillna(0.0)
+        if (w <= 0).all():
+            w = None  # si todos 0, cae a promedio simple
+
+    # columnas numéricas candidatas (excluye ids/texto)
+    numeric_cols = [c for c in df.columns if c not in text_cols]
+    for col in numeric_cols:
+        if col in df.columns:
+            try:
+                s = pd.to_numeric(df[col], errors="coerce")
+                if s.notna().any():
+                    if w is not None and s.shape[0] == w.shape[0]:
+                        # promedio ponderado
+                        denom = w.sum()
+                        subtotal_row[col] = (s.fillna(0.0) * w).sum() / denom if denom > 0 else np.nan
+                    else:
+                        # promedio simple
+                        subtotal_row[col] = s.mean()
+                else:
+                    subtotal_row[col] = ""
+            except Exception:
+                subtotal_row[col] = ""
+    return subtotal_row
 
 # ===================== Carga de datos de fruta =====================
 def load_receta_sku(df_excel: pd.DataFrame) -> pd.DataFrame:

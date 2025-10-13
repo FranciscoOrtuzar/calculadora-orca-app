@@ -18,7 +18,7 @@ from src.dynamic_filters import DynamicFiltersWithList
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from src.data_io import build_detalle, REQ_SHEETS, load_receta_sku, load_info_fruta, columns_config, build_ebitda_mensual, build_granel, get_aggrid_custom_css, create_aggrid_config, build_subtotal_row, recalculate_totals, load_especies
+from src.data_io import REQ_SHEETS, columns_config, build_subtotal_row, recalculate_totals, create_subtotal_row
 from src.cost_engine import build_cost_engine_pipeline
 from src.state import ensure_session_state, session_state_table, sync_filters_to_shared, sync_filters_from_shared
 from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
@@ -270,79 +270,63 @@ def create_excel_download_button(df: pd.DataFrame,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=key
     )
-        
-# Mostrar botón de descarga
-create_excel_download_button(detalle, "detalle.xlsx", "📥 Descargar Excel", "download_historico_completo_excel")
 
 
-# Guardar los excluidos en variable 'skus_excluidos' para mantenerlos disponibles
 if detalle is not None and "Costos Totales (USD/kg)" in detalle.columns:
-    original_count = len(detalle)
+    # ===== Normalización y clave =====
+    df = detalle.copy()
+    key_col = "SKU-Cliente" if "SKU-Cliente" in df.columns else "SKU"
 
-    # Separar SKUs con costos totales = 0, NaN, o infinitos (subproductos)
-    costos_invalidos = (
-        (detalle["Costos Totales (USD/kg)"] == 0) |
-        (detalle["Costos Totales (USD/kg)"].isnull()) |
-        (detalle["Costos Totales (USD/kg)"] == float('inf')) |
-        (detalle["Costos Totales (USD/kg)"] == float('-inf'))
+    # Cuenta base por clave (mejor que por filas)
+    original_count = df[key_col].nunique()
+
+    # Coercer a numérico (detecta strings, 'inf', etc.)
+    to_num = lambda s: pd.to_numeric(s, errors="coerce")
+    df["costos_tot"] = to_num(df.get("Costos Totales (USD/kg)"))
+    df["kg"]         = to_num(df.get("KgEmbarcados"))
+    df["comex"]      = to_num(df.get("Comex"))
+    TOL = 1e-9
+
+    # ===== Decisiones por CLAVE =====
+    g = df.groupby(key_col, dropna=False)
+
+    # Sin ventas si suma de kg/comex ≈ 0 o NaN
+    kg_tot    = g["kg"].sum(min_count=1)
+    comex_tot = g["comex"].sum(min_count=1)
+    sin_ventas_key = (kg_tot.fillna(0).abs() <= TOL) | (comex_tot.fillna(0).abs() <= TOL)
+
+    # Costos inválidos si alguna fila de la clave tiene costo NaN/inf/≈0
+    cost_inval_key = g.apply(
+        lambda x: (x["costos_tot"].isna() | ~np.isfinite(x["costos_tot"]) | (x["costos_tot"].abs() <= TOL)).any()
     )
-    subproductos = detalle[costos_invalidos].copy()
-    
-    # Determinar SKUs sin ventas: costos inválidos O KgEmbarcados = 0 O Comex = 0
-    if "KgEmbarcados" in detalle.columns and "Comex" in detalle.columns:
-        sin_ventas = detalle[
-            costos_invalidos | 
-            ((detalle["KgEmbarcados"] == 0) | (detalle["KgEmbarcados"].isnull())) |
-            ((detalle["Comex"] == 0) | (detalle["Comex"].isnull()))
-        ].copy()
-    elif "KgEmbarcados" in detalle.columns:
-        sin_ventas = detalle[
-            costos_invalidos | 
-            ((detalle["KgEmbarcados"] == 0) | (detalle["KgEmbarcados"].isnull()))
-        ].copy()
-    elif "Comex" in detalle.columns:
-        sin_ventas = detalle[
-            costos_invalidos | 
-            ((detalle["Comex"] == 0) | (detalle["Comex"].isnull()))
-        ].copy()
-    else:
-        # Si no hay columnas para determinar ventas, usar DataFrame vacío
-        sin_ventas = detalle.iloc[0:0].copy()
-    
-    # Combinar subproductos y sin_ventas, eliminando duplicados
-    skus_excluidos = pd.concat([subproductos, sin_ventas]).drop_duplicates(subset=["SKU-Cliente"], keep="first")
-    
-    # Verificar que SKU-Cliente existe antes de usarla
-    if "SKU-Cliente" in skus_excluidos.columns:
-        df_base = detalle[~detalle["SKU-Cliente"].isin(skus_excluidos["SKU-Cliente"])].copy()
-    else:
-        # Si no hay SKU-Cliente, usar SKU como alternativa
-        if "SKU" in skus_excluidos.columns:
-            skus_excluidos = skus_excluidos.drop_duplicates(subset=["SKU"], keep="first")
-            df_base = detalle[~detalle["SKU"].isin(skus_excluidos["SKU"])].copy()
-        else:
-            # Fallback: no excluir nada
-            df_base = detalle.copy()
-            skus_excluidos = detalle.iloc[0:0].copy()
-    # Agregar columnas de clasificación si hay datos excluidos
-    if not skus_excluidos.empty:
-        # Determinar qué columna usar para la comparación
-        key_col = "SKU-Cliente" if "SKU-Cliente" in skus_excluidos.columns else "SKU"
-        
-        if key_col in subproductos.columns and key_col in sin_ventas.columns:
-            skus_excluidos["Subproducto"] = skus_excluidos[key_col].isin(subproductos[key_col])
-            skus_excluidos["Sin Ventas"] = skus_excluidos[key_col].isin(sin_ventas[key_col])
-        
-        # Ordenar por la columna clave
-        if key_col in skus_excluidos.columns:
-            try:
-                skus_excluidos[key_col] = skus_excluidos[key_col].astype(int)
-                skus_excluidos = skus_excluidos.set_index(key_col).sort_index()
-            except:
-                # Si no se puede convertir a int, mantener como está
-                pass
-    filtered_count = len(df_base)
-    skus_excluidos_count = len(skus_excluidos)
+
+    sin_ventas_keys   = sin_ventas_key.index[sin_ventas_key]
+    subproductos_keys = cost_inval_key.index[cost_inval_key]
+    keys_excluir      = sin_ventas_keys.union(subproductos_keys)
+
+    # ===== DataFrames finales =====
+    df_base = df[~df[key_col].isin(keys_excluir)].copy()
+    filtered_count = df_base[key_col].nunique()
+
+    # Para métricas y tabla del expander
+    sin_ventas  = df[df[key_col].isin(sin_ventas_keys)].drop_duplicates(subset=[key_col])
+    subproductos = df[df[key_col].isin(subproductos_keys)].drop_duplicates(subset=[key_col])
+
+    skus_excluidos = (
+        df[df[key_col].isin(keys_excluir)]
+        .drop_duplicates(subset=[key_col])
+        .assign(
+            Subproducto=lambda x: x[key_col].isin(subproductos_keys),
+            **{"Sin Ventas": lambda x: x[key_col].isin(sin_ventas_keys)}
+        )
+    )
+
+    # Limpieza de columnas auxiliares
+    for aux in ("costos_tot", "kg", "comex"):
+        skus_excluidos.drop(columns=[aux], inplace=True, errors="ignore")
+        df_base.drop(columns=[aux], inplace=True, errors="ignore")
+
+    skus_excluidos_count = skus_excluidos[key_col].nunique()
     
     if original_count > filtered_count:        
         # IMPORTANTE: Recalcular totales en los datos cargados para asegurar que EBITDA Pct esté correcto
@@ -415,9 +399,6 @@ with st.sidebar.container():
                 st.sidebar.info(f"🔍 **{active_count} filtro activo**")
             else:
                 st.sidebar.info(f"🔍 **{active_count} filtros activos**")
-            for logical, values in active_filters.items():
-                if values:
-                    st.sidebar.write(f"**{logical}**: {', '.join(str(values)[:3])}{'...' if len(values) > 3 else ''}")
     # Configurar filtros dinámicos solo con columnas que existen
     available_filter_cols = ['Marca', 'Cliente', 'Especie', 'Condicion', 'SKU']
     existing_filter_cols = [col for col in available_filter_cols if col in df_base.columns]
@@ -805,7 +786,10 @@ with tab_granel:
         
         # Aplicar formato a la tabla
         granel_display = granel_ponderado.copy()
-        
+
+        # Eliminar las especies sin proceso
+        granel_display = granel_display[granel_display["Proceso Granel (USD/kg)"] < 0]
+
         # Formatear columnas numéricas
         numeric_cols = [col for col in granel_display.columns if col not in ["Fruta_id", "Fruta", "Name", "Nombre"]]
         for col in numeric_cols:
@@ -817,6 +801,18 @@ with tab_granel:
         granel_display = granel_display[order_cols]
         granel_display = granel_display.set_index("Fruta_id").sort_index()
         granel_display = granel_display.sort_values(by="Proceso Granel (USD/kg)")
+        # Crear subtotal ponderado por KgProducidos
+        subtotal_row = create_subtotal_row(granel_display, weight_col="KgProducidos")
+        # etiqueta fija y campos visibles
+        subtotal_row.update({
+            "Fruta_id": "__TOTAL__",
+            "Name": "TOTAL",
+        })
+        subtotal_df = pd.DataFrame([subtotal_row]).set_index("Fruta_id", drop=True)
+
+        # Concatenar subtotal al final SIN reordenar más
+        granel_display = pd.concat([granel_display, subtotal_df.reindex(granel_display.columns, axis=1)], axis=0)
+        
         #Formato
         fmt_num = {col: "{:.3f}" for col in numeric_cols}
         fmt_pct = {"Rendimiento": "{:.1%}"} if "Rendimiento" in granel_display.columns else {}
@@ -835,6 +831,13 @@ with tab_granel:
                 subset=["Proceso Granel (USD/kg)"],
                     **{"font-weight": "bold", "background-color": "#fff7ed"}
                 )
+        # Aplicar estilo especial a la fila de subtotales    
+        from pandas import IndexSlice as idx
+        if "__TOTAL__" in granel_display.index:
+            sty = sty.set_properties(
+                subset=idx["__TOTAL__", :],
+                **{"font-weight":"bold","background-color":"#e8f4fd","border-top":"2px solid #1f77b4"}
+            )
         # Mostrar tabla con formato
         st.dataframe(
             granel_display.format(fmt),

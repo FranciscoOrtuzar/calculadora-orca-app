@@ -772,6 +772,9 @@ def calculate_granel_kpis(df: pd.DataFrame) -> Dict:
         if "Costos Indirectos" in df.columns:
             kpis["Costos Indirectos Promedio (USD/kg)"] = df["Costos Indirectos"].mean()
         
+        if "Proceso Granel (USD/Kg)" in df.columns:
+            kpis["Proceso Granel Promedio (USD/kg)"] = df["Proceso Granel (USD/Kg)"].mean()
+        
     except Exception as e:
         st.error(f"Error calculando KPIs de granel: {e}")
     
