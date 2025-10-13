@@ -384,10 +384,9 @@ def build_detalle_from_cost_engine(uploaded_bytes: bytes) -> pd.DataFrame:
     # Importar funciones clave de data_io
     from src.data_io import (
         read_workbook, build_tbl_costos_pond, build_fact_precios, 
-        compute_latest_price, build_dim_sku, build_fact_volumen,
+        compute_latest_price, build_dim_sku,
         compute_mmpp_unified, correct_species_from_recipes, 
-        ensure_list_species, recalculate_totals, load_receta_sku, 
-        load_info_fruta
+        ensure_list_species, recalculate_totals, load_receta_sku
     )
     
     # 1. Leer todas las hojas usando la función probada de data_io
