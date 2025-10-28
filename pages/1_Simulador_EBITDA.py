@@ -21,78 +21,68 @@ from src.data_io import create_subtotal_row
 # Agregar el directorio src al path
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
-def make_arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convierte un DataFrame a formato seguro para Arrow/Streamlit.
-    
-    Args:
-        df: DataFrame a convertir
-        
-    Returns:
-        DataFrame con formato seguro para Arrow
-    """
+import pandas as pd, numpy as np, json
+
+def to_grid_safe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    # 1) Asegurar nombres de columnas simples (no MultiIndex / no objetos)
-    if isinstance(out.columns, pd.MultiIndex):
-        out.columns = [" | ".join(map(str, lvl)) for lvl in out.columns]
+    # 1) Normaliza columnas problemáticas conocidas
+    # - 'SKU' debe ser siempre string (evita mezcla int/str como 'TOTAL')
+    if 'SKU' in out.columns:
+        out['SKU'] = out['SKU'].astype(str)
 
-    out.columns = [str(c) for c in out.columns]
-
-    # 2) Convertir valores no serializables (tuplas, listas, dicts, arrays, sets) a strings JSON
-    # EXCEPTO para la columna Especie que debe mantener las listas para ListColumn
-    def _sanitize_val(x, preserve_lists=False):
-        if preserve_lists and isinstance(x, list):
-            return x  # Preservar listas para ListColumn
-        elif isinstance(x, (tuple, list, dict, set, np.ndarray)):
-            try:
-                return json.dumps(x, default=str)
-            except Exception:
-                return str(x)
-        return x
-
+    # 2) Tuplas/listas/dicts -> string (JSON) para evitar ArrowTypeError
     for c in out.columns:
-        # Si la serie es object, aplica saneo elemento a elemento
-        if out[c].dtype == "object":
-            # Evita cast innecesario si ya son strings/números/fechas
-            sample = out[c].dropna().head(5).tolist()
-            if any(isinstance(v, (tuple, list, dict, set, np.ndarray)) for v in sample):
-                # Preservar listas solo para la columna Especie
-                preserve_lists = (c == "Especie")
-                out[c] = out[c].map(lambda x: _sanitize_val(x, preserve_lists=preserve_lists))
-        # Opcional: convertir categorías a string
-        if pd.api.types.is_categorical_dtype(out[c].dtype):
+        if out[c].dtype == 'object':
+            # ¿Hay tuplas/listas/dicts?
+            if out[c].apply(lambda x: isinstance(x, (tuple, list, dict))).any():
+                if c.lower() == 'shape':
+                    # Caso especial: columna llamada 'shape' (suele venir con tuplas)
+                    # Convierte a texto legible, p.ej. "(ancho, alto)"
+                    out[c] = out[c].apply(lambda x: f"{x}" if isinstance(x, (tuple, list)) else x)
+                else:
+                    # Genérico: a JSON string
+                    out[c] = out[c].apply(lambda x: json.dumps(x, ensure_ascii=False)
+                                          if isinstance(x, (list, tuple, dict)) else x)
+
+    # 3) Fechas/Period -> texto (sin tz)
+    for c in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[c]):
+            out[c] = pd.to_datetime(out[c]).dt.tz_localize(None).astype(str)
+        if pd.api.types.is_period_dtype(out[c]):
             out[c] = out[c].astype(str)
 
-    # 3) Índice simple
-    if isinstance(out.index, pd.MultiIndex):
-        # Convertir MultiIndex a strings usando to_flat_index()
-        out.index = [" | ".join(map(str, tup)) for tup in out.index.to_flat_index()]
+    # 4) Categorical -> texto
+    for c in out.select_dtypes(include=['category']).columns:
+        out[c] = out[c].astype(str)
 
+    # 5) Int nullable (Int64, etc.) -> float (Arrow es más feliz)
+    for c in out.columns:
+        if str(out[c].dtype).startswith('Int'):
+            out[c] = out[c].astype('float')
+
+    # 6) NaN/Inf -> None
+    out = out.replace([np.inf, -np.inf], np.nan).replace({np.nan: None})
+
+    # 7) Nombres de columnas a str
+    out.columns = [str(c) for c in out.columns]
     return out
 
 # Importar con manejo de errores más robusto
 try:
     # Intentar import desde src
     from src.data_io import build_detalle, REQ_SHEETS, columns_config, recalculate_totals, cargar_plan_2026
-    from src.state import (
-        ensure_session_state, session_state_table, sim_snapshot_push, 
-        sim_undo, sim_redo, apply_fruit_override,
-        get_sim_undo_count, get_sim_redo_count, is_sim_dirty
+    from src.state import (session_state_table, sim_snapshot_push, 
+        sim_undo, sim_redo, get_sim_undo_count, get_sim_redo_count, is_sim_dirty
     )
     from src.simulator_fruit import (
-        validate_fruit_inputs, get_adjusted_fruit_params, compute_mmpp_fruta_per_sku, 
-        apply_fruit_overrides_to_sim, get_fruit_summary_table, validate_bulk_upload_df, 
-        process_bulk_upload
+        get_adjusted_fruit_params, apply_fruit_overrides_to_sim, get_fruit_summary_table,
     )
     from src.simulator import (
-        apply_filters, get_filter_options, apply_global_overrides, 
-        apply_upload_overrides, compute_ebitda, calculate_kpis,
-        get_top_bottom_skus, create_ebitda_chart, create_margin_distribution_chart,
-        export_escenario, validate_upload_file,
-        apply_granel_filters, get_granel_filter_options, apply_granel_global_overrides,
-        recalculate_granel_totals, apply_granel_universal_adjustments, calculate_granel_kpis,
-        get_top_bottom_granel, create_granel_cost_chart, export_granel_escenario,
+        apply_global_overrides, apply_upload_overrides, calculate_kpis,
+        get_top_bottom_skus, create_ebitda_chart, create_margin_distribution_chart, validate_upload_file,
+        apply_granel_filters, get_granel_filter_options, recalculate_granel_totals,
+        apply_granel_universal_adjustments, calculate_granel_kpis, create_granel_cost_chart,
         sync_granel_changes_to_retail, get_data_for_download, get_mime_type, get_file_extension
     )
 except ImportError as e:
@@ -3481,6 +3471,7 @@ with tab_receta:
     # -------------------
     # Render de la grilla (sin fit_columns_on_grid_load y sin sizeColumnsToFit en onReady)
     # -------------------
+    display_df = to_grid_safe(display_df)
     grid_response = AgGrid(
         display_df,
         gridOptions=gridOptions,
