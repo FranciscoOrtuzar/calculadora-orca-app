@@ -81,7 +81,7 @@ def session_state_table() -> None:
         rows.append({"key": k, "type": vtype, "shape": vshape, "preview": preview[:120]})
     
     df = pd.DataFrame(rows).sort_values("key")
-    st.dataframe(df, use_container_width=True, height=360)
+    st.dataframe(df, width="stretch", height=360)
 
 # ---------- Undo / Redo simulación ----------
 def _sim_take_snapshot() -> dict:

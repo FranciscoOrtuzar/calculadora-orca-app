@@ -519,7 +519,7 @@ with tab_retail:
 
     if show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(sty_sub, column_config=col_config, width="stretch", hide_index=True)
 
     # Aplicar formato y estilos similares al simulador
     df_disp = view_base_noidx.copy()
@@ -549,11 +549,11 @@ with tab_retail:
     if ex_e:
         sty = sty.set_properties(subset=ex_e, **{"font-weight":"bold","background-color":"#fff7ed"})
 
-    st.dataframe(sty, column_config=col_config, use_container_width=True, hide_index=True)
+    st.dataframe(sty, column_config=col_config, width="stretch", hide_index=True)
 
     if not show_subtotals_at_top:
         st.caption("Subtotal (ponderado por KgEmbarcados)")
-        st.dataframe(sty_sub, column_config=col_config, use_container_width=True, hide_index=True)
+        st.dataframe(sty_sub, column_config=col_config, width="stretch", hide_index=True)
 
     # 6. Botón de descarga Excel externo
     if not view_base_noidx.empty:
@@ -697,7 +697,7 @@ with tab_retail:
         st.subheader("Detalle de costos por SKU (temporada)")
         st.dataframe(
             view_base_det, 
-            use_container_width=True, 
+            width="stretch", 
             height="auto",
             column_config=config,
             hide_index=True
@@ -841,7 +841,7 @@ with tab_granel:
         # Mostrar tabla con formato
         st.dataframe(
             granel_display.format(fmt),
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Name": st.column_config.TextColumn(
                     "Fruta",
@@ -928,7 +928,7 @@ with tab_granel:
                     height=400
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             
         except ImportError:
             st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
@@ -946,7 +946,7 @@ with tab_granel:
                 data=csv_granel,
                 file_name="costos_granel_por_fruta.csv",
                 mime="text/csv",
-                use_container_width=True
+                width="stretch"
             )
         
         with col2:
@@ -959,7 +959,7 @@ with tab_granel:
                 data=buf.getvalue(),
                 file_name="costos_granel_por_fruta.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width="stretch"
             )
 
 
@@ -980,7 +980,7 @@ with tab_granel:
 #             "Cantidad SKUs": "{:.0f}",
 #             "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
 #         }),
-#         use_container_width=True
+#         width="stretch"
 #     )
 
 # # Resumen por especie si existe
@@ -1000,7 +1000,7 @@ with tab_granel:
 #             "Cantidad SKUs": "{:.0f}",
 #             "EBITDA % Promedio": "{:.1%}"  # Formato de porcentaje
 #         }),
-#         use_container_width=True
+#         width="stretch"
 #     )
 
 # -------- Información de navegación --------
@@ -1148,7 +1148,7 @@ with st.expander("🔎 Ver detalle de un SKU", expanded=False):
                     fila = view_base_noidx[view_base_noidx[key_col].astype(str) == str(sku_sel)].head(1)
                 except:
                     fila = view_base_noidx[view_base_noidx[key_col] == sku_sel].head(1)
-                st.dataframe(fila, use_container_width=True, hide_index=True)
+                st.dataframe(fila, width="stretch", hide_index=True)
         except Exception as e:
             st.error(f"Error mostrando selector: {str(e)}")
     else:

@@ -2066,7 +2066,7 @@ with tab_granel:
         edited_df = st.dataframe(
             editable_columns,
             column_config=config,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key="data_editor_granel"
         )
@@ -2102,7 +2102,7 @@ with tab_granel:
         #         top_frutas, _ = get_top_bottom_granel(editable_view_con_proceso, 5)
         #         if not top_frutas.empty:
         #             show_cols = [c for c in ["Name", "Proceso Granel (USD/kg)", "Costos Directos"] if c in top_frutas.columns]
-        #             st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), use_container_width=True, column_config=config, hide_index=True)
+        #             st.dataframe(top_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), width="stretch", column_config=config, hide_index=True)
         #         else:
         #             st.info("No hay datos")
         #     with c2:
@@ -2110,7 +2110,7 @@ with tab_granel:
         #         _, bottom_frutas = get_top_bottom_granel(editable_view_con_proceso, 5)
         #         if not bottom_frutas.empty:
         #             show_cols = [c for c in ["Name", "Proceso Granel (USD/kg)", "Costos Directos"] if c in bottom_frutas.columns]
-        #             st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), use_container_width=True, column_config=config, hide_index=True)
+        #             st.dataframe(bottom_frutas[show_cols].style.format({k:"{:.3f}" for k in show_cols if k not in ["Name"]}), width="stretch", column_config=config, hide_index=True)
         #         else:
         #             st.info("No hay datos")
         # except Exception as e:
@@ -2130,7 +2130,7 @@ with tab_granel:
         try:
             chart = create_granel_cost_chart(editable_view_con_proceso, int(top_n_granel))
             if chart:
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
             else:
                 st.warning("No se pudo crear el gráfico.")
         except Exception as e:
@@ -2279,7 +2279,7 @@ with tab_granel:
                 opt_df = st.dataframe(
                     opt_view_styled,
                     column_config=config,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     key="data_editor_granel"
                 )
@@ -2290,7 +2290,7 @@ with tab_granel:
                 opt_df = st.dataframe(
                     opt_view_styled,
                     column_config=config,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     key="data_editor_granel"
                 )
@@ -2477,7 +2477,7 @@ with tab_granel:
         diff_cols = ["Δ Precio", "Δ Costo", "Δ EBITDA", "Δ EBITDA %"]
         for col in diff_cols:
             if col in comparison_display.columns:
-                styled_comparison = styled_comparison.applymap(highlight_differences, subset=[col])
+                styled_comparison = styled_comparison.map(highlight_differences, subset=[col])
         
         config = {}
         for col in styled_comparison.columns:
@@ -2497,7 +2497,7 @@ with tab_granel:
         st.dataframe(
             styled_comparison,
             column_config=config,
-            use_container_width=True,
+            width="stretch",
             height=400,
             hide_index=True
         )
@@ -2915,7 +2915,7 @@ with tab_precio_frutas:
             "Costo Efectivo Base (USD/kg)": "{:.3f}",
             "Costo Efectivo Ajustado (USD/kg)": "{:.3f}",
         }),
-        use_container_width=True, hide_index=True
+        width="stretch", hide_index=True
     )
 
     # 5) Expander: Insights rápidos de frutas (sin contribución)
@@ -2971,7 +2971,7 @@ with tab_precio_frutas:
             text="SKUsAfectados"
         )
         fig_bar.update_layout(xaxis_tickangle=-30, height=420, showlegend=False)
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, config={"width": "stretch"})
     except ImportError:
         st.info("Para ver gráficos, instala plotly: `pip install plotly`")
 
@@ -2991,7 +2991,7 @@ with tab_precio_frutas:
 #         title="Precio vs. Rendimiento (tamaño = SKUs afectados, color = ΔPrecio%)",
 #         height=420, showlegend=False
 #     )
-#     st.plotly_chart(fig_scatter, use_container_width=True)
+#     st.plotly_chart(fig_scatter, width="stretch")
 # except ImportError:
 #     pass
     # ===================== Información del Simulador =====================
@@ -3279,43 +3279,90 @@ with tab_receta:
 
     display_df = skus_summary.drop_duplicates(subset=["SKU"]).copy()
     display_df = display_df.drop(
-        ["SKU-Cliente", "EBITDA (USD/kg)", "Porcentaje_Total"], 
-        axis=1, 
-        errors="ignore"
+        ["SKU-Cliente", "EBITDA (USD/kg)", "Porcentaje_Total"], axis=1, errors="ignore"
     )
+
+    # Sanitizar tipos que suelen romper Arrow/AG Grid
+    for c in ("SKU", "Descripcion", "Marca", "Cliente"):
+        if c in display_df.columns:
+            display_df[c] = display_df[c].astype(str)
+
     display_df["Ver Receta"] = "Ver Receta"
 
     gb = GridOptionsBuilder.from_dataframe(display_df)
 
-    # columnas
-    gb.configure_column("SKU", width=90, pinned="left", filter=False)
+    # -------------------
+    # Columnas
+    # -------------------
+    # SKU: sin filtro (como pediste) y anclada a la izquierda
+    gb.configure_column(
+        "SKU",
+        headerName="SKU",
+        minWidth=90,
+        flex=1,               # se ajusta ligeramente al espacio disponible
+        pinned="left",
+        filter=False
+    )
     if "Descripcion" in display_df.columns:
-        gb.configure_column("Descripcion", header_name="Descripción", minWidth=260, flex=4)
+        gb.configure_column(
+            "Descripcion",
+            header_name="Descripción",
+            minWidth=260,
+            flex=4,
+            tooltipField="Descripcion",  # tooltip nativo de AG Grid con el mismo valor
+            cellClass="ellipsis-text"
+        )
+
     if "Marca" in display_df.columns:
-        gb.configure_column("Marca", minWidth=120, flex=1)
+        gb.configure_column(
+            "Marca",
+            minWidth=120,
+            flex=1,
+            tooltipField="Marca",
+            cellClass="ellipsis-text"
+        )
+
     if "Cliente" in display_df.columns:
-        gb.configure_column("Cliente", minWidth=150, flex=2)
+        gb.configure_column(
+            "Cliente",
+            minWidth=150,
+            flex=2,
+            tooltipField="Cliente",
+            cellClass="ellipsis-text"
+        )
+
+    # Frutas_Usadas: corrige minWidth y format -> valueFormatter
     if "Frutas_Usadas" in display_df.columns:
         FRUTAS_CELL_STYLE = JsCode("""
         function(params){
-            return {fontSize: '18px', fontWeight: '600'};
+        return {fontSize: '18px', fontWeight: '600'};
+        }
+        """)
+        VF_INT0 = JsCode("""
+        function(p){
+        if (p.value == null || isNaN(p.value)) return '';
+        try { return Number(p.value).toLocaleString('es-CL', {maximumFractionDigits:0}); }
+        catch(_) { return Number(p.value).toLocaleString('en-US', {maximumFractionDigits:0}); }
         }
         """)
         gb.configure_column(
             "Frutas_Usadas",
-            minwidth=90,
+            minWidth=90,                 # <- correcto
             header_name="Frutas",
-            format="{:.0f}",
+            valueFormatter=VF_INT0,      # <- reemplaza 'format'
             pinned="right",
             suppressMovable=True,
-            cellStyle=FRUTAS_CELL_STYLE,
-        ) 
+            cellStyle=FRUTAS_CELL_STYLE
+        )
+
+    # MMPP (Fruta): valueFormatter seguro
     if "MMPP (Fruta) (USD/kg)" in display_df.columns:
         FORMATTER_3_DEC = JsCode("""
-        function(params) {
-            if (params.value === null || params.value === undefined || isNaN(params.value)) { return ''; }
-            const num = Number(params.value);
-            return num.toLocaleString('es-CL', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+        function(params){
+        if (params.value == null || isNaN(params.value)) return '';
+        const num = Number(params.value);
+        try { return num.toLocaleString('es-CL', { minimumFractionDigits: 3, maximumFractionDigits: 3 }); }
+        catch(_) { return num.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 }); }
         }
         """)
         gb.configure_column(
@@ -3326,10 +3373,14 @@ with tab_receta:
             valueFormatter=FORMATTER_3_DEC,
         )
 
-    # selección (IMPORTANTE)
+    # -------------------
+    # Selección (API clásica en st-aggrid 1.1.9)
+    # -------------------
     gb.configure_selection(selection_mode="single", use_checkbox=False, suppressRowClickSelection=True)
 
-    # botón que selecciona la fila y cubre todo el espacio
+    # -------------------
+    # Botón por fila (renderer)
+    # -------------------
     BTN_RENDERER = JsCode("""
     class BtnRenderer {
     init(params){
@@ -3357,9 +3408,8 @@ with tab_receta:
         b.style.alignItems = 'center';
         b.style.justifyContent = 'center';
         b.onclick = () => {
-            // Solo seleccionar cuando se hace click en el botón
-            params.api.deselectAll();
-            params.node.setSelected(true);
+        params.api.deselectAll();
+        params.node.setSelected(true);
         };
         this.eGui = b;
     }
@@ -3368,7 +3418,7 @@ with tab_receta:
     }
     """)
 
-    # Botón a la derecha: pinned y con ancho mínimo, sin flex (que no se expanda)
+    # Columna de acción a la derecha (sin flex)
     gb.configure_column(
         "Ver Receta",
         header_name="Ver Receta",
@@ -3381,83 +3431,75 @@ with tab_receta:
         editable=False,
         cellRenderer=BTN_RENDERER,
     )
-    ## 1) CSS para forzar elipsis (overflow) y así tener casos con tooltip
-    ELIPSIS_CSS = """
-    <style>
-    .ag-theme-balham .ag-cell.elipsis {
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-    white-space: nowrap !important;
-    }
-    </style>
-    """
-    st.markdown(ELIPSIS_CSS, unsafe_allow_html=True)
 
-    # 2) Getter simple (nada de DOM)
+    # -------------------
+    # Tooltips + rowId estable + no autosize agresivo
+    # -------------------
     TOOLTIP_VALUE = JsCode("""
     function(params){
-    if (params.value === null || params.value === undefined) return '';
+    if (params.value == null) return '';
     if (Array.isArray(params.value)) return params.value.join(', ');
     return String(params.value);
     }
     """)
 
-
-    # 3) Columna por defecto con tooltip
     gb.configure_default_column(
         resizable=True, sortable=True, filter=True,
         tooltipValueGetter=TOOLTIP_VALUE,
-        cellClass="elipsis"   # activa la clase que hace overflow/ellipsis
+        cellClass="ellipsis-text"
     )
 
-    # 4) No expandas siempre a todo el ancho: crea overflow real
-    #    (si de verdad necesitas sizeColumnsToFit, aplícalo sólo una vez o
-    #     marca columnas con 'suppressSizeToFit:true' para que queden estrechas)
-    on_ready = JsCode("""
-    function(p){
-    // con flex no es necesario, pero ayuda a primeras cargas raras
-    p.api.sizeColumnsToFit();
-    window.addEventListener('resize', () => p.api.sizeColumnsToFit());
-    }
-    """)
-
+    # Define getRowId para evitar re-montajes/avisos
     gb.configure_grid_options(
-        onFirstDataRendered=on_ready,
-        onGridSizeChanged=JsCode("function(p){ p.api.sizeColumnsToFit(); }"),
+        getRowId=JsCode("function(p){ return String(p.data.SKU ?? p.rowIndex); }"),
         tooltipShowDelay=100,
         tooltipHideDelay=8000,
         tooltipShowMode="whenTruncated",
-        )
+        # enableCellTextSelection: activarlo si quieres seleccionar texto;
+        # si notas que interfiere con tooltips, déjalo en False.
+        enableCellTextSelection=True
+    )
 
     gridOptions = gb.build()
+
+    # -------------------
+    # CSS mínimo y no intrusivo (sin forzar display:flex en todas las celdas)
+    # -------------------
+    ELLIPSIS_CSS = """
+    <style>
+    .ag-theme-balham .ag-cell.ellipsis-text{
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    }
+    .vf-btn-receta{ box-sizing: border-box; width: 100%; max-width: 100%; }
+    .ag-header-cell[col-id='Frutas_Usadas'] .ag-header-cell-label{ font-size:14px; font-weight:600; }
+    </style>
+    """
+    st.markdown(ELLIPSIS_CSS, unsafe_allow_html=True)
+
+    # -------------------
+    # Render de la grilla (sin fit_columns_on_grid_load y sin sizeColumnsToFit en onReady)
+    # -------------------
     grid_response = AgGrid(
         display_df,
         gridOptions=gridOptions,
         data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
         update_mode=GridUpdateMode.SELECTION_CHANGED,
-        fit_columns_on_grid_load=True,
         height=600,
-        width='100%',
+        width="100%",              # Streamlit 1.50 usa width, no use_container_width
         allow_unsafe_jscode=True,
         theme="balham",
         custom_css={
             ".ag-header-cell-label": {"justify-content": "center"},
-            ".ag-cell": {"display": "flex", "align-items": "center", "justify-content": "center", "overflow": "hidden"},
             ".ag-row": {"min-height": "40px"},
-            ".ag-cell-value": {"display": "flex", "align-items": "center", "justify-content": "center"},
-            ".ag-header-cell[col-id='Frutas_Usadas'] .ag-header-cell-label": {"font-size": "14px", "font-weight": "600"},
-            ".vf-btn-receta": {"box-sizing": "border-box", "width": "100%", "max-width": "100%"},
-            ".ag-pinned-right-cols-container .ag-cell": {"overflow": "hidden"}
-    }
+            # OJO: no tocamos ".ag-cell" global para no romper selección/tooltip
+        }
     )
 
-    # Corregir pin de columna agregado manualmente si existiera
-    try:
-        gb.configure_column("Frutas", pinned=None)  # no existe campo "Frutas"; evita efectos colaterales
-    except Exception:
-        pass
-
-    # leer selección de forma robusta
+    # -------------------
+    # Leer selección
+    # -------------------
     sel_raw = grid_response.get("selected_rows", None)
     if isinstance(sel_raw, list):
         sel_records = sel_raw
@@ -3469,7 +3511,11 @@ with tab_receta:
     if sel_records:
         sku_to_view = str(sel_records[0].get("SKU", "")).strip()
         if sku_to_view:
-            ver_receta_dialog(sku_to_view, st.session_state["fruta.receta_df"], st.session_state["fruta.plan_2026"])
+            ver_receta_dialog(
+                sku_to_view,
+                st.session_state["fruta.receta_df"],
+                st.session_state["fruta.plan_2026"]
+            )
 
     st.caption("💡 Haz clic en **🍓 Ver** para abrir el modal con los detalles de la receta.")
 
@@ -3553,7 +3599,7 @@ with tab_receta:
                 showlegend=False
             )
             
-            st.plotly_chart(fig_top_frutas, width='stretch')
+            st.plotly_chart(fig_top_frutas, config={"width": "stretch"})
             
         except ImportError:
             st.info("📊 Para ver gráficos, instala plotly: `pip install plotly`")
