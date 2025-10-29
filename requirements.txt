@@ -15,6 +15,7 @@ numpy>=2.3.2
 streamlit_dynamic_filters>=0.1.9
 streamlit-aggrid>=1.1.9
 pygwalker>=0.4.9.15
+dataframe-with-buttons>=1.0.0
 
 # =============================================================================
 # VISUALIZACIÓN Y GRÁFICOS
